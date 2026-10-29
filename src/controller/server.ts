@@ -1,7 +1,7 @@
 // HTTP API over the unix socket: protocol check, auth, idempotency, routing, one BEGIN IMMEDIATE txn per request.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
-import { HDR_IDEMPOTENCY, HDR_PROTOCOL, PROTOCOL_VERSION, type HealthResponse } from "../shared/protocol.ts";
+import { HDR_IDEMPOTENCY, HDR_PROTOCOL, PROTOCOL_VERSION, type HealthResponse, type ShutdownResponse } from "../shared/protocol.ts";
 import { get, run, tx, nowIso, parseJson } from "./db.ts";
 import { ApiErr, CommittedError, fail } from "./errors.ts";
 import type { Ctx, Principal, ReqScope } from "./context.ts";
@@ -66,8 +66,11 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 			"/controller/shutdown",
 			"operator",
 			({ scope }) => {
-				scope.after(() => setTimeout(deps.shutdown, 20));
-				return { stopping: true };
+				scope.after(() => {
+					setTimeout(deps.shutdown, 20);
+				});
+				const r: ShutdownResponse = { stopping: true };
+				return r;
 			},
 			false,
 		),

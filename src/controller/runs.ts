@@ -8,15 +8,16 @@ import type {
 	BudgetView,
 	CreateRunResponse,
 	EnrollResponse,
-	EventView,
+	EventsResponse,
 	HeartbeatResponse,
 	InspectResponse,
 	ModelsResponse,
 	OrgContext,
 	RunConfig,
-	RunSummary,
+	RunListResponse,
 	TreeNode,
 	TreeResponse,
+	UsageReportResponse,
 } from "../shared/protocol.ts";
 import { obj, str, int, onlyKeys } from "./validate.ts";
 import { buildRunConfig, modelIneligibility } from "./config.ts";
@@ -115,7 +116,7 @@ export function createRun(ctx: Ctx, p: Principal, body: unknown): CreateRunRespo
 	return { run_id: runId, root_agent_id: agentId, session_id: s.session_id, token, envelope: cfg.root_envelope };
 }
 
-export function listRuns(ctx: Ctx, p: Principal): { runs: RunSummary[] } {
+export function listRuns(ctx: Ctx, p: Principal): RunListResponse {
 	requireOperator(p);
 	const rows = all(ctx.db, "SELECT r.*, (SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id) AS n FROM runs r ORDER BY r.created_at");
 	return { runs: rows.map((r) => ({ run_id: r.id, status: r.status, root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
@@ -226,8 +227,8 @@ export function heartbeat(ctx: Ctx, p: Principal, body: unknown): HeartbeatRespo
 	return { lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state };
 }
 
-/** Local extension (not in protocol.ts): POST /sessions/usage {cost_usd, input_tokens?, output_tokens?}. */
-export function reportUsage(ctx: Ctx, p: Principal, body: unknown): { consumed_usd: number; budget_exhausted: boolean } {
+/** POST /sessions/usage (UsageReportRequest). */
+export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportResponse {
 	const a = requireAgent(p);
 	const db = ctx.db;
 	const b = obj(body);
@@ -333,7 +334,7 @@ export function models(ctx: Ctx, p: Principal, q: URLSearchParams): ModelsRespon
 	};
 }
 
-export function events(ctx: Ctx, p: Principal, q: URLSearchParams): { events: EventView[]; next_after: number } {
+export function events(ctx: Ctx, p: Principal, q: URLSearchParams): EventsResponse {
 	const runId = p.kind === "agent" ? p.run_id : q.get("run_id");
 	if (p.kind === "agent" && q.get("run_id") && q.get("run_id") !== p.run_id) fail("FORBIDDEN", "other run");
 	const after = Number(q.get("after") ?? 0) || 0;

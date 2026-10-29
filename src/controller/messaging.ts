@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { type DB, type Row, all, get, run, newId, nowIso, isoPlus, emit, parseJson } from "./db.ts";
 import { fail } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
-import { type Envelope, type MessageType, type SendMessageResponse, type InboxResponse, type DelegateTaskResponse } from "../shared/protocol.ts";
+import type { AckResponse, Envelope, MessageType, SendMessageResponse, InboxResponse, DelegateTaskResponse, TaskCompleteResponse, TaskProgressResponse } from "../shared/protocol.ts";
 import { assertSchema, obj, str, oneOf, onlyKeys } from "./validate.ts";
 import { getAgent, getCurrentManager, getSubtree, isTerminal, runConfig } from "./queries.ts";
 
@@ -102,12 +102,20 @@ export function readInbox(ctx: Ctx, p: Principal, query: URLSearchParams): Inbox
 	return { messages: rows.map(toEnvelope) };
 }
 
-export function ackMessage(ctx: Ctx, p: Principal, messageId: string): { acked: true } {
+export function ackMessage(ctx: Ctx, p: Principal, messageId: string): AckResponse {
 	const a = requireAgent(p);
 	const d = get(ctx.db, "SELECT * FROM deliveries WHERE message_id = ? AND recipient_id = ?", messageId, a.actor_id);
 	if (!d) fail("NOT_FOUND", "no delivery of that message to you");
-	if (d.status !== "ACKED") run(ctx.db, "UPDATE deliveries SET status = 'ACKED', acked_at = ?, lease_until = NULL WHERE message_id = ? AND recipient_id = ?", nowIso(), messageId, a.actor_id);
+	if (d.status !== "ACKED") {
+		run(ctx.db, "UPDATE deliveries SET status = 'ACKED', acked_at = ?, lease_until = NULL WHERE message_id = ? AND recipient_id = ?", nowIso(), messageId, a.actor_id);
+		madeProgress(ctx.db, a.actor_id);
+	}
 	return { acked: true };
+}
+
+/** Restart budget counts relaunches WITHOUT progress (one-shot workers legitimately relaunch often). */
+export function madeProgress(db: DB, agentId: string): void {
+	run(db, "UPDATE agents SET restart_attempts = 0 WHERE id = ? AND restart_attempts <> 0", agentId);
 }
 
 export function inboxPending(db: DB, agentId: string): number {
@@ -153,7 +161,7 @@ function ownTask(db: DB, a: { actor_id: string; run_id: string }, taskId: string
 	return t;
 }
 
-export function taskProgress(ctx: Ctx, p: Principal, taskId: string, body: unknown): { task_id: string; status: string; message_id: string | null } {
+export function taskProgress(ctx: Ctx, p: Principal, taskId: string, body: unknown): TaskProgressResponse {
 	const a = requireAgent(p);
 	const b = obj(body);
 	onlyKeys(b, ["note"]);
@@ -161,6 +169,7 @@ export function taskProgress(ctx: Ctx, p: Principal, taskId: string, body: unkno
 	const t = ownTask(ctx.db, a, taskId);
 	if (["DONE", "FAILED", "CANCELLED"].includes(t.status)) fail("CONFLICT", `task is ${t.status}`);
 	run(ctx.db, "UPDATE tasks SET status = 'IN_PROGRESS', updated_at = ? WHERE id = ?", nowIso(), taskId);
+	madeProgress(ctx.db, a.actor_id);
 	const mgr = getCurrentManager(ctx.db, a.actor_id);
 	const messageId = mgr ? postMessage(ctx.db, { run_id: a.run_id, from: a.actor_id, to: mgr, type: "task.progress", payload: { task_id: taskId, note }, correlation_id: taskId }) : null;
 	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.progress", entity_id: taskId, payload: { note } });
@@ -179,7 +188,7 @@ export function checkArtifactUri(workspaceRoot: string, uri: string): string {
 	return abs;
 }
 
-export function completeTask(ctx: Ctx, p: Principal, taskId: string, body: unknown): { task_id: string; status: string; message_id: string | null; artifact_ids: string[] } {
+export function completeTask(ctx: Ctx, p: Principal, taskId: string, body: unknown): TaskCompleteResponse {
 	const a = requireAgent(p);
 	const b = obj(body);
 	onlyKeys(b, ["summary", "artifacts", "status"]);
@@ -202,6 +211,7 @@ export function completeTask(ctx: Ctx, p: Principal, taskId: string, body: unkno
 		run(ctx.db, "INSERT INTO artifacts(id, task_id, agent_id, kind, uri, sha256, created_at) VALUES (?,?,?,?,?,?,?)", id, taskId, a.actor_id, kind, uri, sha, nowIso());
 		artifactIds.push(id);
 	}
+	madeProgress(ctx.db, a.actor_id);
 	run(ctx.db, "UPDATE tasks SET status = ?, result_json = ?, updated_at = ? WHERE id = ?", status, JSON.stringify({ summary, artifact_ids: artifactIds }), nowIso(), taskId);
 	const mgr = getCurrentManager(ctx.db, a.actor_id) ?? t.assigned_by;
 	const messageId =

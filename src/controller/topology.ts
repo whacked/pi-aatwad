@@ -1,5 +1,5 @@
 // Topology mutations: reparent (docs/08) and lifecycle (pause/resume/retire/cancel) with children policies.
-import { type DB, all, get, run, newId, nowIso, emit } from "./db.ts";
+import { type DB, type Row, all, get, run, newId, nowIso, emit } from "./db.ts";
 import { fail } from "./errors.ts";
 import type { Ctx, Principal, ReqScope } from "./context.ts";
 import type { ReparentResponse, LifecycleResponse, AgentStatus } from "../shared/protocol.ts";
@@ -14,7 +14,7 @@ function senderFor(db: DB, p: Principal, runId: string): string {
 }
 
 /** Actor may act on `subject` if operator, or a strict ancestor of subject in the same run. */
-function assertManages(db: DB, p: Principal, subject: { id: string; run_id: string }): void {
+function assertManages(db: DB, p: Principal, subject: Row): void {
 	if (p.kind === "operator") return;
 	if (p.run_id !== subject.run_id) fail("FORBIDDEN", "agent belongs to another run");
 	if (!isAncestor(db, p.actor_id, subject.id)) fail("FORBIDDEN", "you do not manage this agent");
@@ -165,11 +165,21 @@ export function lifecycle(ctx: Ctx, p: Principal, scope: ReqScope, agentId: stri
 		const targets = cpol === "cascade" || cpol === "pause_subtree" ? [agentId, ...liveDescendants] : [agentId];
 		for (const t of targets) {
 			if (action === "pause") run(db, "UPDATE agents SET desired_state = 'PAUSED', status = CASE WHEN status = 'RUNNING' THEN 'PAUSED' ELSE status END WHERE id = ?", t);
-			else run(db, "UPDATE agents SET desired_state = 'RUNNING', status = CASE WHEN status = 'PAUSED' AND observed_state = 'LIVE' THEN 'RUNNING' ELSE status END WHERE id = ?", t);
+			else
+				run(
+					db,
+					"UPDATE agents SET desired_state = 'RUNNING', status = CASE WHEN status = 'PAUSED' AND observed_state = 'LIVE' THEN 'RUNNING' ELSE status END, metadata_json = json_set(metadata_json, '$.runtime_epoch', ?) WHERE id = ?",
+					nowIso(),
+					t,
+				);
 			notify(t);
 			affected.push(t);
 		}
-		if (action === "resume") ctx.kick();
+		if (action === "resume") {
+			// Work blocked by a deadline becomes actionable again (this is what triggers a relaunch of a stopped worker).
+			for (const t of targets) run(db, "UPDATE tasks SET status = 'ASSIGNED', updated_at = ? WHERE owner_id = ? AND status = 'BLOCKED'", nowIso(), t);
+			ctx.kick();
+		}
 	} else {
 		const final: AgentStatus = action === "retire" ? "RETIRED" : "CANCELLED";
 		let targets = [agentId];

@@ -1,6 +1,7 @@
 // Shared detached-launch mechanics for PiExecutor and ScriptExecutor.
 
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
@@ -51,7 +52,7 @@ export async function launchDetached(l: DetachedLaunch): Promise<ProcessIdentity
 		env_keys: Object.keys(l.env).sort(),
 	});
 	const fd = openSync(spec.log_path, "a", 0o600);
-	let child;
+	let child: ChildProcess;
 	try {
 		child = spawn(l.command, l.args, {
 			cwd: spec.cwd,
@@ -60,9 +61,10 @@ export async function launchDetached(l: DetachedLaunch): Promise<ProcessIdentity
 			stdio: ["ignore", fd, fd],
 			windowsHide: true,
 		});
+		const c = child;
 		await new Promise<void>((resolve, reject) => {
-			child.once("spawn", () => resolve());
-			child.once("error", (err) => reject(err));
+			c.once("spawn", () => resolve());
+			c.once("error", (err: Error) => reject(err));
 		});
 	} catch (err) {
 		logLine(spec.log_path, { event: "launch_failed", agent_id: spec.agent_id, error: String((err as Error).message ?? err) });

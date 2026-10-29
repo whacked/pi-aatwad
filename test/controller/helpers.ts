@@ -131,11 +131,11 @@ export async function harness(opts: Partial<ControllerOptions> = {}, dir = short
 	return hs;
 }
 
-export async function waitFor<T>(fn: () => T | Promise<T>, what = "condition", timeoutMs = 5000): Promise<T> {
+export async function waitFor<T>(fn: () => T | Promise<T>, what = "condition", timeoutMs = 5000): Promise<NonNullable<T>> {
 	const end = Date.now() + timeoutMs;
 	for (;;) {
 		const v = await fn();
-		if (v) return v;
+		if (v) return v as NonNullable<T>;
 		if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
 		await new Promise((r) => setTimeout(r, 20));
 	}
@@ -159,14 +159,14 @@ export async function ownTask(hs: Harness, token: string, ownerId: string, title
 	return r.body.task_id;
 }
 
-export function proposal(taskId: string, roles: { title?: string; count?: number; max_cost_usd?: number; preferred_model_id?: string; capabilities?: string[] }[]) {
+export function proposal(taskId: string, roles: { title?: string; count?: number; max_cost_usd?: number; preferred_model_id?: string; capabilities?: string[]; max_runtime_seconds?: number }[]) {
 	return {
 		version: 1,
 		task_id: taskId,
 		reason: "Work is larger than one agent can finish before the deadline.",
 		alternatives: "Do it serially.",
 		estimated_cost_usd: roles.reduce((s, r) => s + (r.max_cost_usd ?? 1) * (r.count ?? 1), 0),
-		roles: roles.map((r) => ({ title: r.title ?? "worker", responsibility: "do the work", count: r.count ?? 1, capabilities: r.capabilities ?? ["coding"], max_cost_usd: r.max_cost_usd ?? 1, ...(r.preferred_model_id ? { preferred_model_id: r.preferred_model_id } : {}) })),
+		roles: roles.map((r) => ({ title: r.title ?? "worker", responsibility: "do the work", count: r.count ?? 1, capabilities: r.capabilities ?? ["coding"], max_cost_usd: r.max_cost_usd ?? 1, ...(r.preferred_model_id ? { preferred_model_id: r.preferred_model_id } : {}), ...(r.max_runtime_seconds ? { max_runtime_seconds: r.max_runtime_seconds } : {}) })),
 	};
 }
 

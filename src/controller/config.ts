@@ -1,6 +1,6 @@
 // Run configuration defaults, envelopes, and deterministic model resolution.
 import { isAbsolute } from "node:path";
-import type { Envelope_Limits, ExpansionRole, GlobalLimits, ModelCatalogEntry, RunConfig } from "../shared/protocol.ts";
+import { DEFAULT_PROVIDER, LEADER_MODEL_ID, type Envelope_Limits, type ExpansionRole, type GlobalLimits, type ModelCatalogEntry, type RunConfig } from "../shared/protocol.ts";
 import { fail } from "./errors.ts";
 
 /** From recursive-agent-org-v1.2/examples/config.example.yaml */
@@ -14,10 +14,7 @@ export const DEFAULT_LIMITS: GlobalLimits = {
 	allow_providers: ["anthropic", "openrouter", "local"],
 };
 
-/** Catalog id of the auto-added entry that mirrors the root's own provider/model ("same model as leader"). */
-export const LEADER_MODEL_ID = "leader";
-/** Used when /team init does not report a provider/model; the executor should then omit --provider/--model. */
-export const DEFAULT_PROVIDER = "default";
+export { DEFAULT_PROVIDER, LEADER_MODEL_ID };
 
 export function defaultRootEnvelope(l: GlobalLimits): Envelope_Limits {
 	// Generous but strictly inside global caps (root itself occupies one live slot).
@@ -65,12 +62,14 @@ export function buildRunConfig(partial: Partial<RunConfig> | undefined, root: Ro
 	if (root_envelope.max_subtree_usd > limits.max_run_usd) root_envelope.max_subtree_usd = limits.max_run_usd;
 	const workspace_root = p.workspace_root ?? root.cwd;
 	if (!isAbsolute(workspace_root)) fail("INVALID", "workspace_root must be absolute");
+	const deadline_policy = p.deadline_policy ?? "BLOCKED";
+	if (deadline_policy !== "BLOCKED" && deadline_policy !== "FAILED") fail("INVALID", "deadline_policy must be BLOCKED or FAILED");
 	const root_failure_policy = p.root_failure_policy ?? "continue";
 	if (root_failure_policy !== "continue" && root_failure_policy !== "pause_subtree") fail("INVALID", "invalid root_failure_policy");
 	for (const k of ["max_live_agents", "max_pending_spawns", "emergency_max_depth", "max_run_usd"] as const) {
 		if (typeof limits[k] !== "number" || limits[k] < 0) fail("INVALID", `limits.${k} must be a non-negative number`);
 	}
-	return { limits, models, root_envelope, root_failure_policy, workspace_root };
+	return { limits, models, root_envelope, root_failure_policy, workspace_root, deadline_policy };
 }
 
 function normalizeModel(m: Partial<ModelCatalogEntry>): ModelCatalogEntry {

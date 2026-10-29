@@ -86,6 +86,8 @@ export class Reconciler {
 		tx(db, () => releaseExpiredClaims(db));
 		this.publishOutbox();
 		await this.recoverUncertain(false);
+		await this.enforceDeadlines();
+		await this.observeExits();
 		this.expireLeases();
 		await this.scheduleRestarts();
 		const pending = all(db, "SELECT id FROM spawn_intents WHERE status = 'PENDING' ORDER BY created_at, role_index, ordinal");
@@ -157,6 +159,7 @@ export class Reconciler {
 				bootstrap_prompt: bootstrapPrompt(a, parent, spec),
 				resume: s.generation > 1 || it.attempts > 0,
 			};
+			if (launchSpec.resume) launchSpec.resume_prompt = resumePrompt(a, spec);
 			const file: EnrollmentFile = { version: 1, socket_path: ctx.paths.socket, run_id: a.run_id, agent_id: a.id, spawn_intent_id: intentId, token: secret, expires_at: expires };
 			return { launchSpec, file, sessionId: s.session_id, runId: a.run_id as string, workspaceRoot: cfg.workspace_root as string };
 		});
@@ -177,6 +180,7 @@ export class Reconciler {
 			}
 			if (this.stopped && !this.isLeader()) return;
 			tx(db, () => {
+				run(db, "UPDATE agents SET cwd = ? WHERE id = ?", launchSpec.cwd, launchSpec.agent_id);
 				run(db, "UPDATE sessions SET pid = ?, process_started_at = ?, launch_token = ?, process_marker = ? WHERE id = ?", ident.pid, ident.process_started_at, ident.launch_token, JSON.stringify({ pid: ident.pid, started: ident.process_started_at }), sessionId);
 				const n = run(db, "UPDATE spawn_intents SET status = 'LAUNCHED', updated_at = ? WHERE id = ? AND status = 'LAUNCHING' AND session_id = ?", nowIso(), intentId, sessionId);
 				emit(db, { run_id: runId, actor_id: "controller", type: "spawn.launched", entity_id: launchSpec.agent_id, payload: { spawn_intent_id: intentId, session_id: sessionId, pid: ident.pid, already_enrolled: n === 0 } });
@@ -300,6 +304,8 @@ export class Reconciler {
 			 WHERE a.desired_state = 'RUNNING' AND a.status NOT IN ${TERMINAL_SQL} AND a.observed_state IN ('LOST','STOPPED') AND i.status = 'LIVE'`,
 		);
 		for (const a of rows) {
+			// One-shot workers exit after their prompt settles (observed STOPPED). Relaunch only when work is waiting.
+			if (a.observed_state === "STOPPED" && !hasPendingWork(db, a.id)) continue;
 			if (a.pid != null) {
 				const alive = (await this.executor.probe({ pid: a.pid, process_started_at: a.process_started_at ?? "" })) === "alive";
 				if (alive) {
@@ -323,6 +329,86 @@ export class Reconciler {
 				run(db, "UPDATE sessions SET status = 'FAILED', ended_at = ? WHERE id = ? AND status IN ('LOST','LIVE')", nowIso(), a.current_session_id);
 				run(db, "UPDATE spawn_intents SET status = 'PENDING', attempts = 0, updated_at = ? WHERE id = ? AND status = 'LIVE'", nowIso(), a.intent_id);
 				emit(db, { run_id: a.run_id, actor_id: "controller", type: "agent.restart_scheduled", entity_id: a.id, payload: { previous_session_id: a.current_session_id, restart_attempt: cur.restart_attempts + 1 } });
+			});
+		}
+	}
+
+	/**
+	 * Runtime deadlines for managed agents (desired RUNNING):
+	 *  - session: current attempt running longer than envelope.max_session_seconds
+	 *  - runtime: since the agent's first session start, longer than its role/proposal max_runtime_seconds
+	 * On expiry: stop the process (after commit), apply run deadline_policy to open tasks
+	 * (BLOCKED → agent PAUSED, resumable; FAILED → agent FAILED, reservations released), notify the manager, emit an event.
+	 */
+	async enforceDeadlines(): Promise<void> {
+		const db = this.ctx.db;
+		const now = Date.now();
+		const rows = all(
+			db,
+			`SELECT a.id, a.run_id, a.metadata_json, a.observed_state, a.current_session_id, al.limits_json, s.pid, s.process_started_at, s.started_at AS session_started,
+			        (SELECT MIN(x.started_at) FROM sessions x WHERE x.agent_id = a.id) AS first_started
+			 FROM agents a JOIN allocations al ON al.agent_id = a.id JOIN spawn_intents i ON i.agent_id = a.id LEFT JOIN sessions s ON s.id = a.current_session_id
+			 WHERE a.desired_state = 'RUNNING' AND a.status NOT IN ${TERMINAL_SQL}`,
+		);
+		for (const r of rows) {
+			const sessionLimit = Number(parseJson<{ max_session_seconds?: number }>(r.limits_json, {}).max_session_seconds ?? 0);
+			const meta = parseJson<{ max_runtime_seconds?: number | null; runtime_epoch?: string }>(r.metadata_json, {});
+			const runtimeLimit = Number(meta.max_runtime_seconds ?? 0);
+			// An explicit resume restarts the runtime clock (runtime_epoch set by lifecycle resume).
+			const runtimeStart = [r.first_started, meta.runtime_epoch].filter(Boolean).sort().pop() as string | undefined;
+			const running = ["STARTING", "LIVE", "LOST"].includes(r.observed_state);
+			let kind: "session" | "runtime" | null = null;
+			let limit = 0;
+			let elapsed = 0;
+			if (runtimeLimit > 0 && runtimeStart && (elapsed = (now - Date.parse(runtimeStart)) / 1000) > runtimeLimit) {
+				kind = "runtime";
+				limit = runtimeLimit;
+			} else if (running && sessionLimit > 0 && r.session_started && (elapsed = (now - Date.parse(r.session_started)) / 1000) > sessionLimit) {
+				kind = "session";
+				limit = sessionLimit;
+			}
+			if (!kind) continue;
+			const stopIdent = running && r.pid != null ? { pid: r.pid as number, process_started_at: (r.process_started_at ?? "") as string } : null;
+			const stopNeeded = tx(db, () => {
+				const cur = getAgent(db, r.id);
+				if (cur.desired_state !== "RUNNING" || isTerminal(cur.status) || cur.current_session_id !== r.current_session_id) return false;
+				const policy = runConfig(db, r.run_id).deadline_policy ?? "BLOCKED";
+				const ts = nowIso();
+				const tasks = all(db, "SELECT id FROM tasks WHERE owner_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS')", r.id).map((t) => t.id as string);
+				const reason = `${kind} deadline exceeded (${Math.round(elapsed)}s > ${limit}s)`;
+				for (const t of tasks) run(db, "UPDATE tasks SET status = ?, result_json = ?, updated_at = ? WHERE id = ?", policy, JSON.stringify({ summary: reason }), ts, t);
+				emit(db, { run_id: r.run_id, actor_id: "controller", type: "agent.deadline_exceeded", entity_id: r.id, payload: { kind, limit_seconds: limit, elapsed_seconds: Math.round(elapsed), policy, tasks, session_id: r.current_session_id } });
+				const mgr = getAncestry(db, r.id)[0];
+				if (mgr) postMessage(db, { run_id: r.run_id, from: r.id, to: mgr, type: "system.notice", payload: { kind: "deadline_exceeded", agent_id: r.id, deadline: kind, limit_seconds: limit, policy, tasks } });
+				if (policy === "FAILED") {
+					terminateAgent(this.ctx, null, r.id, "FAILED", "controller", reason); // revokes, stops (async), releases reservations
+					return false;
+				}
+				run(db, "UPDATE agents SET desired_state = 'PAUSED', status = 'PAUSED', observed_state = CASE WHEN observed_state IN ('STARTING','LIVE','LOST') THEN 'STOPPED' ELSE observed_state END, lease_until = NULL WHERE id = ?", r.id);
+				run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE id = ? AND status IN ('REQUESTED','STARTING','LIVE','LOST')", ts, r.current_session_id);
+				run(db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'deadline exceeded' WHERE session_id = ? AND revoked_at IS NULL", ts, r.current_session_id);
+				return true;
+			});
+			if (stopNeeded && stopIdent) await this.executor.stop(stopIdent).catch((e) => this.ctx.log("warn", "deadline stop failed", { agent_id: r.id, err: String(e) }));
+		}
+	}
+
+	/**
+	 * LIVE managed sessions whose process is gone ended normally (one-shot `pi -p` exits once settled):
+	 * observed STOPPED, session STOPPED, its token fenced. scheduleRestarts relaunches if work is pending.
+	 * (A stale heartbeat while the process is still alive is handled by expireLeases → LOST.)
+	 */
+	async observeExits(): Promise<void> {
+		const db = this.ctx.db;
+		const rows = all(db, `SELECT a.id, a.run_id, a.current_session_id, s.pid, s.process_started_at FROM agents a JOIN sessions s ON s.id = a.current_session_id WHERE a.observed_state = 'LIVE' AND s.pid IS NOT NULL AND a.status NOT IN ${TERMINAL_SQL}`);
+		for (const r of rows) {
+			if ((await this.executor.probe({ pid: r.pid, process_started_at: r.process_started_at ?? "" })) === "alive") continue;
+			tx(db, () => {
+				const n = run(db, "UPDATE agents SET observed_state = 'STOPPED', lease_until = NULL WHERE id = ? AND current_session_id = ? AND observed_state = 'LIVE'", r.id, r.current_session_id);
+				if (!n) return;
+				run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE id = ? AND status IN ('LIVE','LOST')", nowIso(), r.current_session_id);
+				run(db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'process exited' WHERE session_id = ? AND revoked_at IS NULL", nowIso(), r.current_session_id);
+				emit(db, { run_id: r.run_id, actor_id: "controller", type: "agent.exited", entity_id: r.id, payload: { session_id: r.current_session_id, pid: r.pid } });
 			});
 		}
 	}
@@ -355,6 +441,24 @@ function safeUnlink(p: string): void {
 	} catch {
 		/* already consumed */
 	}
+}
+
+/** Unacked inbox deliveries or open tasks → a stopped one-shot worker should run again. */
+export function hasPendingWork(db: Ctx["db"], agentId: string): boolean {
+	return !!(
+		get(db, "SELECT 1 FROM deliveries WHERE recipient_id = ? AND status <> 'ACKED' LIMIT 1", agentId) ??
+		get(db, "SELECT 1 FROM tasks WHERE owner_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS') LIMIT 1", agentId)
+	);
+}
+
+function resumePrompt(a: Row, spec: { task_id?: string }): string {
+	return [
+		`You are agent ${a.id} ("${a.role}") resuming in a new session; your identity, manager and tasks are unchanged.`,
+		"Refresh your org context, process your inbox (team_get_inbox, ack after handling) and continue your open tasks.",
+		spec.task_id ? `Original task id: ${spec.task_id}.` : "",
+	]
+		.filter(Boolean)
+		.join("\n");
 }
 
 function bootstrapPrompt(a: Row, parentId: string | null, spec: { task_id?: string; responsibility?: string }): string {

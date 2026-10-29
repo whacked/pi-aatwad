@@ -32,8 +32,44 @@ export type ErrorCode =
 	| "STALE_SESSION" // fenced session attempt
 	| "INTERNAL";
 
+/**
+ * HTTP status per error code. Clients should branch on `error.code`, not on the status
+ * (several codes share 401 / 409).
+ */
+export const ERROR_HTTP_STATUS: Record<ErrorCode, number> = {
+	PROTOCOL_MISMATCH: 426,
+	UNAUTHENTICATED: 401,
+	STALE_SESSION: 401,
+	FORBIDDEN: 403,
+	NOT_FOUND: 404,
+	INVALID: 400,
+	CONFLICT: 409,
+	IDEMPOTENCY_MISMATCH: 409,
+	BUDGET_EXCEEDED: 409,
+	HARD_CAP: 409,
+	INTERNAL: 500,
+};
+
+/** Well-known fields of ApiError.error.details (all optional; other fields may appear). */
+export interface ApiErrorDetails {
+	/** FORBIDDEN (per-decision grant exceeded) / BUDGET_EXCEEDED at the reviewer: escalating may help. */
+	hint?: "ESCALATE";
+	/** CONFLICT on a decision by a stale reviewer: the proposal was returned (PENDING) to this reviewer. */
+	new_reviewer_id?: string;
+	/** HARD_CAP: violated global caps; the proposal is already REJECTED (audited). */
+	violations?: string[];
+	proposal_status?: ProposalStatus;
+	/** BUDGET_EXCEEDED: the ancestor whose subtree envelope would be exceeded. */
+	agent_id?: string;
+	max_grant_slots?: number;
+	max_grant_usd?: number;
+	/** INVALID (schema): individual validation messages. */
+	errors?: string[];
+	[k: string]: unknown;
+}
+
 export interface ApiError {
-	error: { code: ErrorCode; message: string; details?: unknown };
+	error: { code: ErrorCode; message: string; details?: ApiErrorDetails | unknown };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +219,20 @@ export interface Envelope_Limits {
 	allowed_capabilities: string[]; // empty = any
 }
 
+/**
+ * Model catalog conventions:
+ *  - The controller always adds an entry with id LEADER_MODEL_ID mirroring the root's own provider/model
+ *    ("same model as leader"), and adds that provider to limits.allow_providers.
+ *  - If /team init reported no provider/model, both are DEFAULT_PROVIDER ("default"): the executor must then
+ *    omit --provider/--model and let Pi use its configured default.
+ *  - Null costs rank as 0 (selection) and the choice is flagged `cost_estimated` in agent metadata.
+ */
+export const LEADER_MODEL_ID = "leader";
+export const DEFAULT_PROVIDER = "default";
+
+/** What happens to an agent whose runtime deadline expires (see RunConfig.deadline_policy). */
+export type DeadlinePolicy = "BLOCKED" | "FAILED";
+
 export interface RunConfig {
 	limits: GlobalLimits;
 	models: ModelCatalogEntry[];
@@ -190,6 +240,12 @@ export interface RunConfig {
 	/** What happens to descendants when the root session is lost. */
 	root_failure_policy: "continue" | "pause_subtree";
 	workspace_root: string; // absolute; workers get dirs/worktrees under <workspace_root>/.team-worktrees/
+	/**
+	 * Runtime deadline handling (envelope.max_session_seconds per session attempt; role/proposal
+	 * max_runtime_seconds across all attempts). Default "BLOCKED": process stopped, open tasks BLOCKED,
+	 * agent PAUSED (resumable). "FAILED": process stopped, open tasks FAILED, agent FAILED, reservations released.
+	 */
+	deadline_policy?: DeadlinePolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +278,10 @@ export interface CreateRunResponse {
 	envelope: Envelope_Limits;
 }
 
-/** GET /runs (operator) */
+/** GET /runs (operator) -> RunListResponse */
+export interface RunListResponse {
+	runs: RunSummary[];
+}
 export interface RunSummary {
 	run_id: string;
 	status: RunStatus;
@@ -347,7 +406,37 @@ export interface DelegateTaskResponse {
 	task_id: string;
 	message_id: string;
 }
-/** POST /tasks/:id/progress  { note } ; POST /tasks/:id/complete { summary, artifacts?: {kind, uri, sha256?}[] , status?: "DONE"|"FAILED"|"BLOCKED" } */
+/** POST /tasks/:id/progress (agent; task owner). Sends task.progress to the owner's manager. */
+export interface TaskProgressRequest {
+	note: string;
+}
+export interface TaskProgressResponse {
+	task_id: string;
+	status: "IN_PROGRESS";
+	message_id: string | null; // null when the owner has no manager (root)
+}
+/** Artifact reference. File paths (relative or file:) must stay inside the run's workspace_root; other URI schemes (git:, https:) pass. */
+export interface ArtifactRef {
+	kind: string;
+	uri: string;
+	sha256?: string;
+}
+/** POST /tasks/:id/complete (agent; task owner). Sends task.completed to the owner's manager. */
+export interface TaskCompleteRequest {
+	summary: string;
+	artifacts?: ArtifactRef[];
+	status?: "DONE" | "FAILED" | "BLOCKED";
+}
+export interface TaskCompleteResponse {
+	task_id: string;
+	status: "DONE" | "FAILED" | "BLOCKED";
+	message_id: string | null;
+	artifact_ids: string[];
+}
+/** POST /messages/:id/ack (agent; recipient). Duplicate acks are harmless. */
+export interface AckResponse {
+	acked: true;
+}
 
 /** POST /expansions (agent). Body is ExpansionProposal minus requester_id/run_id (taken from actor). */
 export type CreateExpansionRequest = Omit<ExpansionProposal, "requester_id" | "run_id">;
@@ -374,7 +463,13 @@ export interface DecisionResponse {
 	reviewer_id: string | null; // next reviewer when ESCALATED
 }
 
-/** GET /proposals?scope=review|mine (agent) */
+/**
+ * GET /proposals?scope=review|mine (agent) -> ProposalListResponse.
+ * Operator: scope=all (default, optional run_id=) or scope=review (proposals escalated past the root, reviewer_id null).
+ */
+export interface ProposalListResponse {
+	proposals: ProposalView[];
+}
 export interface ProposalView {
 	proposal_id: string;
 	requester_id: string;
@@ -433,7 +528,12 @@ export interface ModelsResponse {
 	models: (ModelCatalogEntry & { eligible: boolean; ineligible_reason?: string })[];
 }
 
-/** GET /events?run_id=&after=&limit= (scoped read) */
+/** GET /events?run_id=&after=&limit= (scoped read; agents: own run only) -> EventsResponse */
+export interface EventsResponse {
+	events: EventView[];
+	/** Pass as `after` to continue. */
+	next_after: number;
+}
 export interface EventView {
 	seq: number;
 	id: string;
@@ -462,4 +562,30 @@ export interface RecoveryStatus {
 	unacked_deliveries: number;
 }
 
-/** POST /controller/shutdown (operator) { force?: boolean } -> { stopping: true } */
+/** POST /controller/shutdown (operator) { force?: boolean } -> ShutdownResponse */
+export interface ShutdownResponse {
+	stopping: true;
+}
+
+/**
+ * POST /sessions/usage (agent): report provider usage for the caller's own allocation.
+ * When consumed_usd reaches the agent's own reservation, the agent is paused (desired PAUSED) and
+ * a budget.exhausted event is recorded.
+ */
+export interface UsageReportRequest {
+	cost_usd: number;
+	input_tokens?: number;
+	output_tokens?: number;
+	model?: string;
+}
+export interface UsageReportResponse {
+	consumed_usd: number;
+	budget_exhausted: boolean;
+}
+
+/**
+ * Idempotency notes: every POST needs idempotency-key. Same key + same body replays the stored
+ * response (POST /sessions/heartbeat is not stored). Responses carrying a bearer `token`
+ * (POST /runs, /runs/:id/attach, /enroll) are stored redacted; a replay mints a fresh token for the
+ * same session and revokes the previous one.
+ */

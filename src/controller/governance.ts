@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { type DB, type Row, all, get, run, newId, nowIso, emit, parseJson } from "./db.ts";
 import { ApiErr, CommittedError, fail } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
-import type { CreateExpansionResponse, DecisionResponse, ExpansionProposal, ExpansionRole, ProposalView, ProposalStatus } from "../shared/protocol.ts";
+import type { CreateExpansionResponse, DecisionResponse, ExpansionProposal, ExpansionRole, ProposalListResponse, ProposalView, ProposalStatus } from "../shared/protocol.ts";
 import { assertSchema, obj, str, oneOf, onlyKeys, int } from "./validate.ts";
 import { getAgent, getAllocation, getAncestry, getCurrentManager, getRun, isTerminal, runConfig, TERMINAL_SQL } from "./queries.ts";
 import { childEnvelope, resolveModel, type ModelChoice } from "./config.ts";
@@ -218,8 +218,9 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 		const choice = choices[i];
 		for (let j = 0; j < role.count; j++) {
 			const agentId = newId("agent");
-			const meta = { proposal_id: prop.id, responsibility: role.responsibility, capabilities: role.capabilities, requested_model_id: role.preferred_model_id ?? null, model_id: choice.entry.id, model_selection_reason: choice.reason, model_candidates: choice.candidates, cost_estimated: choice.cost_estimated };
-			const cwd = join(cfg.workspace_root, ".team-worktrees", agentId);
+			const runtime = role.max_runtime_seconds ?? request.max_runtime_seconds ?? null;
+			const meta = { max_runtime_seconds: runtime, proposal_id: prop.id, responsibility: role.responsibility, capabilities: role.capabilities, requested_model_id: role.preferred_model_id ?? null, model_id: choice.entry.id, model_selection_reason: choice.reason, model_candidates: choice.candidates, cost_estimated: choice.cost_estimated };
+			const cwd = null; // prepared by the reconciler (prepareWorkspace) outside the transaction
 			const piSession = join(ctx.paths.dir, "sessions", `${agentId}.jsonl`);
 			run(
 				db,
@@ -237,7 +238,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 				piSession,
 			);
 			run(db, "INSERT INTO reporting_edges(id, run_id, parent_id, child_id, valid_from, from_version, reason) VALUES (?,?,?,?,?,?,?)", newId("edge"), runId, requester, agentId, ts, v, `approved ${prop.id}`);
-			run(db, "INSERT INTO allocations(agent_id, limits_json) VALUES (?,?)", agentId, JSON.stringify(childEnvelope(role, reqEnv, cfg.limits)));
+			run(db, "INSERT INTO allocations(agent_id, limits_json) VALUES (?,?)", agentId, JSON.stringify(childEnvelope({ ...role, max_runtime_seconds: runtime ?? undefined }, reqEnv, cfg.limits)));
 			reserveAtAncestors(db, runId, agentId, chain, 1, role.max_cost_usd, prop.id);
 			const taskId = createTask(db, { run_id: runId, owner_id: agentId, title: role.title, spec: { responsibility: role.responsibility, proposal_id: prop.id }, parent_task_id: prop.task_id, assigned_by: requester });
 			const intentId = newId("spawn");
@@ -281,7 +282,7 @@ export function proposalView(db: DB, r: Row): ProposalView {
 	};
 }
 
-export function listProposals(ctx: Ctx, p: Principal, q: URLSearchParams): { proposals: ProposalView[] } {
+export function listProposals(ctx: Ctx, p: Principal, q: URLSearchParams): ProposalListResponse {
 	const scope = q.get("scope") ?? (p.kind === "operator" ? "all" : "review");
 	const open = "status IN ('PENDING','UNDER_REVIEW','ESCALATED')";
 	let rows: Row[];

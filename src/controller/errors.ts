@@ -1,18 +1,4 @@
-import type { ErrorCode, ApiError } from "../shared/protocol.ts";
-
-const STATUS: Record<ErrorCode, number> = {
-	PROTOCOL_MISMATCH: 426,
-	UNAUTHENTICATED: 401,
-	STALE_SESSION: 401,
-	FORBIDDEN: 403,
-	NOT_FOUND: 404,
-	INVALID: 400,
-	CONFLICT: 409,
-	IDEMPOTENCY_MISMATCH: 409,
-	BUDGET_EXCEEDED: 409,
-	HARD_CAP: 409,
-	INTERNAL: 500,
-};
+import { ERROR_HTTP_STATUS as STATUS, type ErrorCode, type ApiError } from "../shared/protocol.ts";
 
 export class ApiErr extends Error {
 	code: ErrorCode;

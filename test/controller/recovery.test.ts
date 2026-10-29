@@ -144,32 +144,64 @@ test("enrollment credential: mismatched, single-use, expired are rejected; file 
 	}
 });
 
-test("heartbeat lease expiry → LOST → restart as new session of same agent; old token fenced", async () => {
+test("stale heartbeat with live process → LOST → (after hung grace) stopped and restarted as a new session; old token fenced", async () => {
 	const hs = await harness({ tunables: { leaseMs: 150, hungMs: 100 } });
 	try {
-		const { root, token } = await newRun(hs);
+		const { run_id, root, token } = await newRun(hs);
 		const [a] = await recruit(hs, token, token, await ownTask(hs, token, root), [{}]);
 		const oldTok = hs.ex.tokens.get(a)!;
 		const pid1 = hs.ex.launchesFor(a)[0].id.pid;
-		hs.ex.alive.delete(pid1); // worker died silently
+		// Process stays alive but stops heartbeating.
+		await waitFor(() => sql(hs, "SELECT COUNT(*) n FROM events WHERE type = 'agent.lost' AND entity_id = ?", a)[0].n === 1, "LOST");
 		await waitFor(() => hs.ex.launchesFor(a).length === 2 && hs.ex.tokens.get(a) !== oldTok, "restart", 5000);
+		assert.ok(hs.ex.stopped.includes(pid1), "hung process stopped before relaunch (no duplicate)");
 		assert.equal(sql(hs, "SELECT COUNT(*) n FROM agents")[0].n, 2);
-		assert.equal(hs.ex.launchesFor(a)[1].spec.resume, true);
+		const l2 = hs.ex.launchesFor(a)[1].spec;
+		assert.equal(l2.resume, true);
+		assert.ok(l2.resume_prompt);
+		assert.equal(l2.pi_session_path, hs.ex.launchesFor(a)[0].spec.pi_session_path);
 		assert.equal((await hs.call("GET", "/me", { token: oldTok })).body.error.code, "STALE_SESSION");
-		const newTok = hs.ex.tokens.get(a)!;
-		assert.equal((await hs.call("POST", "/sessions/heartbeat", { token: newTok, body: {} })).status, 200);
-		const types = sql(hs, "SELECT type FROM events WHERE entity_id = ? ORDER BY seq", a).map((r) => r.type);
-		assert.ok(types.includes("agent.lost") && types.includes("agent.restart_scheduled"));
-		assert.deepEqual(
-			sql(hs, "SELECT generation FROM sessions WHERE agent_id = ? ORDER BY generation", a).map((r) => r.generation),
-			[1, 2],
-		);
-		// Root is never auto-restarted; it just becomes LOST and comes back on heartbeat/attach.
+		assert.equal((await hs.call("POST", "/sessions/heartbeat", { token: hs.ex.tokens.get(a)!, body: {} })).status, 200);
+		assert.ok(sql(hs, "SELECT COUNT(*) n FROM events WHERE type = 'agent.restart_scheduled' AND entity_id = ?", a)[0].n >= 1);
+		assert.deepEqual(sql(hs, "SELECT generation FROM sessions WHERE agent_id = ? ORDER BY generation", a).map((r) => r.generation).slice(0, 2), [1, 2]);
+		// Root is never auto-restarted; it becomes LOST and comes back via explicit attach.
 		await waitFor(() => sql(hs, "SELECT observed_state s FROM agents WHERE id = ?", root)[0].s === "LOST", "root LOST");
-		const at = await hs.call("POST", `/runs/${sql(hs, "SELECT run_id FROM agents WHERE id = ?", root)[0].run_id}/attach`, { token: hs.op, body: {} });
+		const at = await hs.call("POST", `/runs/${run_id}/attach`, { token: hs.op, body: {} });
 		assert.equal(at.body.agent_id, root);
 		assert.equal((await hs.call("GET", "/me", { token })).body.error.code, "STALE_SESSION");
 		assert.equal((await hs.call("GET", "/me", { token: at.body.token })).status, 200);
+	} finally {
+		await hs.cleanup();
+	}
+});
+
+test("one-shot worker exit is STOPPED (not LOST); relaunched with resume only when work is pending", async () => {
+	const hs = await harness();
+	try {
+		const { root, token } = await newRun(hs);
+		const [a] = await recruit(hs, token, token, await ownTask(hs, token, root), [{}]);
+		const tokA = hs.ex.tokens.get(a)!;
+		// Worker drains its inbox and completes its task, then its process exits.
+		for (const m of (await hs.call("GET", "/inbox", { token: tokA })).body.messages) await hs.call("POST", `/messages/${m.message_id}/ack`, { token: tokA });
+		const task = (await hs.call("GET", "/me", { token: tokA })).body.tasks[0].task_id;
+		assert.equal((await hs.call("POST", `/tasks/${task}/complete`, { token: tokA, body: { summary: "done" } })).status, 200);
+		hs.ex.alive.delete(hs.ex.launchesFor(a)[0].id.pid);
+		await waitFor(() => sql(hs, "SELECT observed_state s FROM agents WHERE id = ?", a)[0].s === "STOPPED", "STOPPED");
+		assert.equal(sql(hs, "SELECT status FROM agents WHERE id = ?", a)[0].status, "RUNNING", "agent keeps its position");
+		assert.equal(sql(hs, "SELECT status FROM sessions WHERE agent_id = ?", a)[0].status, "STOPPED");
+		await new Promise((r) => setTimeout(r, 200));
+		await hs.h.reconciler.idle();
+		assert.equal(hs.ex.launchesFor(a).length, 1, "no pending work → no relaunch");
+		assert.equal(sql(hs, "SELECT COUNT(*) n FROM events WHERE type = 'agent.lost' AND entity_id = ?", a)[0].n, 0);
+		// New work arrives → relaunched as same agent, new session, resume=true; old token fenced.
+		await hs.call("POST", "/tasks", { token, body: { owner_id: a, title: "follow-up" } });
+		await waitFor(() => hs.ex.launchesFor(a).length === 2 && hs.ex.tokens.get(a) !== tokA, "relaunch on new work");
+		const l2 = hs.ex.launchesFor(a)[1].spec;
+		assert.equal(l2.resume, true);
+		assert.equal(l2.agent_id, a);
+		assert.equal(l2.cwd, hs.ex.launchesFor(a)[0].spec.cwd);
+		assert.equal((await hs.call("GET", "/me", { token: tokA })).body.error.code, "STALE_SESSION");
+		assert.equal(sql(hs, "SELECT COUNT(*) n FROM agents")[0].n, 2);
 	} finally {
 		await hs.cleanup();
 	}
