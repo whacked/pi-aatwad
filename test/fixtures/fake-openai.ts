@@ -40,13 +40,13 @@ function text(content: unknown): string {
 	return "";
 }
 
-export async function startFakeOpenAI(respond?: (req: FakeRequest, index: number) => FakeReply): Promise<FakeOpenAI> {
+export async function startFakeOpenAI(respond?: (req: FakeRequest, index: number) => FakeReply | Promise<FakeReply>): Promise<FakeOpenAI> {
 	const requests: FakeRequest[] = [];
 	let callSeq = 0;
 	const server = createServer((req, res) => {
 		let body = "";
 		req.on("data", (c) => (body += c));
-		req.on("end", () => {
+		req.on("end", async () => {
 			let j: any = {};
 			try {
 				j = JSON.parse(body);
@@ -64,7 +64,7 @@ export async function startFakeOpenAI(respond?: (req: FakeRequest, index: number
 			requests.push(r);
 			let reply: FakeReply = { text: "ACK" };
 			try {
-				if (respond) reply = respond(r, requests.length - 1);
+				if (respond) reply = await respond(r, requests.length - 1); // may hold the request open
 			} catch (e) {
 				reply = { text: `fake responder error: ${(e as Error).message}` };
 			}

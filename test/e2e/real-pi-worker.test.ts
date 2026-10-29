@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { statePaths } from "../../src/shared/paths.ts";
 import { TeamClient, ensureController, readOperatorToken } from "../../src/shared/client.ts";
 import type { Envelope, EventView } from "../../src/shared/protocol.ts";
-import { stopIdentity } from "../../src/executor/proc.ts";
+import { probeIdentity, stopIdentity } from "../../src/executor/proc.ts";
 import { startFakeOpenAI } from "../fixtures/fake-openai.ts";
 import type { FakeOpenAI, FakeReply, FakeRequest } from "../fixtures/fake-openai.ts";
 
@@ -71,6 +71,18 @@ function respond(req: FakeRequest): FakeReply {
 	return { text: "Done." };
 }
 
+/** When armed, the next model request is held open until `release()` (simulates a slow LLM turn). */
+let hold: { arrived: () => void; released: Promise<void> } | null = null;
+async function respondMaybeHeld(req: FakeRequest): Promise<FakeReply> {
+	const h = hold;
+	if (h) {
+		hold = null;
+		h.arrived();
+		await h.released;
+	}
+	return respond(req);
+}
+
 let fake: FakeOpenAI;
 let agentDir = "";
 let stateDir = "";
@@ -89,7 +101,7 @@ function q<T = Record<string, any>>(sql: string, ...args: (string | number)[]): 
 
 before(async () => {
 	if (skip) return;
-	fake = await startFakeOpenAI(respond);
+	fake = await startFakeOpenAI(respondMaybeHeld);
 	agentDir = realpathSync(mkdtempSync(join(tmpdir(), "pt-rpa-")));
 	writeFileSync(
 		join(agentDir, "models.json"),
@@ -250,5 +262,123 @@ test("real pi worker: enroll, tool call recorded, one-shot exit, resume on new m
 		const t = readFileSync(f, "utf8");
 		assert.doesNotMatch(t, TOKEN_RE, `token-like secret in ${f}`);
 		assert.ok(!t.includes(opToken) && !t.includes(rootToken));
+	}
+});
+
+test("controller SIGKILLed mid-run: worker reconnects to the restarted controller; no second controller, no default state dir", { skip, timeout: 120_000 }, async () => {
+	// Own state dir + a temp HOME / XDG_STATE_HOME, so a stray "default" state dir would be visible here.
+	const sdir = realpathSync(mkdtempSync(join(tmpdir(), "ptk-")));
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "pt-home-")));
+	const xdg = join(home, "xdg-state");
+	const defaultDirs = [join(home, "Library", "Application Support", "pi-recursive-team"), join(xdg, "pi-recursive-team"), join(home, ".local", "state", "pi-recursive-team")];
+	const p = statePaths(sdir);
+	const env = { PI_TEAM_EXECUTOR: "pi", PI_TEAM_PI_BIN: piBin, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", HOME: home, XDG_STATE_HOME: xdg };
+	const q2 = <T = Record<string, any>>(sql: string, ...args: (string | number)[]): T[] => {
+		const db = new DatabaseSync(p.db, { readOnly: true });
+		try {
+			return db.prepare(sql).all(...args) as T[];
+		} finally {
+			db.close();
+		}
+	};
+	const controllerPids: number[] = [];
+	let op = "";
+	try {
+		const h0 = (await ensureController(p, { env, readyTimeoutMs: 15_000 })).health;
+		controllerPids.push(h0.pid);
+		op = await readOperatorToken(p);
+		let rootToken = "";
+		const client = new TeamClient({ paths: p, token: () => rootToken, noReconnect: true });
+		const run = await client.createRun(
+			{
+				config: {
+					workspace_root: workspace,
+					limits: { allow_providers: ["fakeoai"] } as never,
+					models: [{ id: "fake", provider: "fakeoai", model: "fake-1", capability_tags: ["general"], tool_support: true, cost_per_m_input_usd: 0, cost_per_m_output_usd: 0, availability: "available" }],
+				},
+				root: { role: "Root", cwd: workspace, provider: "fakeoai", model: "fake-1" },
+			},
+			{ token: op },
+		);
+		rootToken = run.token;
+		rootId = run.root_agent_id;
+
+		// Arm the hold BEFORE the worker exists: its first model turn will block mid-run.
+		let arrived!: () => void;
+		let release!: () => void;
+		const arrivedP = new Promise<void>((r) => (arrived = r));
+		hold = { arrived, released: new Promise<void>((r) => (release = r)) };
+
+		const own = await client.delegateTask({ owner_id: rootId, title: "Crash-tolerant check" });
+		const prop = await client.requestExpansion({
+			version: 1,
+			task_id: own.task_id,
+			reason: "lead for crash test",
+			alternatives: "none",
+			estimated_cost_usd: 0.1,
+			roles: [{ title: "Lead", responsibility: "complete the task across a controller crash", count: 1, capabilities: [], preferred_model_id: "fake", max_cost_usd: 0.1 }],
+		});
+		const lead = (await client.decideExpansion(prop.proposal_id, { decision: "APPROVE", reason: "go" })).spawned_agent_ids[0];
+		const leadTask = q2("SELECT id FROM tasks WHERE owner_id = ?", lead)[0].id as string;
+
+		await waitUntil("worker's model turn in flight", () => arrivedP.then(() => true), 60_000);
+		const sess = q2<{ pid: number; process_started_at: string; enrolled_at: string | null }>("SELECT pid, process_started_at, enrolled_at FROM sessions WHERE agent_id = ?", lead);
+		assert.equal(sess.length, 1);
+		assert.ok(sess[0].enrolled_at, "worker enrolled before the crash");
+
+		// Crash the controller mid-run, then let the model emit its tool call into the dead socket.
+		process.kill(h0.pid, "SIGKILL");
+		await waitUntil("controller dead", () => {
+			try {
+				process.kill(h0.pid, 0);
+				return false;
+			} catch {
+				return true;
+			}
+		}, 5_000);
+		release();
+		await sleep(1500); // team_complete_task hits ECONNREFUSED and backs off (client reconnect: "retry")
+		assert.ok((await probeIdentity(sess[0])) === "alive", "worker survived the controller crash");
+		const h1 = (await ensureController(p, { env, readyTimeoutMs: 15_000 })).health;
+		controllerPids.push(h1.pid);
+		assert.notEqual(h1.pid, h0.pid);
+		assert.ok(h1.fencing_epoch > h0.fencing_epoch);
+
+		// The worker's retried tool call lands on the new controller; the worker then exits normally.
+		await waitUntil("task DONE via the restarted controller", () => q2("SELECT status FROM tasks WHERE id = ?", leadTask)[0].status === "DONE", 30_000);
+		assert.equal(JSON.parse(q2("SELECT result_json FROM tasks WHERE id = ?", leadTask)[0].result_json).summary, SUMMARY);
+		await waitUntil("worker exited", async () => (await probeIdentity(sess[0])) === "dead", 30_000);
+		const inbox = (await client.inbox(50)).messages;
+		assert.ok(inbox.some((m) => m.type === "task.completed" && m.from === lead), "root got task.completed");
+		assert.equal(q2("SELECT COUNT(*) AS n FROM sessions WHERE agent_id = ?", lead)[0].n, 1, "same worker process/session finished the job (no relaunch)");
+		const done = q2("SELECT e.payload_json FROM events e WHERE e.type = 'task.completed' AND e.entity_id = ?", leadTask);
+		assert.equal(done.length, 1, "completion recorded exactly once");
+
+		// No second controller and no default state dir: the worker never tried to start one.
+		for (const d of defaultDirs) assert.ok(!existsSync(d), `no default state dir created: ${d}`);
+		assert.equal(JSON.parse(readFileSync(p.controllerInfo, "utf8")).pid, h1.pid);
+		const alive = controllerPids.filter((pid) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+		assert.deepEqual(alive, [h1.pid], "exactly one controller alive");
+		const workerLog = readFileSync(join(p.workerLogs, `${lead}.1.log`), "utf8");
+		assert.doesNotMatch(workerLog, TOKEN_RE);
+	} finally {
+		hold = null;
+		if (op) await new TeamClient({ paths: p, noReconnect: true }).shutdown(true, { token: op }).catch(() => {});
+		await sleep(300);
+		if (existsSync(p.db)) for (const s of q2<{ pid: number; process_started_at: string }>("SELECT pid, process_started_at FROM sessions WHERE pid IS NOT NULL")) await stopIdentity(s, 1000);
+		for (const pid of controllerPids) {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {}
+		}
+		rmSync(sdir, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
 	}
 });
