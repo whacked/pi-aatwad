@@ -10,7 +10,7 @@ import { ackMessage, completeTask, delegateTask, readInbox, sendMessage, taskPro
 import { createExpansion, decide, listProposals } from "./governance.ts";
 import { lifecycle, reparent } from "./topology.ts";
 import { attach, budget, createRun, enroll, events, heartbeat, inspect, listRuns, me, models, reportUsage, tree } from "./runs.ts";
-import { getRecoveryStatus } from "./queries.ts";
+import { getRecoveryStatus, isTerminal } from "./queries.ts";
 
 type Auth = "none" | "any" | "operator" | "agent";
 type Handler = (a: { p: Principal; scope: ReqScope; params: string[]; body: unknown; q: URLSearchParams }) => unknown;
@@ -147,6 +147,15 @@ async function handle(ctx: Ctx, deps: ServerDeps, table: Route[], req: IncomingM
 		const scope: ReqScope = { after: (fn) => afters.push(fn), idemKey };
 		const r = route;
 		const result = tx(ctx.db, () => {
+			if (method === "POST") {
+				// Fencing: never mutate unless we still hold the DB lease at our epoch.
+				const lease = get(ctx.db, "SELECT controller_id, fencing_epoch FROM controller_lease WHERE singleton_key = 'local'");
+				if (!lease || lease.controller_id !== ctx.controllerId || Number(lease.fencing_epoch) !== ctx.epoch()) {
+					ctx.log("error", "fenced: lease held by another controller; shutting down", { holder: lease?.controller_id });
+					setImmediate(deps.shutdown);
+					fail("INTERNAL", "controller has been fenced by a newer instance; retry against the current controller");
+				}
+			}
 			let p: Principal = OPERATOR;
 			if (r.auth !== "none") {
 				p = resolvePrincipal(ctx.db, deps.operatorToken, req.headers.authorization);
@@ -208,8 +217,14 @@ async function handle(ctx: Ctx, deps: ServerDeps, table: Route[], req: IncomingM
 
 /** Replay of a token-bearing response: mint a fresh token for the same (still current) session. */
 function reissue(ctx: Ctx, sessionId: string): string {
-	const s = get(ctx.db, "SELECT s.*, a.run_id, a.current_session_id FROM sessions s JOIN agents a ON a.id = s.agent_id WHERE s.id = ?", sessionId);
+	const s = get(ctx.db, "SELECT s.*, a.run_id, a.current_session_id, a.status AS agent_status FROM sessions s JOIN agents a ON a.id = s.agent_id WHERE s.id = ?", sessionId);
+	// Only a still-valid session may get a replacement token: agent not terminal, session is the
+	// current attempt and still LIVE/STARTING, and the token it handed out has not been revoked
+	// (terminate / process exit / deadline / fencing revoke it).
 	if (!s || s.current_session_id !== sessionId) fail("STALE_SESSION", "the session from the original request has been superseded");
+	if (isTerminal(s.agent_status)) fail("STALE_SESSION", `agent is ${s.agent_status}`);
+	if (!["LIVE", "STARTING"].includes(s.status)) fail("STALE_SESSION", `session is ${s.status}`);
+	if (!get(ctx.db, "SELECT 1 FROM auth_tokens WHERE session_id = ? AND revoked_at IS NULL", sessionId)) fail("STALE_SESSION", "session token has been revoked");
 	run(ctx.db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'reissued' WHERE session_id = ? AND revoked_at IS NULL", nowIso(), sessionId);
 	return issueSessionToken(ctx.db, { run_id: s.run_id, agent_id: s.agent_id, session_id: sessionId, generation: s.generation });
 }

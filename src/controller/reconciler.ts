@@ -178,7 +178,7 @@ export class Reconciler {
 				this.onLaunchFailure(intentId, sessionId, runId, launchSpec.enroll_file, String((e as Error)?.message ?? e));
 				return;
 			}
-			if (this.stopped && !this.isLeader()) return;
+			if (this.stopped || !this.isLeader()) return;
 			tx(db, () => {
 				run(db, "UPDATE agents SET cwd = ? WHERE id = ?", launchSpec.cwd, launchSpec.agent_id);
 				run(db, "UPDATE sessions SET pid = ?, process_started_at = ?, launch_token = ?, process_marker = ? WHERE id = ?", ident.pid, ident.process_started_at, ident.launch_token, JSON.stringify({ pid: ident.pid, started: ident.process_started_at }), sessionId);
@@ -346,8 +346,8 @@ export class Reconciler {
 		const rows = all(
 			db,
 			`SELECT a.id, a.run_id, a.metadata_json, a.observed_state, a.current_session_id, al.limits_json, s.pid, s.process_started_at, s.started_at AS session_started,
-			        (SELECT MIN(x.started_at) FROM sessions x WHERE x.agent_id = a.id) AS first_started
-			 FROM agents a JOIN allocations al ON al.agent_id = a.id JOIN spawn_intents i ON i.agent_id = a.id LEFT JOIN sessions s ON s.id = a.current_session_id
+			        (SELECT MIN(x.started_at) FROM sessions x WHERE x.agent_id = a.id) AS first_started, ru.created_at AS run_created
+			 FROM agents a JOIN runs ru ON ru.id = a.run_id JOIN allocations al ON al.agent_id = a.id JOIN spawn_intents i ON i.agent_id = a.id LEFT JOIN sessions s ON s.id = a.current_session_id
 			 WHERE a.desired_state = 'RUNNING' AND a.status NOT IN ${TERMINAL_SQL}`,
 		);
 		for (const r of rows) {
@@ -357,10 +357,15 @@ export class Reconciler {
 			// An explicit resume restarts the runtime clock (runtime_epoch set by lifecycle resume).
 			const runtimeStart = [r.first_started, meta.runtime_epoch].filter(Boolean).sort().pop() as string | undefined;
 			const running = ["STARTING", "LIVE", "LOST"].includes(r.observed_state);
-			let kind: "session" | "runtime" | null = null;
+			const runLimit = Number(runConfig(db, r.run_id).limits.max_run_seconds ?? 0);
+			let kind: "run" | "session" | "runtime" | null = null;
 			let limit = 0;
 			let elapsed = 0;
-			if (runtimeLimit > 0 && runtimeStart && (elapsed = (now - Date.parse(runtimeStart)) / 1000) > runtimeLimit) {
+			if (runLimit > 0 && r.run_created && (elapsed = (now - Date.parse(r.run_created)) / 1000) > runLimit) {
+				// Run wallclock (limits.max_run_seconds) applies to every managed (non-root) agent of the run.
+				kind = "run";
+				limit = runLimit;
+			} else if (runtimeLimit > 0 && runtimeStart && (elapsed = (now - Date.parse(runtimeStart)) / 1000) > runtimeLimit) {
 				kind = "runtime";
 				limit = runtimeLimit;
 			} else if (running && sessionLimit > 0 && r.session_started && (elapsed = (now - Date.parse(r.session_started)) / 1000) > sessionLimit) {
@@ -377,6 +382,9 @@ export class Reconciler {
 				const tasks = all(db, "SELECT id FROM tasks WHERE owner_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS')", r.id).map((t) => t.id as string);
 				const reason = `${kind} deadline exceeded (${Math.round(elapsed)}s > ${limit}s)`;
 				for (const t of tasks) run(db, "UPDATE tasks SET status = ?, result_json = ?, updated_at = ? WHERE id = ?", policy, JSON.stringify({ summary: reason }), ts, t);
+				if (kind === "run" && !get(db, "SELECT 1 FROM events WHERE run_id = ? AND type = 'run.wallclock_exceeded'", r.run_id)) {
+					emit(db, { run_id: r.run_id, actor_id: "controller", type: "run.wallclock_exceeded", entity_id: r.run_id, payload: { max_run_seconds: limit, elapsed_seconds: Math.round(elapsed), policy } });
+				}
 				emit(db, { run_id: r.run_id, actor_id: "controller", type: "agent.deadline_exceeded", entity_id: r.id, payload: { kind, limit_seconds: limit, elapsed_seconds: Math.round(elapsed), policy, tasks, session_id: r.current_session_id } });
 				const mgr = getAncestry(db, r.id)[0];
 				if (mgr) postMessage(db, { run_id: r.run_id, from: r.id, to: mgr, type: "system.notice", payload: { kind: "deadline_exceeded", agent_id: r.id, deadline: kind, limit_seconds: limit, policy, tasks } });

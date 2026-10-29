@@ -135,7 +135,7 @@ test("lifecycle: children policy required; cascade cancel revokes tokens, stops 
 		assert.equal(sql(hs, "SELECT COUNT(*) n FROM tasks WHERE owner_id = ? AND status = 'CANCELLED'", o.e)[0].n, 1);
 		// Retire with transfer_children_to.
 		const [x] = await recruit(hs, tok(hs, o.lead1), hs.op, await firstTask(hs, o.lead1), [{ title: "x", max_cost_usd: 0.5 }]);
-		const rt = await hs.call("POST", `/agents/${o.lead1}/lifecycle`, { token: o.rootTok, body: { action: "retire", reason: "reorg", children_policy: "transfer_children_to", transfer_children_to: o.lead2 } });
+		const rt = await hs.call("POST", `/agents/${o.lead1}/lifecycle`, { token: o.rootTok, body: { action: "retire", reason: "reorg", children_policy: "transfer_children_to", transfer_children_to: o.lead2, expected_topology_version: tv(hs, o.run_id) } });
 		assert.equal(rt.status, 200, JSON.stringify(rt.body));
 		assert.equal(sql(hs, "SELECT parent_id FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", x)[0].parent_id, o.lead2);
 		assert.equal(sql(hs, "SELECT status FROM agents WHERE id = ?", o.lead1)[0].status, "RETIRED");

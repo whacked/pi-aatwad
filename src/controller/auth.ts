@@ -53,9 +53,10 @@ export function resolvePrincipal(db: DB, operatorToken: string, authorization: s
 	if (!m) fail("UNAUTHENTICATED", "missing bearer token");
 	const token = m[1];
 	if (safeEq(token, operatorToken)) return { kind: "operator", actor_id: "operator" };
-	const row = get(db, "SELECT t.*, a.current_session_id FROM auth_tokens t JOIN agents a ON a.id = t.agent_id WHERE t.token_hash = ?", hashToken(token));
+	const row = get(db, "SELECT t.*, a.current_session_id, a.status AS agent_status FROM auth_tokens t JOIN agents a ON a.id = t.agent_id WHERE t.token_hash = ?", hashToken(token));
 	if (!row) fail("UNAUTHENTICATED", "unknown token");
 	if (row.revoked_at) fail("STALE_SESSION", `session token revoked (${row.revoke_reason ?? "revoked"})`);
 	if (row.current_session_id !== row.session_id) fail("STALE_SESSION", "session attempt has been superseded");
+	if (["COMPLETED", "FAILED", "CANCELLED", "RETIRED"].includes(row.agent_status)) fail("STALE_SESSION", `agent is ${row.agent_status}`);
 	return { kind: "agent", actor_id: row.agent_id, run_id: row.run_id, session_id: row.session_id, generation: row.generation };
 }

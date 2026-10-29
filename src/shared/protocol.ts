@@ -443,7 +443,8 @@ export type CreateExpansionRequest = Omit<ExpansionProposal, "requester_id" | "r
 export interface CreateExpansionResponse {
 	proposal_id: string;
 	status: ProposalStatus;
-	reviewer_id: string;
+	/** Nearest non-terminal manager (the root reviews its own); null = operator review (no live manager). */
+	reviewer_id: string | null;
 }
 
 /** POST /expansions/:id/decision (agent = current reviewer). */
@@ -503,6 +504,8 @@ export interface LifecycleRequest {
 	reason: string;
 	children_policy?: ChildrenPolicy;
 	transfer_children_to?: string;
+	/** Required when transfer_children_to actually moves children (optimistic topology check; CONFLICT if stale). */
+	expected_topology_version?: number;
 }
 export interface LifecycleResponse {
 	agent_id: string;
@@ -517,6 +520,8 @@ export interface BudgetView {
 	limits: Envelope_Limits;
 	reserved_slots: number;
 	reserved_usd: number;
+	/** Actual spend of terminated descendants, still charged to this subtree (bounded by max_subtree_usd with reserved_usd). Optional for older controllers. */
+	settled_usd?: number;
 	consumed_usd: number;
 	subtree_live_agents: number;
 	available_slots: number;

@@ -1,7 +1,8 @@
 // Reservations and allocation projections.
 // Model: every non-root agent b holds one ACTIVE reservation row at EACH of its current ancestors
 // (slots = 1, usd = b's own budget). An ancestor's allocation.reserved_* is the sum of ACTIVE rows
-// where it is the ancestor; its envelope (max_subtree_slots/usd) bounds that sum.
+// where it is the ancestor. Terminated descendants leave slot-less CONSUMED rows (their actual spend),
+// reported as settled_usd. max_subtree_slots bounds reserved_slots; max_subtree_usd bounds reserved_usd + settled_usd.
 import { type DB, all, get, run, newId, nowIso, emit } from "./db.ts";
 import { fail } from "./errors.ts";
 import { getAllocation, getAncestry, getSubtree, TERMINAL_SQL } from "./queries.ts";
@@ -16,8 +17,21 @@ export function reserveAtAncestors(db: DB, runId: string, beneficiary: string, a
 	}
 }
 
+/**
+ * Terminal settlement: the slot and the UNCONSUMED part of the budget return to every ancestor.
+ * What the agent actually consumed stays charged to each ancestor as a slot-less CONSUMED row,
+ * so retire-and-re-recruit cannot spend the same subtree money twice.
+ */
 export function releaseReservations(db: DB, beneficiary: string): void {
-	run(db, "UPDATE reservations SET state = 'RELEASED', released_at = ? WHERE beneficiary_id = ? AND state = 'ACTIVE'", nowIso(), beneficiary);
+	const rows = all(db, "SELECT * FROM reservations WHERE beneficiary_id = ? AND state = 'ACTIVE'", beneficiary);
+	if (!rows.length) return;
+	const ts = nowIso();
+	run(db, "UPDATE reservations SET state = 'RELEASED', released_at = ? WHERE beneficiary_id = ? AND state = 'ACTIVE'", ts, beneficiary);
+	const consumed = Number(get(db, "SELECT consumed_usd FROM allocations WHERE agent_id = ?", beneficiary)?.consumed_usd ?? 0);
+	if (consumed <= 0) return;
+	for (const r of rows) {
+		run(db, "INSERT INTO reservations(id, run_id, beneficiary_id, ancestor_id, slots, usd, state, proposal_id, created_at) VALUES (?,?,?,?,0,?, 'CONSUMED', ?, ?)", newId("rsv"), r.run_id, beneficiary, r.ancestor_id, consumed, r.proposal_id, ts);
+	}
 }
 
 /** After topology changes: re-point reservations of `beneficiaries` to their current ancestor chains. Returns ancestors whose load increased. */
@@ -52,8 +66,8 @@ export function recomputeAllocations(db: DB, runId: string): void {
 export function assertWithinEnvelopes(db: DB, agents: Iterable<string>, hint?: string): void {
 	for (const a of agents) {
 		const al = getAllocation(db, a);
-		if (al.reserved_slots > al.limits.max_subtree_slots || al.reserved_usd > al.limits.max_subtree_usd + EPS) {
-			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} would be exceeded`, { agent_id: a, reserved_slots: al.reserved_slots, max_subtree_slots: al.limits.max_subtree_slots, reserved_usd: al.reserved_usd, max_subtree_usd: al.limits.max_subtree_usd, hint });
+		if (al.reserved_slots > al.limits.max_subtree_slots || al.committed_usd > al.limits.max_subtree_usd + EPS) {
+			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} would be exceeded`, { agent_id: a, reserved_slots: al.reserved_slots, max_subtree_slots: al.limits.max_subtree_slots, reserved_usd: al.reserved_usd, settled_usd: al.settled_usd, max_subtree_usd: al.limits.max_subtree_usd, hint });
 		}
 	}
 }
@@ -66,7 +80,7 @@ export function setLimits(db: DB, agentId: string, limits: Envelope_Limits): voi
 export function raiseEnvelopeFor(db: DB, runId: string, actor: string, agentId: string, addSlots: number, addUsd: number, proposalId: string): void {
 	const al = getAllocation(db, agentId);
 	const needSlots = al.reserved_slots + addSlots;
-	const needUsd = al.reserved_usd + addUsd;
+	const needUsd = al.committed_usd + addUsd;
 	const lim = { ...al.limits };
 	let changed = false;
 	if (needSlots > lim.max_subtree_slots) {
@@ -100,9 +114,10 @@ export function budgetView(db: DB, agentId: string): BudgetView {
 		limits: al.limits,
 		reserved_slots: al.reserved_slots,
 		reserved_usd: al.reserved_usd,
+		settled_usd: al.settled_usd,
 		consumed_usd: al.consumed_usd,
 		subtree_live_agents: live,
 		available_slots: Math.max(0, al.limits.max_subtree_slots - al.reserved_slots),
-		available_usd: Math.max(0, Math.round((al.limits.max_subtree_usd - al.reserved_usd) * 1e6) / 1e6),
+		available_usd: Math.max(0, Math.round((al.limits.max_subtree_usd - al.committed_usd) * 1e6) / 1e6),
 	};
 }

@@ -20,10 +20,29 @@ export function getAgent(db: DB, agentId: string): Row {
 	if (!a) fail("NOT_FOUND", `agent ${agentId} not found`);
 	return a;
 }
-export function getAllocation(db: DB, agentId: string): { limits: Envelope_Limits; reserved_slots: number; reserved_usd: number; consumed_usd: number } {
-	const r = get(db, "SELECT * FROM allocations WHERE agent_id = ?", agentId);
+export interface AllocationView {
+	limits: Envelope_Limits;
+	reserved_slots: number;
+	/** Active reservations of live descendants. */
+	reserved_usd: number;
+	/** Spend actually consumed by terminated descendants: stays charged to this subtree. */
+	settled_usd: number;
+	/** reserved_usd + settled_usd: what max_subtree_usd bounds. */
+	committed_usd: number;
+	consumed_usd: number;
+}
+export function getAllocation(db: DB, agentId: string): AllocationView {
+	const r = get(db, "SELECT a.*, (SELECT COALESCE(SUM(usd),0) FROM reservations x WHERE x.ancestor_id = a.agent_id AND x.state = 'CONSUMED') AS settled FROM allocations a WHERE a.agent_id = ?", agentId);
 	if (!r) fail("NOT_FOUND", `allocation for ${agentId} not found`);
-	return { limits: parseJson<Envelope_Limits>(r.limits_json, null as unknown as Envelope_Limits), reserved_slots: r.reserved_slots, reserved_usd: r.reserved_usd, consumed_usd: r.consumed_usd };
+	const settled = Number(r.settled);
+	return {
+		limits: parseJson<Envelope_Limits>(r.limits_json, null as unknown as Envelope_Limits),
+		reserved_slots: r.reserved_slots,
+		reserved_usd: r.reserved_usd,
+		settled_usd: settled,
+		committed_usd: Number(r.reserved_usd) + settled,
+		consumed_usd: r.consumed_usd,
+	};
 }
 
 function edgeFilter(atVersion?: number): { sql: string; params: unknown[] } {

@@ -12,9 +12,34 @@ import { createTask, postMessage, requireAgent } from "./messaging.ts";
 
 const OPEN_STATUSES: ProposalStatus[] = ["PENDING", "UNDER_REVIEW", "ESCALATED"];
 
-/** Reviewer for a fresh/amended proposal: requester's current manager, or the root itself. */
-function defaultReviewer(db: DB, requester: string): string {
-	return getCurrentManager(db, requester) ?? requester;
+/** Nearest non-terminal strict ancestor; null if none (→ operator). */
+function liveManager(db: DB, agentId: string): string | null {
+	for (const a of getAncestry(db, agentId)) if (!isTerminal(getAgent(db, a).status)) return a;
+	return null;
+}
+
+/** Reviewer for a fresh/amended proposal: nearest live manager; the root reviews its own; null → operator. */
+export function defaultReviewer(db: DB, requester: string): string | null {
+	if (getAncestry(db, requester).length === 0) return requester; // root
+	return liveManager(db, requester);
+}
+
+/**
+ * Run spend for max_run_usd: everything already consumed in the run (incl. root and terminated agents)
+ * plus the unconsumed remainder of every active reservation (one row per beneficiary at the root).
+ */
+export function runSpendUsd(db: DB, runId: string, rootId: string): number {
+	const consumed = Number(get(db, "SELECT COALESCE(SUM(al.consumed_usd),0) AS s FROM allocations al JOIN agents a ON a.id = al.agent_id WHERE a.run_id = ?", runId)!.s);
+	const open = Number(
+		get(
+			db,
+			`SELECT COALESCE(SUM(MAX(r.usd - al.consumed_usd, 0)),0) AS s FROM reservations r JOIN allocations al ON al.agent_id = r.beneficiary_id
+			 WHERE r.run_id = ? AND r.ancestor_id = ? AND r.state = 'ACTIVE'`,
+			runId,
+			rootId,
+		)!.s,
+	);
+	return consumed + open;
 }
 
 function providerChain(db: DB, agentId: string): string[][] {
@@ -52,7 +77,7 @@ export function createExpansion(ctx: Ctx, p: Principal, body: unknown): CreateEx
 	const ts = nowIso();
 	run(db, "INSERT INTO proposals(id, run_id, requester_id, reviewer_id, original_reviewer_id, task_id, revision, status, request_json, created_at, updated_at) VALUES (?,?,?,?,?,?,1,'PENDING',?,?,?)", id, a.run_id, a.actor_id, reviewer, reviewer, full.task_id, JSON.stringify(full), ts, ts);
 	run(db, "INSERT INTO proposal_revisions(proposal_id, revision, request_json, author_id, created_at) VALUES (?,1,?,?,?)", id, JSON.stringify(full), a.actor_id, ts);
-	if (reviewer !== a.actor_id) {
+	if (reviewer && reviewer !== a.actor_id) {
 		postMessage(db, { run_id: a.run_id, from: a.actor_id, to: reviewer, type: "team.expand.request", payload: { proposal_id: id, reason: full.reason, roles: full.roles, estimated_cost_usd: full.estimated_cost_usd }, correlation_id: id });
 	}
 	emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "proposal.created", entity_id: id, payload: { reviewer_id: reviewer, request: full } });
@@ -84,6 +109,7 @@ export function decide(ctx: Ctx, p: Principal, proposalId: string, body: unknown
 	if (expectedVersion !== undefined && expectedVersion !== runRow.topology_version) fail("CONFLICT", `stale topology version ${expectedVersion} (current ${runRow.topology_version})`);
 	const requester = getAgent(db, prop.requester_id);
 	if (isTerminal(requester.status)) fail("CONFLICT", `requester is ${requester.status}`);
+	if (p.kind === "agent" && isTerminal(getAgent(db, p.actor_id).status)) fail("FORBIDDEN", "a terminated agent cannot review proposals");
 
 	const actor = p.actor_id;
 	const decidedBy = p.kind === "operator" ? runRow.root_agent_id : actor; // FK-safe attribution
@@ -99,7 +125,7 @@ export function decide(ctx: Ctx, p: Principal, proposalId: string, body: unknown
 			const fresh = defaultReviewer(db, prop.requester_id);
 			run(db, "UPDATE proposals SET reviewer_id = ?, status = 'PENDING', updated_at = ? WHERE id = ?", fresh, nowIso(), proposalId);
 			emit(db, { run_id: prop.run_id, actor_id: actor, type: "proposal.rerouted", entity_id: proposalId, payload: { stale_reviewer: actor, new_reviewer: fresh, reason: "reviewer no longer in requester's management chain" } });
-			if (fresh !== prop.requester_id) postMessage(db, { run_id: prop.run_id, from: prop.requester_id, to: fresh, type: "team.expand.request", payload: { proposal_id: proposalId, rerouted: true }, correlation_id: proposalId });
+			if (fresh && fresh !== prop.requester_id) postMessage(db, { run_id: prop.run_id, from: prop.requester_id, to: fresh, type: "team.expand.request", payload: { proposal_id: proposalId, rerouted: true }, correlation_id: proposalId });
 			return new CommittedError(new ApiErr("CONFLICT", "stale reviewer: topology changed; proposal returned for fresh review", { new_reviewer_id: fresh }));
 		}
 	}
@@ -136,7 +162,7 @@ export function decide(ctx: Ctx, p: Principal, proposalId: string, body: unknown
 
 	if (decision === "ESCALATE") {
 		if (p.kind === "operator") fail("CONFLICT", "operator is the final authority; nothing to escalate to");
-		const next = getCurrentManager(db, actor); // null => operator
+		const next = liveManager(db, actor); // null => operator
 		run(db, "UPDATE proposals SET status = 'ESCALATED', reviewer_id = ?, updated_at = ? WHERE id = ?", next, ts, proposalId);
 		recordDecision(db, proposalId, decidedBy, "ESCALATE", reason, prop.revision);
 		if (next) postMessage(db, { run_id: prop.run_id, from: actor, to: next, type: "team.expand.request", payload: { proposal_id: proposalId, escalated_by: actor, reason }, correlation_id: proposalId });
@@ -165,12 +191,14 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const pending = Number(get(db, "SELECT COUNT(*) AS n FROM spawn_intents i JOIN agents a ON a.id = i.agent_id WHERE a.run_id = ? AND i.status IN ('PENDING','LAUNCHING','LAUNCHED')", runId)!.n);
 	const chain = [requester, ...getAncestry(db, requester)];
 	const depth = chain.length; // depth of the new child (root = 0)
-	const rootReserved = getAllocation(db, runRow.root_agent_id).reserved_usd;
+	const runSpend = runSpendUsd(db, runId, runRow.root_agent_id);
 	const violations: string[] = [];
 	if (live + n > L.max_live_agents) violations.push(`max_live_agents ${L.max_live_agents} (live ${live} + requested ${n})`);
 	if (pending + n > L.max_pending_spawns) violations.push(`max_pending_spawns ${L.max_pending_spawns} (pending ${pending} + requested ${n})`);
+	const runAgeS = (Date.now() - Date.parse(runRow.created_at)) / 1000;
+	if (L.max_run_seconds > 0 && runAgeS > L.max_run_seconds) violations.push(`max_run_seconds ${L.max_run_seconds} (run age ${Math.round(runAgeS)}s)`);
 	if (depth > L.emergency_max_depth) violations.push(`emergency_max_depth ${L.emergency_max_depth} (new depth ${depth})`);
-	if (rootReserved + usd > L.max_run_usd + 1e-9) violations.push(`max_run_usd ${L.max_run_usd} (reserved ${rootReserved} + requested ${usd})`);
+	if (runSpend + usd > L.max_run_usd + 1e-9) violations.push(`max_run_usd ${L.max_run_usd} (consumed+reserved ${Math.round(runSpend * 1e6) / 1e6} + requested ${usd})`);
 	for (const c of choices) if (!L.allow_providers.includes(c.entry.provider)) violations.push(`provider ${c.entry.provider} not in allow_providers`);
 	if (violations.length) {
 		const ts = nowIso();
@@ -196,12 +224,13 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const checked = chain.slice(reviewerIdx);
 	for (const a of checked) {
 		const al = getAllocation(db, a);
-		if (al.reserved_slots + n > al.limits.max_subtree_slots || al.reserved_usd + usd > al.limits.max_subtree_usd + 1e-9) {
+		if (al.reserved_slots + n > al.limits.max_subtree_slots || al.committed_usd + usd > al.limits.max_subtree_usd + 1e-9) {
 			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} cannot absorb ${n} slots / $${usd}`, {
 				agent_id: a,
 				reserved_slots: al.reserved_slots,
 				max_subtree_slots: al.limits.max_subtree_slots,
 				reserved_usd: al.reserved_usd,
+				settled_usd: al.settled_usd,
 				max_subtree_usd: al.limits.max_subtree_usd,
 				hint: a === actor ? "ESCALATE" : undefined,
 			});
