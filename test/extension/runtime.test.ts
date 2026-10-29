@@ -1,13 +1,17 @@
 // TeamRuntime against a mock controller, with a fake Pi API/context (no Pi process needed).
-import { test, describe } from "node:test";
+import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { TeamRuntime, IDENTITY_ENTRY, INBOX_MESSAGE, NOT_ENROLLED, MAX_SETTLE_CONTINUATIONS } from "../../src/extension/runtime.ts";
+import { TeamRuntime, __resetProcessStateForTests, IDENTITY_ENTRY, INBOX_MESSAGE, NOT_ENROLLED, MAX_SETTLE_CONTINUATIONS, MANAGED_NO_STATE_DIR } from "../../src/extension/runtime.ts";
 import { ENV_ENROLL_FILE } from "../../src/shared/protocol.ts";
 import type { EnrollmentFile, Envelope, OrgContext } from "../../src/shared/protocol.ts";
 import { formatOrgContext, MAX_CONTEXT_CHARS } from "../../src/extension/format.ts";
-import { makeState, startMock, waitFor } from "./helpers.ts";
+import { makeState, startMock, waitFor, sleep } from "./helpers.ts";
+import { spawnCount } from "../../src/shared/client.ts";
+import { readdirSync } from "node:fs";
+
+beforeEach(() => __resetProcessStateForTests());
 
 let counter = 0;
 function fakePi() {
@@ -298,6 +302,84 @@ describe("TeamRuntime inbox + enrollment guards", () => {
 			rt.stop();
 			await m.close();
 			cleanup();
+		}
+	});
+});
+
+describe("managed worker never touches the state dir (review finding 7)", () => {
+	test("socket only from the enrollment file; no statePaths/operator.token/ensureController; outages retried with backoff", async () => {
+		// Decoy interactive state dir: has an operator token and its own (live) controller socket.
+		const decoy = makeState();
+		const decoyMock = await startMock(decoy.paths, { operatorToken: "OPERATOR-SECRET" });
+		// The controller that launched the worker lives elsewhere; only the enrollment file says where.
+		const real = makeState();
+		let m = await startMock(real.paths);
+		const routes = (mm: typeof m) => {
+			mm.route("POST", "/enroll", () => ({ body: { run_id: "run1", agent_id: "ag-w", session_id: "s", token: "w-tok", parent_id: "ag-root", task_id: null } }));
+			mm.route("GET", "/me", () => ({ body: me({ agent_id: "ag-w" }) }));
+			mm.route("POST", "/sessions/heartbeat", () => ({ body: { lease_until: "x", inbox_pending: 0, desired_state: "RUNNING" } }));
+		};
+		routes(m);
+		const file = join(real.paths.enrollDir, "w.json");
+		writeFileSync(file, JSON.stringify({ version: 1, socket_path: real.paths.socket, run_id: "run1", agent_id: "ag-w", spawn_intent_id: "si", token: "x", expires_at: "" }));
+		const pi = fakePi();
+		const rt = new TeamRuntime(pi as any, {
+			paths: decoy.paths, // must be IGNORED in managed mode
+			env: { [ENV_ENROLL_FILE]: file },
+			heartbeatMs: 60_000,
+			retryDelaysMs: [30, 30, 30, 30, 30, 30],
+			ensure: { entry: "/nonexistent/should-never-spawn.ts" },
+		});
+		const spawnsBefore = spawnCount();
+		try {
+			assert.throws(() => rt.paths, new RegExp(MANAGED_NO_STATE_DIR.slice(0, 30)), "no paths before enrollment");
+			await rt.start(fakeCtx(pi, "pis-w"));
+			assert.equal(rt.identity?.agent_id, "ag-w");
+			assert.equal(rt.paths.socket, real.paths.socket);
+			for (const k of ["dir", "db", "lock", "operatorToken", "log", "enrollDir", "workerLogs", "controllerInfo"] as const) assert.equal(rt.paths[k], "", k);
+			await assert.rejects(rt.ensure(), /never use the team state dir/);
+			await assert.rejects(rt.operatorToken(), /never use the team state dir/);
+			assert.equal(await rt.commandToken(), "w-tok", "commands use the agent token, never the operator token");
+			await assert.rejects(rt.attach("run1", "ag-root"), /managed workers cannot attach/);
+
+			// Controller outage: no ensureController/spawn; backoff retries reach it once it is back.
+			await m.close();
+			const call = rt.agentCall((o) => rt.client.me(o));
+			await sleep(70);
+			m = await startMock(real.paths);
+			routes(m);
+			assert.equal((await call).agent_id, "ag-w");
+			// Outage that outlasts the backoff: clear error, still no spawn.
+			await m.close();
+			await assert.rejects(rt.agentCall((o) => rt.client.me(o)), /controller unreachable/);
+
+			assert.equal(spawnCount(), spawnsBefore, "a managed worker never spawns a controller");
+			assert.equal(decoyMock.requests.length, 0, "decoy state-dir controller never contacted");
+			assert.deepEqual(readdirSync(decoy.paths.dir).sort(), ["c.sock", "enroll", "operator.token", "workers"], "decoy state dir unchanged");
+		} finally {
+			rt.stop();
+			await m.close().catch(() => {});
+			await decoyMock.close();
+			decoy.cleanup();
+			real.cleanup();
+		}
+	});
+
+	test("enrollment file without an absolute socket_path is refused (never falls back to the state dir)", async () => {
+		const st = makeState();
+		const file = join(st.paths.enrollDir, "nosock.json");
+		writeFileSync(file, JSON.stringify({ version: 1, run_id: "run1", agent_id: "ag-x", spawn_intent_id: "si", token: "x", expires_at: "" }));
+		const pi = fakePi();
+		const ctx = fakeCtx(pi, "pis-nosock");
+		const rt = new TeamRuntime(pi as any, { paths: st.paths, env: { [ENV_ENROLL_FILE]: file } });
+		try {
+			await rt.start(ctx);
+			assert.equal(rt.identity, undefined);
+			assert.ok(ctx.notes.some((n: any) => /no absolute socket_path/.test(n.text)));
+			assert.throws(() => rt.paths, /never use the team state dir/);
+		} finally {
+			rt.stop();
+			st.cleanup();
 		}
 	});
 });

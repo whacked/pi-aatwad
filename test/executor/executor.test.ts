@@ -63,6 +63,7 @@ test("buildWorkerEnv passes only the allowlist + team contract", () => {
 		PI_SESSION_FILE: "/parent/session.jsonl",
 		PI_SESSION_ID: "parent",
 		PI_TEAM_ENROLL_FILE: "/parent/enroll",
+		PI_TEAM_STATE_DIR: "/parent/state",
 		PI_TEAM_EXECUTOR: "/x.ts",
 		PI_TEAM_FAKE_SCRIPT: "/s.json",
 	});
@@ -73,7 +74,7 @@ test("buildWorkerEnv passes only the allowlist + team contract", () => {
 		assert.equal(env[k], undefined, k);
 	}
 	assert.equal(env.PI_TEAM_ENROLL_FILE, spec.enroll_file);
-	assert.equal(env.PI_TEAM_STATE_DIR, spec.state_dir);
+	assert.equal(env.PI_TEAM_STATE_DIR, undefined, "state dir never reaches workers (finding 7)");
 	assert.equal(env.PI_TEAM_LAUNCH_TOKEN, "LT");
 	// ScriptExecutor's extra prefix
 	assert.equal(buildWorkerEnv(spec, "LT", { PI_TEAM_FAKE_SCRIPT: "/s.json" }, ["PI_TEAM_FAKE_"]).PI_TEAM_FAKE_SCRIPT, "/s.json");

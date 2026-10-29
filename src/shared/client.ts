@@ -105,6 +105,8 @@ export interface RawRequestOptions {
 }
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
+/** Managed-worker reconnect backoff (~8s total). */
+export const DEFAULT_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000];
 
 /**
  * One HTTP request over the unix socket. POST requests always carry an idempotency key
@@ -396,6 +398,14 @@ export interface TeamClientOptions {
 	noReconnect?: boolean;
 	/** Evaluated at failure time; false suppresses ensure+retry (e.g. after session_shutdown). */
 	shouldReconnect?: () => boolean;
+	/**
+	 * "ensure" (default): on unavailable, ensureController() then retry once.
+	 * "retry": NEVER ensure/spawn; retry with backoff (managed workers: the controller launched us,
+	 * and they must not touch the state dir).
+	 */
+	reconnect?: "ensure" | "retry";
+	/** Backoff schedule for reconnect "retry". */
+	retryDelaysMs?: number[];
 }
 
 export type CompleteStatus = Extract<TaskStatus, "DONE" | "FAILED" | "BLOCKED">;
@@ -434,6 +444,20 @@ export class TeamClient {
 			return await send();
 		} catch (e) {
 			if (!isUnavailable(e) || this.opts.noReconnect || this.opts.shouldReconnect?.() === false) throw e;
+			if (this.opts.reconnect === "retry") {
+				let last: unknown = e;
+				for (const d of this.opts.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS) {
+					await sleep(d);
+					if (this.opts.shouldReconnect?.() === false) break;
+					try {
+						return await send();
+					} catch (e2) {
+						if (!isUnavailable(e2)) throw e2;
+						last = e2;
+					}
+				}
+				throw last;
+			}
 			const r = await ensureController(this.paths, this.opts.ensure);
 			this.opts.onReconnect?.(r);
 			return await send();

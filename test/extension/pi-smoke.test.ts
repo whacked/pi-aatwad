@@ -294,6 +294,8 @@ describe("real Pi smoke", { skip }, () => {
 		m.route("POST", /^\/messages\/[^/]+\/ack$/, () => ({ body: { acked: true } }));
 		const file = join(paths.enrollDir, "w.json");
 		writeFileSync(file, JSON.stringify({ version: 1, socket_path: paths.socket, run_id: "run-A", agent_id: "ag-kid", spawn_intent_id: "si-1", token: "otp", expires_at: new Date(Date.now() + 60_000).toISOString() }), { mode: 0o600 });
+		const fakeHome = shortTmp("pih-");
+		tmpRoots.push(fakeHome);
 		const session = join(shortTmp("pis-"), "kid.jsonl");
 		tmpRoots.push(dirname(session));
 		try {
@@ -301,7 +303,10 @@ describe("real Pi smoke", { skip }, () => {
 				const c = spawn("pi", ["--mode", "json", "-p", "--session", session, "--provider", "fakeoai", "--model", "fake-1", "-e", EXT, "--", "BOOTSTRAP-PROMPT"], {
 					cwd: ROOT,
 					env: {
-						...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_TEAM_STATE_DIR: paths.dir, [ENV_ENROLL_FILE]: file,
+						// Exactly what the executor passes: NO PI_TEAM_STATE_DIR (finding 7); decoy HOME/XDG so a
+						// stray statePaths() default would be observable.
+						...process.env, PI_TEAM_STATE_DIR: undefined, HOME: fakeHome, XDG_STATE_HOME: join(fakeHome, "xdg"),
+						PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", [ENV_ENROLL_FILE]: file,
 						PI_TEAM_LAUNCH_TOKEN: "lt-1", PI_TEAM_AGENT_ID: "ag-kid", PI_TEAM_RUN_ID: "run-A", PI_TEAM_RESUME: "0",
 					},
 					stdio: ["ignore", "pipe", "pipe"],
@@ -321,17 +326,21 @@ describe("real Pi smoke", { skip }, () => {
 			const en = m.requests.find((x) => x.path === "/enroll")!;
 			assert.equal(en.body.launch_token, "lt-1");
 			assert.equal(fake.requests.length, 2, `exactly one continuation; ctrl=${m.requests.map((x) => x.method + " " + x.path).join(",")} err=${r.err.slice(0, 2000)}`);
-			const sys0 = fake.requests[0].filter((x) => x.role === "system").map((x) => x.text).join("\n");
+			const sys0 = fake.requests[0].messages.filter((x) => x.role === "system").map((x) => x.text).join("\n");
 			assert.match(sys0, /team_org_context/);
 			assert.match(sys0, /agent ag-kid \(role: tester\)/);
 			assert.match(sys0, /t1 IN_PROGRESS: write the tests/);
-			const all0 = fake.requests[0].map((x) => x.text).join("\n");
+			const all0 = fake.requests[0].messages.map((x) => x.text).join("\n");
 			assert.match(all0, /BOOTSTRAP-PROMPT/);
 			assert.match(all0, /START-WORK-ITEM/, "inbox pending at run start rides along with the first run");
-			const all1 = fake.requests[1].map((x) => x.text).join("\n");
+			const all1 = fake.requests[1].messages.map((x) => x.text).join("\n");
 			assert.match(all1, /LATE-WORK-ITEM/, "new work injected before settling");
 			assert.equal(inboxCalls, 3, "claimed at start, at first settle, at second settle (dup -> exit)");
 			for (const id of ["m-start", "m-late"]) assert.ok(m.requests.some((x) => x.path === `/messages/${id}/ack`), `ack ${id}`);
+			// The worker never located/created the default state dir and never read the operator token.
+			assert.ok(!existsSync(join(fakeHome, "Library", "Application Support", "pi-recursive-team")), "no default state dir (macOS)");
+			assert.ok(!existsSync(join(fakeHome, "xdg", "pi-recursive-team")), "no default state dir (XDG)");
+			assert.ok(!existsSync(paths.operatorToken), "operator token never needed");
 			const transcript = readFileSync(session, "utf8");
 			assert.ok(transcript.includes("pi-recursive-team/inbox") && !transcript.includes("kid-token"));
 		} finally {

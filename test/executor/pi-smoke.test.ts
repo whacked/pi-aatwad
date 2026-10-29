@@ -72,12 +72,12 @@ test("real pi 1.4.0 accepts the worker command line; fresh launch then resume", 
 	assert.match(log1, /"type":"agent_settled"/, log1);
 	assert.ok(existsSync(spec.pi_session_path), "session file created at --session path");
 	assert.equal(fake.requests.length, 1);
-	assert.deepEqual(fake.requests[0].filter((m) => m.role !== "system").map((m) => m.text), ["-starts with a dash: first prompt"]);
+	assert.deepEqual(fake.requests[0].messages.filter((m) => m.role !== "system").map((m) => m.text), ["-starts with a dash: first prompt"]);
 	// -e extension was loaded in the worker and saw the env contract (PI_TEAM_FAKE_EXT_OUT is not passed to pi workers).
 	const extFile = `${spec.enroll_file}.ext-loaded`;
 	assert.ok(!existsSync(extOut));
 	const ext1 = JSON.parse(readFileSync(extFile, "utf8").trim().split("\n")[0]);
-	assert.deepEqual(ext1, { pid: id1.pid, has_enroll_file: true, has_state_dir: true, has_launch_token: true, resume: "0" });
+	assert.deepEqual(ext1, { pid: id1.pid, has_enroll_file: true, has_state_dir: false, has_launch_token: true, resume: "0" });
 
 	// Resume: same --session path -> transcript reloaded, same session id.
 	const sessionId = /"type":"session","version":3,"id":"([^"]+)"/.exec(log1)![1];
@@ -85,7 +85,7 @@ test("real pi 1.4.0 accepts the worker command line; fresh launch then resume", 
 	await until(async () => (await ex.probe(id2)) === "dead", 30_000, 100);
 	assert.equal(fake.requests.length, 2);
 	assert.deepEqual(
-		fake.requests[1].filter((m) => m.role !== "system").map((m) => `${m.role}:${m.text}`),
+		fake.requests[1].messages.filter((m) => m.role !== "system").map((m) => `${m.role}:${m.text}`),
 		["user:-starts with a dash: first prompt", "assistant:ACK", `user:${DEFAULT_RESUME_PROMPT}`],
 	);
 	const log2 = readFileSync(spec.log_path, "utf8");

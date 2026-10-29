@@ -68,7 +68,7 @@ The tests never spend provider credits. Worker scenarios use `PI_TEAM_EXECUTOR=t
 
 ## Limitations
 
-- **Not a sandbox.** Limits apply only to *managed* workers. Any agent with shell access can start unmanaged processes, spend money directly, or read files the OS user can read, including the controller's `operator.token`. Governance is cooperative accounting plus process supervision, not isolation.
+- **Not a sandbox.** Limits apply only to *managed* workers. Any agent with shell access can start unmanaged processes, spend money directly, or read files the OS user can read, including the controller's `operator.token`. Governance is cooperative accounting plus process supervision, not isolation. Managed workers are not given `PI_TEAM_STATE_DIR` and reach the controller only through the socket named in their one-time enrollment file. But a same-uid worker can still find the state dir at its default path (and read `operator.token` / `org.sqlite`), so this is mitigation, not isolation.
 - Cost accounting is approximate. Reservations are estimates; actual spend is reconciled only from usage that workers report (`/sessions/usage`).
 - There is no tmux observer (`/team watch` is a stub), no worktree merge or cleanup, no fork-as-new-agent attach mode, and no Windows IPC.
 - Model ids containing `:` are interpreted by Pi as a thinking-level suffix.

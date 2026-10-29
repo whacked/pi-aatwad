@@ -2,6 +2,7 @@
 // heartbeat, inbox delivery, and token selection. No typebox import so plain
 // `node --test` can exercise it with a fake ExtensionAPI.
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ENV_ENROLL_FILE, HEARTBEAT_INTERVAL_MS } from "../shared/protocol.ts";
@@ -11,7 +12,7 @@ export const ENV_LAUNCH_TOKEN = "PI_TEAM_LAUNCH_TOKEN";
 import { statePaths } from "../shared/paths.ts";
 import type { StatePaths } from "../shared/paths.ts";
 import { TeamApiError, TeamClient, ensureController, readOperatorToken, isUnavailable } from "../shared/client.ts";
-import type { CallOptions, EnsureOptions } from "../shared/client.ts";
+import type { CallOptions, EnsureOptions, EnsureResult } from "../shared/client.ts";
 import { formatEnvelope } from "./format.ts";
 
 export const IDENTITY_ENTRY = "pi-recursive-team/identity";
@@ -41,6 +42,8 @@ export interface Identity {
 	parent_id?: string | null;
 	task_id?: string | null;
 	pi_session_id: string;
+	/** Managed workers: controller socket from the enrollment file (the only way they find it). */
+	socket_path?: string;
 }
 
 type PiLike = Pick<ExtensionAPI, "sendMessage" | "appendEntry">;
@@ -66,13 +69,31 @@ export interface RuntimeOptions {
 	ensure?: EnsureOptions;
 	heartbeatMs?: number;
 	env?: NodeJS.ProcessEnv;
+	/** Managed-worker reconnect backoff (tests shorten it). */
+	retryDelaysMs?: number[];
+}
+
+/** Process-wide: once this process consumed an enrollment credential it stays a managed worker (survives /reload). */
+const managedProcess = () => g("managedProcess", () => ({ value: false }));
+
+/** Tests only: forget process-wide state (managed flag, cached identities, dedupe sets). */
+export function __resetProcessStateForTests(): void {
+	managedProcess().value = false;
+	identityCache().clear();
+	seenCache().clear();
+}
+
+export const MANAGED_NO_STATE_DIR =
+	"managed workers never use the team state dir (no statePaths(), operator.token or controller start); the socket comes only from the enrollment file";
+
+/** Socket-only paths for a managed worker. Every state-dir field is empty on purpose. */
+function managedPaths(socket: string): StatePaths {
+	return { dir: "", socket, db: "", lock: "", controllerInfo: "", operatorToken: "", log: "", enrollDir: "", workerLogs: "" };
 }
 
 export class TeamRuntime {
 	pi: PiLike;
-	paths: StatePaths;
 	opts: RuntimeOptions;
-	client: TeamClient;
 	identity: Identity | undefined;
 	ctx: CtxLike | undefined;
 	/** Shown to the user when identity was deliberately NOT adopted (fork/clone, consumed credential...). */
@@ -87,17 +108,57 @@ export class TeamRuntime {
 	constructor(pi: PiLike, opts: RuntimeOptions = {}) {
 		this.pi = pi;
 		this.opts = opts;
-		this.paths = opts.paths ?? statePaths();
-		this.client = this.makeClient();
+		// Nothing is resolved here: paths/client are lazy so a managed worker never computes the state dir.
 	}
 
-	private makeClient(): TeamClient {
-		return new TeamClient({
-			paths: this.paths,
-			token: () => this.identity?.token,
-			ensure: this.opts.ensure,
-			shouldReconnect: () => !this.stopped,
-		});
+	private _paths: StatePaths | undefined;
+	private _client: TeamClient | undefined;
+
+	/**
+	 * Interactive: the per-user state dir. Managed worker: socket-only paths from the enrollment
+	 * file; asking for them before enrollment (or ever touching the state dir) throws.
+	 */
+	get paths(): StatePaths {
+		if (this._paths) return this._paths;
+		if (this.managed) throw new Error(MANAGED_NO_STATE_DIR);
+		this._paths = this.opts.paths ?? statePaths();
+		return this._paths;
+	}
+
+	get client(): TeamClient {
+		if (!this._client) {
+			const managed = this.managed;
+			this._client = new TeamClient({
+				paths: this.paths,
+				token: () => this.identity?.token,
+				ensure: this.opts.ensure,
+				shouldReconnect: () => !this.stopped,
+				// The controller launched this worker: never spawn one; just back off and retry.
+				reconnect: managed ? "retry" : "ensure",
+				retryDelaysMs: this.opts.retryDelaysMs,
+			});
+		}
+		return this._client;
+	}
+
+	private useManagedSocket(socket: string): void {
+		this._paths = managedPaths(socket);
+		this._client = undefined;
+	}
+
+	/** Guard for every state-dir operation (ensureController, operator token). */
+	private assertInteractive(op: string): void {
+		if (this.managed) throw new Error(`${op}: ${MANAGED_NO_STATE_DIR}`);
+	}
+
+	async ensure(): Promise<EnsureResult> {
+		this.assertInteractive("ensureController");
+		return ensureController(this.paths, this.opts.ensure);
+	}
+
+	async operatorToken(waitMs?: number): Promise<string> {
+		this.assertInteractive("operator token");
+		return readOperatorToken(this.paths, waitMs);
 	}
 
 	get env(): NodeJS.ProcessEnv {
@@ -106,9 +167,8 @@ export class TeamRuntime {
 
 	/** True when this Pi process was launched by the controller as a managed worker. */
 	get managed(): boolean {
-		return this.identity?.managed === true || !!this.env[ENV_ENROLL_FILE] || this.enrollConsumed;
+		return this.identity?.managed === true || !!this.env[ENV_ENROLL_FILE] || managedProcess().value;
 	}
-	private enrollConsumed = false;
 
 	piSession(): { id: string; path?: string } {
 		const sm = this.ctx?.sessionManager;
@@ -168,7 +228,7 @@ export class TeamRuntime {
 		const enrollPath = this.env[ENV_ENROLL_FILE];
 		if (enrollPath) {
 			delete this.env[ENV_ENROLL_FILE]; // never leak to nested processes (bash tool, sub-pi)
-			this.enrollConsumed = true;
+			managedProcess().value = true;
 			await this.enrollFromFile(enrollPath, pis);
 			return;
 		}
@@ -217,11 +277,11 @@ export class TeamRuntime {
 		if ((envAgent && envAgent !== file.agent_id) || (envRun && envRun !== file.run_id)) {
 			throw new Error(`enrollment file is for ${file.run_id}/${file.agent_id} but the worker env says ${envRun}/${envAgent}; refusing to enroll`);
 		}
-		if (file.socket_path && file.socket_path !== this.paths.socket) {
-			this.paths = { ...this.paths, socket: file.socket_path };
-			this.client = this.makeClient();
+		if (typeof file.socket_path !== "string" || !isAbsolute(file.socket_path)) {
+			throw new Error("enrollment file has no absolute socket_path; refusing to guess the controller location");
 		}
-		await ensureController(this.paths, this.opts.ensure);
+		// Hard rule: the socket comes ONLY from the enrollment file. No statePaths(), no ensureController().
+		this.useManagedSocket(file.socket_path);
 		const r = await this.client.enroll(
 			{
 				token: file.token,
@@ -241,6 +301,7 @@ export class TeamRuntime {
 			session_id: r.session_id,
 			token: r.token,
 			managed: true,
+			socket_path: file.socket_path,
 			parent_id: r.parent_id,
 			task_id: r.task_id,
 			pi_session_id: pis.id,
@@ -253,8 +314,8 @@ export class TeamRuntime {
 	/** Operator attach: POST /runs/:id/attach (used by /team resume and same-session restart). */
 	async attach(runId: string, agentId?: string, o: { quiet?: boolean } = {}): Promise<Identity> {
 		if (this.managed) throw new Error("managed workers cannot attach to another identity");
-		await ensureController(this.paths, this.opts.ensure);
-		const op = await readOperatorToken(this.paths);
+		await this.ensure();
+		const op = await this.operatorToken();
 		const pis = this.piSession();
 		const r = await this.client.attach(
 			runId,
@@ -292,6 +353,10 @@ export class TeamRuntime {
 	}
 
 	adopt(id: Identity): void {
+		if (id.managed) {
+			if (!id.socket_path) throw new Error(MANAGED_NO_STATE_DIR);
+			if (this._paths?.socket !== id.socket_path) this.useManagedSocket(id.socket_path);
+		}
 		this.identity = id;
 		this.fenced = false;
 		identityCache().set(id.pi_session_id, id);
@@ -377,8 +442,8 @@ export class TeamRuntime {
 	/** Bearer for human /team commands: operator token unless this is a managed worker. */
 	async commandToken(): Promise<string | undefined> {
 		if (this.managed) return this.identity?.token;
-		await ensureController(this.paths, this.opts.ensure);
-		return readOperatorToken(this.paths);
+		await this.ensure();
+		return this.operatorToken();
 	}
 
 	// ------------------------------------------------------------------ heartbeat + inbox

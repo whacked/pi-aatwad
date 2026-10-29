@@ -2,7 +2,7 @@
 // Never copy the whole parent env: it may contain the parent session's PI_* metadata,
 // the operator's PI_TEAM_* settings and unrelated secrets.
 
-import { ENV_ENROLL_FILE, ENV_STATE_DIR } from "../shared/protocol.ts";
+import { ENV_ENROLL_FILE } from "../shared/protocol.ts";
 import type { LaunchSpec } from "./types.ts";
 
 export const ENV_LAUNCH_TOKEN = "PI_TEAM_LAUNCH_TOKEN";
@@ -73,7 +73,9 @@ export function buildWorkerEnv(
 	// One Pi version check per worker launch is noise; the parent already checked.
 	env.PI_SKIP_VERSION_CHECK = "1";
 	env[ENV_ENROLL_FILE] = spec.enroll_file;
-	env[ENV_STATE_DIR] = spec.state_dir;
+	// PI_TEAM_STATE_DIR is deliberately NOT passed (review finding 7): it would point the worker's
+	// bash tool straight at operator.token / org.sqlite. Workers reach the controller only via the
+	// enrollment file's socket_path. (Same-uid workers can still find the default path: mitigation only.)
 	env[ENV_LAUNCH_TOKEN] = launchToken;
 	env[ENV_AGENT_ID] = spec.agent_id;
 	env[ENV_RUN_ID] = spec.run_id;

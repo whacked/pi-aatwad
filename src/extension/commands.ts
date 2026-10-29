@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { RunConfig } from "../shared/protocol.ts";
-import { ping, rawRequest, readOperatorToken, ensureController, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
+import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
 import { formatBudget, formatEvents, formatInspect, formatProposal, formatTree } from "./format.ts";
 import type { TeamRuntime } from "./runtime.ts";
@@ -77,8 +77,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				const p = resolve(ctx.cwd, a[0]);
 				config = JSON.parse(readFileSync(p, "utf8")) as Partial<RunConfig>;
 			}
-			const { spawned } = await ensureController(rt.paths, rt.opts.ensure);
-			const op = await readOperatorToken(rt.paths);
+			const { spawned } = await rt.ensure();
+			const op = await rt.operatorToken();
 			const pis = rt.piSession();
 			const r = await rt.client.createRun(
 				{
@@ -199,7 +199,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	const runCompletions = async (): Promise<RunSummary[]> => {
 		try {
-			const op = await readOperatorToken(rt.paths, 0);
+			if (rt.managed) return [];
+			const op = await rt.operatorToken(0);
 			const r = await rawRequest<{ runs: RunSummary[] }>(rt.paths.socket, "GET", "/runs", { token: op, timeoutMs: 500 });
 			return r.runs;
 		} catch {
