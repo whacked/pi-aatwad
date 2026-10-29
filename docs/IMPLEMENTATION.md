@@ -44,7 +44,7 @@ worker pi (same extension) ──enroll/heartbeat/tools──▶ controller
 ## Verification
 - `npm test`: unit + integration tests for controller, executor and extension, plus two e2e tests: `test/e2e/demo.test.ts` (the 9-step `examples/demo-scenario.md` against a real controller process with fake workers, including SIGKILL of the controller mid-delivery) and `test/e2e/real-pi-worker.test.ts` (real `pi` worker with a local fake OpenAI-compatible model).
 - `npx tsc --noEmit` is clean. `bash scripts/demo.sh` writes `demo-output/`.
-- The code was independently reviewed; all 8 findings were fixed with regression tests (`test/controller/review-fixes*.test.ts`).
+- The code was independently reviewed twice; every finding (8 initial, 4 from the re-review) was fixed with regression tests (`test/controller/review-fixes*.test.ts`).
 
 ## Not in v0.1 (known gaps against the brief)
 - tmux `/team watch`; git worktree merge/cleanup; Windows IPC; npm-registry install (needs a JS build).

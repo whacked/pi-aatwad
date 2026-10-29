@@ -11,6 +11,7 @@ import { createExpansion, decide, listProposals } from "./governance.ts";
 import { lifecycle, reparent } from "./topology.ts";
 import { attach, budget, createRun, enroll, events, heartbeat, inspect, listRuns, me, models, reportUsage, tree } from "./runs.ts";
 import { getRecoveryStatus, isTerminal } from "./queries.ts";
+import { assertLeaseHeld } from "./fence.ts";
 
 type Auth = "none" | "any" | "operator" | "agent";
 type Handler = (a: { p: Principal; scope: ReqScope; params: string[]; body: unknown; q: URLSearchParams }) => unknown;
@@ -147,13 +148,15 @@ async function handle(ctx: Ctx, deps: ServerDeps, table: Route[], req: IncomingM
 		const scope: ReqScope = { after: (fn) => afters.push(fn), idemKey };
 		const r = route;
 		const result = tx(ctx.db, () => {
-			if (method === "POST") {
-				// Fencing: never mutate unless we still hold the DB lease at our epoch.
-				const lease = get(ctx.db, "SELECT controller_id, fencing_epoch FROM controller_lease WHERE singleton_key = 'local'");
-				if (!lease || lease.controller_id !== ctx.controllerId || Number(lease.fencing_epoch) !== ctx.epoch()) {
-					ctx.log("error", "fenced: lease held by another controller; shutting down", { holder: lease?.controller_id });
+			// Fencing: every route except /health may write (GET /inbox claims deliveries), so all of them
+			// require that we still hold the DB lease at our epoch.
+			if (r.re.source !== "^/health$") {
+				try {
+					assertLeaseHeld(ctx);
+				} catch (e) {
+					ctx.log("error", "fenced: lease held by another controller; shutting down", { holder: (e as ApiErr).details });
 					setImmediate(deps.shutdown);
-					fail("INTERNAL", "controller has been fenced by a newer instance; retry against the current controller");
+					throw e;
 				}
 			}
 			let p: Principal = OPERATOR;

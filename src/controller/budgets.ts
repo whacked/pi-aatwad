@@ -35,6 +35,10 @@ export function releaseReservations(db: DB, beneficiary: string): void {
 }
 
 /** After topology changes: re-point reservations of `beneficiaries` to their current ancestor chains. Returns ancestors whose load increased. */
+// Only ACTIVE rows move. CONSUMED (settled) rows of terminated agents deliberately stay with the
+// ancestors under which the money was actually spent: those subtrees remain charged for it after a
+// move. The global max_run_usd check is unaffected (it sums consumed spend run-wide), so no money can
+// be double-spent; a moved subtree's new ancestors simply are not charged for its past spend.
 export function rebuildReservations(db: DB, beneficiaries: string[]): Set<string> {
 	const increased = new Set<string>();
 	const ts = nowIso();

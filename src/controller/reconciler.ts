@@ -10,6 +10,7 @@ import { mintSecret, hashToken } from "./auth.ts";
 import { getAgent, getAncestry, getSubtree, isTerminal, runConfig, TERMINAL_SQL } from "./queries.ts";
 import { newSessionAttempt } from "./runs.ts";
 import { prepareWorkspace } from "../executor/workspace.ts";
+import { assertLeaseHeld, FencedError } from "./fence.ts";
 import { terminateAgent } from "./topology.ts";
 import { postMessage, releaseExpiredClaims } from "./messaging.ts";
 
@@ -55,6 +56,22 @@ export class Reconciler {
 		if (this.timer) clearTimeout(this.timer);
 	}
 
+	/** Write transaction guarded by the fencing lease; a fenced controller stops reconciling. */
+	private wtx<T>(fn: () => T): T {
+		return tx(this.ctx.db, () => {
+			try {
+				assertLeaseHeld(this.ctx);
+			} catch (e) {
+				if (e instanceof FencedError) {
+					this.ctx.log("error", "reconciler fenced; stopping", { holder: e.details });
+					this.abandon();
+				}
+				throw e;
+			}
+			return fn();
+		});
+	}
+
 	kick(): void {
 		if (this.stopped) return;
 		if (this.running) {
@@ -83,7 +100,7 @@ export class Reconciler {
 	async tick(): Promise<void> {
 		if (this.stopped || !this.isLeader()) return;
 		const db = this.ctx.db;
-		tx(db, () => releaseExpiredClaims(db));
+		this.wtx(() => releaseExpiredClaims(db));
 		this.publishOutbox();
 		await this.recoverUncertain(false);
 		await this.enforceDeadlines();
@@ -103,7 +120,7 @@ export class Reconciler {
 		const rows = all(db, "SELECT o.id, o.topic, e.run_id, e.entity_id, e.actor_id FROM outbox o JOIN events e ON e.id = o.event_id WHERE o.status = 'PENDING' ORDER BY e.seq LIMIT 500");
 		if (!rows.length) return;
 		for (const r of rows) this.ctx.log("info", "event", { topic: r.topic, run_id: r.run_id, entity_id: r.entity_id, actor_id: r.actor_id });
-		tx(db, () => {
+		this.wtx(() => {
 			for (const r of rows) run(db, "UPDATE outbox SET status = 'PUBLISHED', attempts = attempts + 1 WHERE id = ?", r.id);
 		});
 	}
@@ -112,7 +129,7 @@ export class Reconciler {
 	async launch(intentId: string): Promise<void> {
 		const ctx = this.ctx;
 		const db = ctx.db;
-		const prep = tx(db, () => {
+		const prep = this.wtx(() => {
 			const it = get(db, "SELECT * FROM spawn_intents WHERE id = ?", intentId);
 			if (!it || it.status !== "PENDING") return null;
 			const a = getAgent(db, it.agent_id);
@@ -179,7 +196,7 @@ export class Reconciler {
 				return;
 			}
 			if (this.stopped || !this.isLeader()) return;
-			tx(db, () => {
+			this.wtx(() => {
 				run(db, "UPDATE agents SET cwd = ? WHERE id = ?", launchSpec.cwd, launchSpec.agent_id);
 				run(db, "UPDATE sessions SET pid = ?, process_started_at = ?, launch_token = ?, process_marker = ? WHERE id = ?", ident.pid, ident.process_started_at, ident.launch_token, JSON.stringify({ pid: ident.pid, started: ident.process_started_at }), sessionId);
 				const n = run(db, "UPDATE spawn_intents SET status = 'LAUNCHED', updated_at = ? WHERE id = ? AND status = 'LAUNCHING' AND session_id = ?", nowIso(), intentId, sessionId);
@@ -196,7 +213,7 @@ export class Reconciler {
 		const db = this.ctx.db;
 		safeUnlink(enrollFile);
 		this.ctx.log("warn", "launch failed", { spawn_intent_id: intentId, err });
-		tx(db, () => {
+		this.wtx(() => {
 			const it = get(db, "SELECT * FROM spawn_intents WHERE id = ?", intentId);
 			if (!it || it.session_id !== sessionId || !["LAUNCHING", "LAUNCHED"].includes(it.status)) return;
 			run(db, "UPDATE sessions SET status = 'FAILED', ended_at = ? WHERE id = ?", nowIso(), sessionId);
@@ -259,7 +276,7 @@ export class Reconciler {
 	private requeue(r: Row, why: string, enrollFile: string | undefined): void {
 		const db = this.ctx.db;
 		if (enrollFile) safeUnlink(enrollFile);
-		tx(db, () => {
+		this.wtx(() => {
 			const it = get(db, "SELECT * FROM spawn_intents WHERE id = ?", r.id);
 			if (!it || it.session_id !== r.sid || !["LAUNCHING", "LAUNCHED"].includes(it.status)) return;
 			const sess = get(db, "SELECT enrolled_at FROM sessions WHERE id = ?", r.sid);
@@ -280,7 +297,7 @@ export class Reconciler {
 		const now = nowIso();
 		const rows = all(db, `SELECT a.*, r.root_agent_id FROM agents a JOIN runs r ON r.id = a.run_id WHERE a.observed_state = 'LIVE' AND a.lease_until IS NOT NULL AND a.lease_until < ? AND a.status NOT IN ${TERMINAL_SQL}`, now);
 		for (const a of rows) {
-			tx(db, () => {
+			this.wtx(() => {
 				const n = run(db, "UPDATE agents SET observed_state = 'LOST' WHERE id = ? AND observed_state = 'LIVE' AND lease_until < ?", a.id, now);
 				if (!n) return;
 				run(db, "UPDATE sessions SET status = 'LOST' WHERE id = ? AND status = 'LIVE'", a.current_session_id);
@@ -314,7 +331,7 @@ export class Reconciler {
 					await this.executor.stop({ pid: a.pid, process_started_at: a.process_started_at ?? "" }).catch(() => {});
 				}
 			}
-			tx(db, () => {
+			this.wtx(() => {
 				const cur = getAgent(db, a.id);
 				if (cur.current_session_id !== a.current_session_id || !["LOST", "STOPPED"].includes(cur.observed_state) || cur.desired_state !== "RUNNING") return;
 				if (cur.restart_attempts >= this.ctx.t.maxRestarts) {
@@ -374,7 +391,7 @@ export class Reconciler {
 			}
 			if (!kind) continue;
 			const stopIdent = running && r.pid != null ? { pid: r.pid as number, process_started_at: (r.process_started_at ?? "") as string } : null;
-			const stopNeeded = tx(db, () => {
+			const stopNeeded = this.wtx(() => {
 				const cur = getAgent(db, r.id);
 				if (cur.desired_state !== "RUNNING" || isTerminal(cur.status) || cur.current_session_id !== r.current_session_id) return false;
 				const policy = runConfig(db, r.run_id).deadline_policy ?? "BLOCKED";
@@ -411,7 +428,7 @@ export class Reconciler {
 		const rows = all(db, `SELECT a.id, a.run_id, a.current_session_id, s.pid, s.process_started_at FROM agents a JOIN sessions s ON s.id = a.current_session_id WHERE a.observed_state = 'LIVE' AND s.pid IS NOT NULL AND a.status NOT IN ${TERMINAL_SQL}`);
 		for (const r of rows) {
 			if ((await this.executor.probe({ pid: r.pid, process_started_at: r.process_started_at ?? "" })) === "alive") continue;
-			tx(db, () => {
+			this.wtx(() => {
 				const n = run(db, "UPDATE agents SET observed_state = 'STOPPED', lease_until = NULL WHERE id = ? AND current_session_id = ? AND observed_state = 'LIVE'", r.id, r.current_session_id);
 				if (!n) return;
 				run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE id = ? AND status IN ('LIVE','LOST')", nowIso(), r.current_session_id);
@@ -428,7 +445,7 @@ export class Reconciler {
 		for (const r of rows) {
 			const alive = (await this.executor.probe({ pid: r.pid, process_started_at: r.process_started_at ?? "" })) === "alive";
 			if (alive) continue;
-			tx(db, () => {
+			this.wtx(() => {
 				const n = run(db, "UPDATE agents SET observed_state = 'LOST' WHERE id = ? AND current_session_id = ? AND observed_state IN ('LIVE','STARTING')", r.id, r.current_session_id);
 				if (!n) return;
 				run(db, "UPDATE sessions SET status = 'LOST' WHERE id = ?", r.current_session_id);

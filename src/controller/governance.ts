@@ -13,7 +13,7 @@ import { createTask, postMessage, requireAgent } from "./messaging.ts";
 const OPEN_STATUSES: ProposalStatus[] = ["PENDING", "UNDER_REVIEW", "ESCALATED"];
 
 /** Nearest non-terminal strict ancestor; null if none (→ operator). */
-function liveManager(db: DB, agentId: string): string | null {
+export function liveManager(db: DB, agentId: string): string | null {
 	for (const a of getAncestry(db, agentId)) if (!isTerminal(getAgent(db, a).status)) return a;
 	return null;
 }

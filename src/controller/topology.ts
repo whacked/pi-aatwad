@@ -8,7 +8,7 @@ import { getAgent, getAncestry, runConfig, getChildren, getCurrentManager, getOu
 import { assertWithinEnvelopes, rebuildReservations, recomputeAllocations, releaseReservations } from "./budgets.ts";
 import { postMessage } from "./messaging.ts";
 import { revokeAgentCredentials } from "./auth.ts";
-import { defaultReviewer } from "./governance.ts";
+import { defaultReviewer, liveManager } from "./governance.ts";
 
 function senderFor(db: DB, p: Principal, runId: string): string {
 	return p.kind === "agent" ? p.actor_id : (getRun(db, runId).root_agent_id as string);
@@ -138,6 +138,48 @@ export function reparent(ctx: Ctx, p: Principal, scope: ReqScope, agentId: strin
 	return { agent_id: subject.id, old_parent_id: oldParent, new_parent_id: target.id, topology_version: v };
 }
 
+/**
+ * No live agent may report to a terminated one (it could neither review, receive reports, nor hold
+ * budget). Live direct children move to the nearest live ancestor of the dead agent (or the root),
+ * with their subtrees. Their reservations already sit at those ancestors, so no envelope check is
+ * needed: rebuildReservations only drops the rows at the dead agent; depth only shrinks.
+ */
+function adoptLiveChildren(ctx: Ctx, dead: Row, actor: string, reason: string): void {
+	const db = ctx.db;
+	const children = getChildren(db, dead.id).filter((c) => !isTerminal(getAgent(db, c).status));
+	if (!children.length) return;
+	const runRow = getRun(db, dead.run_id);
+	const adopter = liveManager(db, dead.id) ?? (runRow.root_agent_id !== dead.id && !isTerminal(getAgent(db, runRow.root_agent_id).status) ? (runRow.root_agent_id as string) : null);
+	if (!adopter) return; // the root itself is gone: nothing live above to adopt them
+	const expected = Number(runRow.topology_version);
+	const v = expected + 1;
+	const moved: string[] = [];
+	const ts = nowIso();
+	for (const c of children) {
+		moveEdge(db, dead.run_id, c, adopter, v, `manager ${dead.id} terminated: ${reason}`);
+		moved.push(...getSubtree(db, c));
+		run(
+			db,
+			"INSERT INTO topology_operations(id, run_id, subject_agent_id, from_parent_id, to_parent_id, expected_version, committed_version, work_policy, status, idempotency_key, created_at) VALUES (?,?,?,?,?,?,?, 'retain', 'COMMITTED', ?, ?)",
+			newId("topo"),
+			dead.run_id,
+			c,
+			dead.id,
+			adopter,
+			expected,
+			v,
+			`adopt:${dead.id}:${c}:${v}`,
+			ts,
+		);
+		postMessage(db, { run_id: dead.run_id, from: adopter, to: c, type: "system.notice", payload: { kind: "reparented", old_parent_id: dead.id, new_parent_id: adopter, reason: `previous manager terminated (${reason})` } });
+	}
+	rebuildReservations(db, moved);
+	run(db, "UPDATE runs SET topology_version = ? WHERE id = ?", v, dead.run_id);
+	const handoff = children.map((c) => ({ agent_id: c, open_tasks: getOutstandingCommitments(db, c).open_tasks }));
+	postMessage(db, { run_id: dead.run_id, from: children[0], to: adopter, type: "system.notice", payload: { kind: "handoff", from_parent_id: dead.id, reason: `manager terminated: ${reason}`, agents: handoff } });
+	emit(db, { run_id: dead.run_id, actor_id: actor, type: "agent.children_adopted", entity_id: dead.id, payload: { adopter, children, topology_version: v } });
+}
+
 /** Terminal transition for one agent: revoke credentials, stop processes (after commit), release reservations, keep consumed_usd. */
 export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string, status: "RETIRED" | "CANCELLED" | "FAILED", actor: string, reason: string): void {
 	const db = ctx.db;
@@ -151,18 +193,25 @@ export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string
 	run(db, "UPDATE spawn_intents SET status = 'CANCELLED', updated_at = ? WHERE agent_id = ? AND status NOT IN ('CANCELLED','FAILED')", ts, agentId);
 	releaseReservations(db, agentId);
 	run(db, "UPDATE tasks SET status = 'CANCELLED', updated_at = ? WHERE owner_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS','BLOCKED')", ts, agentId);
+	adoptLiveChildren(ctx, a, actor, reason);
 	recomputeAllocations(db, a.run_id);
 	// Governance must not stall on a terminated agent: its own open proposals are withdrawn,
 	// proposals it was reviewing go to the nearest live manager of their requester (or the operator).
 	const openProps = "status IN ('PENDING','UNDER_REVIEW','ESCALATED')";
-	for (const pr of all(db, `SELECT id FROM proposals WHERE requester_id = ? AND ${openProps}`, agentId)) {
+	const rootId = getRun(db, a.run_id).root_agent_id as string;
+	for (const pr of all(db, `SELECT id, revision FROM proposals WHERE requester_id = ? AND ${openProps}`, agentId)) {
+		const why = `requester ${status.toLowerCase()}: ${reason}`;
 		run(db, "UPDATE proposals SET status = 'REJECTED', decided_at = ?, updated_at = ? WHERE id = ?", ts, ts, pr.id);
-		emit(db, { run_id: a.run_id, actor_id: actor, type: "proposal.withdrawn", entity_id: pr.id, payload: { reason: `requester ${status.toLowerCase()}` } });
+		// Audit trail: a decision row for the withdrawal (attributed to the run root; FK requires an agent).
+		run(db, "INSERT INTO proposal_decisions(id, proposal_id, reviewer_id, decision, reason, revision, created_at) VALUES (?,?,?, 'WITHDRAW', ?,?,?)", newId("dec"), pr.id, rootId, `[controller] ${why}`, pr.revision, ts);
+		emit(db, { run_id: a.run_id, actor_id: actor, type: "proposal.withdrawn", entity_id: pr.id, payload: { reason: why } });
 	}
-	for (const pr of all(db, `SELECT id, requester_id FROM proposals WHERE reviewer_id = ? AND ${openProps}`, agentId)) {
-		const fresh = defaultReviewer(db, pr.requester_id);
-		run(db, "UPDATE proposals SET reviewer_id = ?, status = 'PENDING', updated_at = ? WHERE id = ?", fresh, ts, pr.id);
-		emit(db, { run_id: a.run_id, actor_id: actor, type: "proposal.rerouted", entity_id: pr.id, payload: { stale_reviewer: agentId, new_reviewer: fresh, reason: `reviewer ${status.toLowerCase()}` } });
+	for (const pr of all(db, `SELECT id, requester_id, status FROM proposals WHERE reviewer_id = ? AND ${openProps}`, agentId)) {
+		// ESCALATED stays escalated and moves up past the dead reviewer; PENDING goes to the requester's live manager.
+		const escalated = pr.status === "ESCALATED";
+		const fresh = escalated ? liveManager(db, agentId) : defaultReviewer(db, pr.requester_id);
+		run(db, "UPDATE proposals SET reviewer_id = ?, status = ?, updated_at = ? WHERE id = ?", fresh, escalated ? "ESCALATED" : "PENDING", ts, pr.id);
+		emit(db, { run_id: a.run_id, actor_id: actor, type: "proposal.rerouted", entity_id: pr.id, payload: { stale_reviewer: agentId, new_reviewer: fresh, status: escalated ? "ESCALATED" : "PENDING", reason: `reviewer ${status.toLowerCase()}` } });
 		if (fresh && fresh !== pr.requester_id) postMessage(db, { run_id: a.run_id, from: pr.requester_id, to: fresh, type: "team.expand.request", payload: { proposal_id: pr.id, rerouted: true }, correlation_id: pr.id });
 	}
 	emit(db, { run_id: a.run_id, actor_id: actor, type: "agent.terminated", entity_id: agentId, payload: { status, reason, consumed_usd: get(db, "SELECT consumed_usd FROM allocations WHERE agent_id = ?", agentId)?.consumed_usd ?? 0 } });

@@ -478,7 +478,8 @@ export interface ProposalView {
 	status: ProposalStatus;
 	revision: number;
 	request: ExpansionProposal;
-	decisions: { reviewer_id: string; decision: Decision; reason: string; revision: number; created_at: string }[];
+	/** "WITHDRAW" is recorded by the controller (attributed to the run root) when the requester is terminated. */
+	decisions: { reviewer_id: string; decision: Decision | "WITHDRAW"; reason: string; revision: number; created_at: string }[];
 }
 
 /** POST /agents/:id/reparent (agent with authority over both scopes, or operator) */
