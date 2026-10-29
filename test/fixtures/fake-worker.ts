@@ -145,6 +145,7 @@ const unacked = new Set<string>(); // handled but ack not confirmed by the contr
 async function ack(id: string): Promise<void> {
 	await call("POST", `/messages/${encodeURIComponent(id)}/ack`, {}, `ack:${id}`);
 	unacked.delete(id);
+	log("acked", { message_id: id });
 }
 
 async function tick(): Promise<void> {
@@ -159,6 +160,7 @@ async function tick(): Promise<void> {
 		for (const id of [...unacked]) await ack(id); // retry acks lost to a controller crash
 		if (hb.inbox_pending > 0) {
 			const res = await call<InboxResponse>("GET", `/inbox?limit=${INBOX_LIMIT}`);
+			// Record the whole claimed batch first, so a crash mid-batch cannot strand a claimed message.
 			for (const m of res.messages ?? []) {
 				if (handled.has(m.message_id)) {
 					log("duplicate", { message_id: m.message_id, type: m.type });
@@ -167,9 +169,10 @@ async function tick(): Promise<void> {
 					log("message", { message_id: m.message_id, type: m.type, from: m.from });
 				}
 				unacked.add(m.message_id);
+			}
+			for (const m of res.messages ?? []) {
 				if (ACK_DELAY_MS) await sleep(ACK_DELAY_MS);
 				await ack(m.message_id);
-				log("acked", { message_id: m.message_id });
 			}
 		}
 	} catch (err) {
