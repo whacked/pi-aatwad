@@ -1,11 +1,11 @@
 // End-to-end with real detached worker processes: ScriptExecutor + test/fixtures/fake-worker.ts (no LLM).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ScriptExecutor } from "../../src/executor/script.ts";
-import { harness, newRun, ownTask, proposal, sql, waitFor } from "./helpers.ts";
+import { findSecretsInLogs, harness, newRun, ownTask, proposal, sql, waitFor } from "./helpers.ts";
 
 const FAKE = fileURLToPath(new URL("../fixtures/fake-worker.ts", import.meta.url));
 
@@ -63,6 +63,17 @@ test("real worker processes: lead recruits a verifier through review, both compl
 		await hs.h.reconciler.idle();
 		assert.equal(sql(hs, "SELECT COUNT(*) n FROM sessions WHERE agent_id IN (?,?)", lead, verifier)[0].n, 2, "no relaunch of cancelled agents");
 		assert.equal(sql(hs, "SELECT reserved_slots n FROM allocations WHERE agent_id = ?", root)[0].n, 0);
+
+		// Secrets never reach logs: exercise token-bearing paths (replay → reissue, attach), then scan.
+		const runBody = { root: { role: "root2", cwd: hs.dir } };
+		const r1 = await hs.call("POST", "/runs", { token: hs.op, key: "secret-scan", body: runBody });
+		const r2 = await hs.call("POST", "/runs", { token: hs.op, key: "secret-scan", body: runBody });
+		const at = await hs.call("POST", `/runs/${r1.body.run_id}/attach`, { token: hs.op, body: {} });
+		await hs.call("GET", "/me", { token: "pts_definitely-not-a-real-token" });
+		await hs.h.reconciler.idle();
+		const leaks = findSecretsInLogs(hs.dir, [hs.op, token, r1.body.token, r2.body.token, at.body.token]);
+		assert.deepEqual(leaks, [], leaks.join("\n"));
+		assert.ok(readFileSync(join(hs.dir, "controller.log"), "utf8").length > 0);
 	} finally {
 		process.env.PI_TEAM_FAKE_SCRIPT = saved.s;
 		process.env.PI_TEAM_FAKE_HEARTBEAT_MS = saved.h;

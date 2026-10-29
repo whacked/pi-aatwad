@@ -1,4 +1,5 @@
 // Test helpers: short state dirs, a stub Executor, and a tiny HTTP-over-unix-socket client.
+import * as fsMod from "node:fs";
 import { mkdtempSync, readFileSync, unlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,6 +182,19 @@ export async function recruit(hs: Harness, token: string, reviewerToken: string,
 	return ids;
 }
 
+/** Every token-shaped string or known secret found in controller.log and worker logs (should be none). */
+export function findSecretsInLogs(dir: string, knownSecrets: string[]): string[] {
+	const { readdirSync, existsSync } = fsMod;
+	const files = [join(dir, "controller.log"), ...(existsSync(join(dir, "workers")) ? readdirSync(join(dir, "workers")).map((f: string) => join(dir, "workers", f)) : [])];
+	const hits: string[] = [];
+	for (const f of files) {
+		if (!existsSync(f)) continue;
+		const text = readFileSync(f, "utf8");
+		for (const m of text.matchAll(/\bpt[seo]_[A-Za-z0-9_-]{8,}/g)) hits.push(`${f}: token-like ${m[0].slice(0, 8)}…`);
+		for (const s of knownSecrets) if (s && text.includes(s)) hits.push(`${f}: contains a known secret (${s.slice(0, 4)}…)`);
+	}
+	return hits;
+}
 export function sql<T = any>(hs: Harness, q: string, ...params: unknown[]): T[] {
 	return hs.h.db.prepare(q).all(...(params as never[])) as T[];
 }
