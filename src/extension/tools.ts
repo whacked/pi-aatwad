@@ -67,7 +67,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_send_message",
 		"Team: send message",
-		"Send a typed, durable message to another agent in your team organization (your manager, a direct report, or as policy allows). " +
+		"Send a typed, durable message to another agent in your team organization : your manager, a teammate (same manager), or anyone in your own subtree. " +
 			"The sender is always you (taken from your session credential). Use type 'question'/'answer' for conversation, 'task.progress' for updates. " +
 			"For new agents use team_request_expansion instead.",
 		Type.Object({

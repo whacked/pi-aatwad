@@ -349,6 +349,8 @@ export interface OrgContext {
 	is_root: boolean;
 	parent: { agent_id: string; role: string } | null;
 	children: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState }[];
+	/** Live agents with the same manager. Messageable directly (team_send_message). */
+	peers?: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState }[];
 	tasks: { task_id: string; title: string; status: TaskStatus; parent_task_id: string | null }[];
 	envelope: Envelope_Limits;
 	budget: BudgetView;

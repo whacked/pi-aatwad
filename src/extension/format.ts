@@ -83,6 +83,11 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 		const shown = c.children.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}] ${k.status}/${k.observed_state}`);
 		lines.push(`Direct reports (${c.children.length}): ${shown.join("; ")}${c.children.length > MAX_LIST ? "; …" : ""}`);
 	} else lines.push("Direct reports: none");
+	const peers = c.peers ?? [];
+	if (peers.length) {
+		const shown = peers.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}]`);
+		lines.push(`Teammates (same manager; message them directly with team_send_message): ${shown.join("; ")}${peers.length > MAX_LIST ? "; …" : ""}`);
+	}
 	if (c.tasks.length) {
 		const shown = c.tasks.slice(0, MAX_LIST).map((t) => `${t.task_id} ${t.status}: ${clip(t.title, 80)}`);
 		lines.push(`Your tasks: ${shown.join("; ")}${c.tasks.length > MAX_LIST ? "; …" : ""}`);

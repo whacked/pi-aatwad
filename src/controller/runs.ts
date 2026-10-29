@@ -280,6 +280,13 @@ export function me(ctx: Ctx, p: Principal): OrgContext {
 			const x = getAgent(db, c);
 			return { agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state };
 		}),
+		peers: parentId
+			? getChildren(db, parentId)
+					.filter((c) => c !== a.actor_id)
+					.map((c) => getAgent(db, c))
+					.filter((x) => !isTerminal(x.status))
+					.map((x) => ({ agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state }))
+			: [],
 		tasks: all(db, "SELECT id, title, status, parent_task_id FROM tasks WHERE owner_id = ? AND status NOT IN ('DONE','CANCELLED','FAILED') ORDER BY created_at", a.actor_id).map((t) => ({ task_id: t.id, title: t.title, status: t.status, parent_task_id: t.parent_task_id ?? null })),
 		envelope: getAllocation(db, a.actor_id).limits,
 		budget: budgetView(db, a.actor_id),

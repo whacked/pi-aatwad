@@ -216,8 +216,8 @@ test("agent cannot impersonate via body fields; messaging scope and inbox lease/
 		const aTask = (await hs.call("GET", "/me", { token: aTok })).body.tasks[0].task_id;
 		const px = await hs.call("POST", "/expansions", { token: aTok, body: { ...proposal(aTask, [{}]), requester_id: b, run_id: "run-x" } });
 		assert.equal(sql(hs, "SELECT requester_id, run_id FROM proposals WHERE id = ?", px.body.proposal_id)[0].requester_id, a);
-		// Sibling is not parent/subtree → forbidden. Unknown envelope field → invalid.
-		assert.equal((await hs.call("POST", "/messages", { token: aTok, body: { to: b, type: "question", payload: {} } })).body.error.code, "FORBIDDEN");
+		// Sibling (same manager) is a teammate → allowed (cross-team cases: peers.test.ts). Unknown envelope field → invalid.
+		assert.equal((await hs.call("POST", "/messages", { token: aTok, body: { to: b, type: "question", payload: {} } })).status, 200);
 		assert.equal((await hs.call("POST", "/messages", { token: aTok, body: { to: root, type: "bogus", payload: {} } })).body.error.code, "INVALID");
 		assert.equal((await hs.call("POST", "/messages", { token: aTok, body: { to: root, type: "question", payload: {}, admin: true } })).body.error.code, "INVALID");
 		// Agent cannot decide its own proposal or act as operator.

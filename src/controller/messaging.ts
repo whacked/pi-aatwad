@@ -55,8 +55,11 @@ export function sendMessage(ctx: Ctx, p: Principal, body: unknown): SendMessageR
 	assertSchema("envelope", env);
 	const to = getAgent(ctx.db, env.to as string);
 	if (to.run_id !== a.run_id) fail("FORBIDDEN", "recipient is in a different run");
-	const allowed = to.id === a.actor_id || getCurrentManager(ctx.db, a.actor_id) === to.id || getSubtree(ctx.db, a.actor_id).includes(to.id);
-	if (!allowed) fail("FORBIDDEN", "recipient must be your manager or within your subtree");
+	const mgr = getCurrentManager(ctx.db, a.actor_id);
+	const isPeer = mgr !== null && to.id !== a.actor_id && getCurrentManager(ctx.db, to.id) === mgr;
+	const allowed = to.id === a.actor_id || mgr === to.id || isPeer || getSubtree(ctx.db, a.actor_id).includes(to.id);
+	if (!allowed) fail("FORBIDDEN", "recipient must be your manager, a peer (same manager), or within your subtree");
+	if (isTerminal(to.status)) fail("CONFLICT", `recipient is ${to.status}`);
 	const id = postMessage(ctx.db, {
 		run_id: a.run_id,
 		from: a.actor_id,
