@@ -4,7 +4,7 @@
 
 export const PROTOCOL_VERSION = 1;
 /** Number of applied SQL migrations (db/001, db/002, ...). */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 // ---------------------------------------------------------------------------
 // Transport
@@ -256,6 +256,8 @@ export interface EnrollRequest {
 	pi_session_path?: string;
 	pid: number;
 	process_started_at?: string;
+	/** From env PI_TEAM_LAUNCH_TOKEN; controller matches it against the launched process identity. */
+	launch_token?: string;
 }
 export interface EnrollResponse {
 	run_id: string;

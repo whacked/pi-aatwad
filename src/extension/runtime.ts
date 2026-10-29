@@ -1,0 +1,564 @@
+// Session-scoped team runtime: identity (enrollment / re-attach / fork detection),
+// heartbeat, inbox delivery, and token selection. No typebox import so plain
+// `node --test` can exercise it with a fake ExtensionAPI.
+import { readFileSync, unlinkSync, existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ENV_ENROLL_FILE, HEARTBEAT_INTERVAL_MS } from "../shared/protocol.ts";
+import type { EnrollRequest, EnrollmentFile, Envelope, OrgContext } from "../shared/protocol.ts";
+
+export const ENV_LAUNCH_TOKEN = "PI_TEAM_LAUNCH_TOKEN";
+import { statePaths } from "../shared/paths.ts";
+import type { StatePaths } from "../shared/paths.ts";
+import { TeamApiError, TeamClient, ensureController, readOperatorToken, isUnavailable } from "../shared/client.ts";
+import type { CallOptions, EnsureOptions } from "../shared/client.ts";
+import { formatEnvelope } from "./format.ts";
+
+export const IDENTITY_ENTRY = "pi-recursive-team/identity";
+export const INBOX_MESSAGE = "pi-recursive-team/inbox";
+export const STATUS_KEY = "team";
+export const MAX_SETTLE_CONTINUATIONS = 20;
+export const NOT_ENROLLED = "not enrolled: run /team init (new organization) or /team resume <run_id> (attach to an existing one)";
+
+/** Persisted via pi.appendEntry. Never contains a token. */
+export interface IdentityEntry {
+	version: 1;
+	run_id: string;
+	agent_id: string;
+	pi_session_id: string;
+	pi_session_path?: string;
+	managed: boolean;
+	role?: string;
+}
+
+export interface Identity {
+	run_id: string;
+	agent_id: string;
+	session_id: string;
+	token: string;
+	managed: boolean;
+	role?: string;
+	parent_id?: string | null;
+	task_id?: string | null;
+	pi_session_id: string;
+}
+
+type PiLike = Pick<ExtensionAPI, "sendMessage" | "appendEntry">;
+type CtxLike = Pick<ExtensionContext, "ui" | "hasUI" | "mode" | "isIdle" | "hasPendingMessages" | "sessionManager" | "cwd">;
+
+function g<T>(name: string, init: () => T): T {
+	const k = Symbol.for(`pi-recursive-team.${name}`);
+	const o = globalThis as unknown as Record<symbol, T | undefined>;
+	let v = o[k];
+	if (v === undefined) {
+		v = init();
+		o[k] = v;
+	}
+	return v;
+}
+/** In-memory identity per Pi session id; survives /reload (same process), never written to disk. */
+const identityCache = () => g("identityCache", () => new Map<string, Identity>());
+/** Message IDs already injected, per agent. Survives /reload. */
+const seenCache = () => g("seenMessages", () => new Map<string, Set<string>>());
+
+export interface RuntimeOptions {
+	paths?: StatePaths;
+	ensure?: EnsureOptions;
+	heartbeatMs?: number;
+	env?: NodeJS.ProcessEnv;
+}
+
+export class TeamRuntime {
+	pi: PiLike;
+	paths: StatePaths;
+	opts: RuntimeOptions;
+	client: TeamClient;
+	identity: Identity | undefined;
+	ctx: CtxLike | undefined;
+	/** Shown to the user when identity was deliberately NOT adopted (fork/clone, consumed credential...). */
+	notice: string | undefined;
+	ready: Promise<void> = Promise.resolve();
+	lastInboxPending = 0;
+	fenced = false;
+	private timer: ReturnType<typeof setInterval> | undefined;
+	private delivering = false;
+	private stopped = false;
+
+	constructor(pi: PiLike, opts: RuntimeOptions = {}) {
+		this.pi = pi;
+		this.opts = opts;
+		this.paths = opts.paths ?? statePaths();
+		this.client = this.makeClient();
+	}
+
+	private makeClient(): TeamClient {
+		return new TeamClient({
+			paths: this.paths,
+			token: () => this.identity?.token,
+			ensure: this.opts.ensure,
+			shouldReconnect: () => !this.stopped,
+		});
+	}
+
+	get env(): NodeJS.ProcessEnv {
+		return this.opts.env ?? process.env;
+	}
+
+	/** True when this Pi process was launched by the controller as a managed worker. */
+	get managed(): boolean {
+		return this.identity?.managed === true || !!this.env[ENV_ENROLL_FILE] || this.enrollConsumed;
+	}
+	private enrollConsumed = false;
+
+	piSession(): { id: string; path?: string } {
+		const sm = this.ctx?.sessionManager;
+		return { id: sm?.getSessionId() ?? "unknown", path: sm?.getSessionFile() ?? undefined };
+	}
+
+	// ------------------------------------------------------------------ output
+	say(text: string, level: "info" | "warning" | "error" = "info"): void {
+		const ctx = this.ctx;
+		if (ctx?.hasUI) ctx.ui.notify(text, level);
+		else process.stderr.write(`[team] ${text}\n`);
+	}
+
+	updateStatus(): void {
+		const ctx = this.ctx;
+		if (!ctx) return;
+		try {
+			const id = this.identity;
+			if (id) ctx.ui.setStatus(STATUS_KEY, `team ${id.role ?? "agent"} ${id.agent_id} · run ${id.run_id}${id.managed ? " · managed" : ""}`);
+			else if (this.fenced) ctx.ui.setStatus(STATUS_KEY, "team: fenced (run /team resume)");
+			else if (this.notice) ctx.ui.setStatus(STATUS_KEY, "team: not attached (/team resume)");
+			else ctx.ui.setStatus(STATUS_KEY, undefined);
+		} catch {
+			/* ctx invalidated */
+		}
+	}
+
+	// ------------------------------------------------------------------ lifecycle
+	/** session_start. Resolves identity in the background; `ready` settles when done. */
+	start(ctx: CtxLike): Promise<void> {
+		this.ctx = ctx;
+		this.stopped = false;
+		this.ready = this.resolveIdentity().catch((e) => {
+			this.say(`team: could not restore organization identity: ${(e as Error).message}`, "warning");
+		});
+		return this.ready;
+	}
+
+	/** session_shutdown. Idempotent; never kills the controller or org members. */
+	stop(): void {
+		this.stopped = true;
+		this.ctx = undefined;
+		if (this.timer) clearInterval(this.timer);
+		this.timer = undefined;
+	}
+
+	private async resolveIdentity(): Promise<void> {
+		const pis = this.piSession();
+		this.seedSeenFromTranscript();
+		// (0) same process, same Pi session (e.g. /reload): reuse the in-memory credential.
+		const cached = identityCache().get(pis.id);
+		if (cached) {
+			this.adopt(cached);
+			return;
+		}
+		// (a) managed child: consume the one-time enrollment file.
+		const enrollPath = this.env[ENV_ENROLL_FILE];
+		if (enrollPath) {
+			delete this.env[ENV_ENROLL_FILE]; // never leak to nested processes (bash tool, sub-pi)
+			this.enrollConsumed = true;
+			await this.enrollFromFile(enrollPath, pis);
+			return;
+		}
+		// (b) persisted mapping in this Pi session.
+		const entry = this.latestIdentityEntry();
+		if (entry) {
+			if (entry.pi_session_id !== pis.id) {
+				this.notice =
+					`This Pi session was forked/cloned from team agent ${entry.agent_id} (run ${entry.run_id}). ` +
+					`The identity was NOT adopted to avoid two sessions acting as one agent. ` +
+					`Run /team resume ${entry.run_id} ${entry.agent_id} to deliberately take over (fences the other session), or keep working unenrolled.`;
+				this.say(this.notice, "warning");
+				this.updateStatus();
+				return;
+			}
+			if (entry.managed) {
+				this.notice = `This session belongs to managed worker ${entry.agent_id} (run ${entry.run_id}); not re-attaching automatically. Use /team resume ${entry.run_id} ${entry.agent_id} to take over.`;
+				this.say(this.notice, "warning");
+				this.updateStatus();
+				return;
+			}
+			await this.attach(entry.run_id, entry.agent_id, { quiet: true });
+			return;
+		}
+		// (c) unenrolled standalone: nothing is started or created.
+	}
+
+	private async enrollFromFile(path: string, pis: { id: string; path?: string }): Promise<void> {
+		if (!existsSync(path)) {
+			this.notice = `enrollment credential ${path} is missing (already used or expired); this managed worker cannot join its team`;
+			this.say(this.notice, "error");
+			return;
+		}
+		let file: EnrollmentFile;
+		try {
+			file = JSON.parse(readFileSync(path, "utf8")) as EnrollmentFile;
+		} finally {
+			try {
+				unlinkSync(path);
+			} catch {
+				/* already gone */
+			}
+		}
+		const envAgent = this.env.PI_TEAM_AGENT_ID;
+		const envRun = this.env.PI_TEAM_RUN_ID;
+		if ((envAgent && envAgent !== file.agent_id) || (envRun && envRun !== file.run_id)) {
+			throw new Error(`enrollment file is for ${file.run_id}/${file.agent_id} but the worker env says ${envRun}/${envAgent}; refusing to enroll`);
+		}
+		if (file.socket_path && file.socket_path !== this.paths.socket) {
+			this.paths = { ...this.paths, socket: file.socket_path };
+			this.client = this.makeClient();
+		}
+		await ensureController(this.paths, this.opts.ensure);
+		const r = await this.client.enroll(
+			{
+				token: file.token,
+				agent_id: file.agent_id,
+				spawn_intent_id: file.spawn_intent_id,
+				pi_session_id: pis.id,
+				pi_session_path: pis.path,
+				pid: process.pid,
+				// Executor-provided marker binding this process to its launch.
+				...(this.env[ENV_LAUNCH_TOKEN] ? { launch_token: this.env[ENV_LAUNCH_TOKEN] } : {}),
+			} satisfies EnrollRequest,
+			{ idempotencyKey: `enroll:${file.spawn_intent_id}:${file.token.slice(0, 8)}` },
+		);
+		const id: Identity = {
+			run_id: r.run_id,
+			agent_id: r.agent_id,
+			session_id: r.session_id,
+			token: r.token,
+			managed: true,
+			parent_id: r.parent_id,
+			task_id: r.task_id,
+			pi_session_id: pis.id,
+		};
+		this.persist(id);
+		this.adopt(id);
+		await this.refreshRole();
+	}
+
+	/** Operator attach: POST /runs/:id/attach (used by /team resume and same-session restart). */
+	async attach(runId: string, agentId?: string, o: { quiet?: boolean } = {}): Promise<Identity> {
+		if (this.managed) throw new Error("managed workers cannot attach to another identity");
+		await ensureController(this.paths, this.opts.ensure);
+		const op = await readOperatorToken(this.paths);
+		const pis = this.piSession();
+		const r = await this.client.attach(
+			runId,
+			{ agent_id: agentId, pi_session_id: pis.id, pi_session_path: pis.path, mode: "attach" },
+			{ token: op, idempotencyKey: `attach:${pis.id}:${randomUUID()}` },
+		);
+		const id: Identity = { run_id: r.run_id, agent_id: r.agent_id, session_id: r.session_id, token: r.token, managed: false, pi_session_id: pis.id };
+		this.notice = undefined;
+		this.persist(id);
+		this.adopt(id);
+		await this.refreshRole();
+		if (!o.quiet) this.say(`attached to run ${id.run_id} as ${id.role ?? "agent"} ${id.agent_id} (session ${id.session_id})`);
+		return id;
+	}
+
+	/** Called by /team init after POST /runs. */
+	adoptNew(id: Identity): void {
+		this.notice = undefined;
+		this.persist(id);
+		this.adopt(id);
+	}
+
+	private persist(id: Identity): void {
+		const pis = this.piSession();
+		const entry: IdentityEntry = {
+			version: 1,
+			run_id: id.run_id,
+			agent_id: id.agent_id,
+			pi_session_id: pis.id,
+			pi_session_path: pis.path,
+			managed: id.managed,
+			role: id.role,
+		};
+		this.pi.appendEntry(IDENTITY_ENTRY, entry);
+	}
+
+	adopt(id: Identity): void {
+		this.identity = id;
+		this.fenced = false;
+		identityCache().set(id.pi_session_id, id);
+		this.updateStatus();
+		this.startHeartbeat();
+	}
+
+	async refreshRole(): Promise<OrgContext | undefined> {
+		try {
+			const me = await this.client.me({ timeoutMs: 5_000 });
+			if (this.identity) {
+				this.identity.role = me.role;
+				this.identity.parent_id = me.parent?.agent_id ?? null;
+			}
+			this.updateStatus();
+			return me;
+		} catch (e) {
+			this.handleAgentError(e);
+			return undefined;
+		}
+	}
+
+	latestIdentityEntry(): IdentityEntry | undefined {
+		const sm = this.ctx?.sessionManager;
+		if (!sm) return undefined;
+		const entries = sm.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i] as { type: string; customType?: string; data?: unknown };
+			if (e.type === "custom" && e.customType === IDENTITY_ENTRY && e.data && typeof e.data === "object") {
+				const d = e.data as IdentityEntry;
+				if (d.version === 1 && d.run_id && d.agent_id) return d;
+			}
+		}
+		return undefined;
+	}
+
+	// ------------------------------------------------------------------ errors
+	/** Map fencing/auth errors to local state. Returns true if the identity was dropped. */
+	handleAgentError(e: unknown): boolean {
+		if (e instanceof TeamApiError && (e.code === "STALE_SESSION" || e.code === "UNAUTHENTICATED") && this.identity) {
+			const id = this.identity;
+			identityCache().delete(id.pi_session_id);
+			this.identity = undefined;
+			this.fenced = true;
+			if (this.timer) clearInterval(this.timer);
+			this.timer = undefined;
+			this.say(
+				e.code === "STALE_SESSION"
+					? `team: this session was FENCED — a newer session attempt now represents agent ${id.agent_id}. Tools are disabled here. Run /team resume ${id.run_id} ${id.agent_id} to take it back.`
+					: `team: session credential for ${id.agent_id} was rejected (${e.message}). Run /team resume ${id.run_id} ${id.agent_id}.`,
+				"error",
+			);
+			this.updateStatus();
+			return true;
+		}
+		return false;
+	}
+
+	/** Wait (bounded) for startup identity resolution, then require an identity. */
+	async requireIdentity(waitMs = 10_000): Promise<Identity> {
+		await Promise.race([this.ready, new Promise((r) => setTimeout(r, waitMs).unref?.())]);
+		if (!this.identity) {
+			if (this.fenced) throw new Error(`session fenced: another session attempt represents this agent now. ${NOT_ENROLLED}`);
+			throw new Error(NOT_ENROLLED);
+		}
+		return this.identity;
+	}
+
+	/** Run an agent-authenticated call; maps STALE_SESSION to a clear error. */
+	async agentCall<T>(fn: (o: CallOptions) => Promise<T>, o: CallOptions = {}): Promise<T> {
+		await this.requireIdentity();
+		try {
+			return await fn(o);
+		} catch (e) {
+			if (this.handleAgentError(e)) {
+				throw new Error(`session fenced (${(e as TeamApiError).code}): this Pi session no longer represents the agent. Run /team resume.`);
+			}
+			if (isUnavailable(e)) throw new Error(`team controller unreachable: ${(e as Error).message}`);
+			throw e;
+		}
+	}
+
+	/** Bearer for human /team commands: operator token unless this is a managed worker. */
+	async commandToken(): Promise<string | undefined> {
+		if (this.managed) return this.identity?.token;
+		await ensureController(this.paths, this.opts.ensure);
+		return readOperatorToken(this.paths);
+	}
+
+	// ------------------------------------------------------------------ heartbeat + inbox
+	private startHeartbeat(): void {
+		if (this.timer) clearInterval(this.timer);
+		const t = setInterval(() => void this.heartbeat(), this.opts.heartbeatMs ?? HEARTBEAT_INTERVAL_MS);
+		t.unref?.();
+		this.timer = t;
+		void this.heartbeat();
+	}
+
+	private idle(): boolean {
+		try {
+			return !!this.ctx && this.ctx.isIdle() && !this.ctx.hasPendingMessages();
+		} catch {
+			return false;
+		}
+	}
+
+	async heartbeat(): Promise<void> {
+		if (!this.identity || this.stopped) return;
+		const pis = this.piSession();
+		try {
+			const r = await this.client.heartbeat(
+				{ busy: !this.idle(), pi_session_id: pis.id, pi_session_path: pis.path },
+				{ idempotencyKey: `hb:${this.identity.session_id}:${randomUUID()}`, timeoutMs: 5_000 },
+			);
+			this.lastInboxPending = r.inbox_pending;
+			// Managed one-shot workers pick messages up at run start / before settling instead.
+			if (r.inbox_pending > 0 && this.idle() && !this.identity?.managed) await this.deliverInbox();
+		} catch (e) {
+			if (this.handleAgentError(e)) return;
+			try {
+				this.ctx?.ui.setStatus(STATUS_KEY, `team: controller unreachable (${(e as Error).message.slice(0, 60)})`);
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+
+	seen(): Set<string> {
+		const key = this.identity?.agent_id ?? "_";
+		let s = seenCache().get(key);
+		if (!s) {
+			s = new Set();
+			seenCache().set(key, s);
+		}
+		return s;
+	}
+
+	/** Message IDs already injected into this transcript survive crashes: re-seed the dedupe set from it. */
+	private seededIds: string[] = [];
+	private seedSeenFromTranscript(): void {
+		this.seededIds = [];
+		try {
+			for (const e of this.ctx?.sessionManager.getEntries() ?? []) {
+				const m = e as { type: string; customType?: string; details?: { message_ids?: string[] } };
+				if (m.type === "custom_message" && m.customType === INBOX_MESSAGE) for (const id of m.details?.message_ids ?? []) this.seededIds.push(id);
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+
+	/**
+	 * Claim pending messages (GET /inbox leases them) and split into unseen vs already-injected.
+	 * Callers inject `fresh` (as ONE custom message built by `inboxMessage`) and then call `ack(all)`.
+	 * At-least-once delivery + message_id dedupe; dedupe IDs are re-seeded from the transcript.
+	 */
+	async claimInbox(limit = 20): Promise<{ fresh: Envelope[]; all: Envelope[] }> {
+		if (!this.identity) return { fresh: [], all: [] };
+		const seen = this.seen();
+		for (const id of this.seededIds) seen.add(id);
+		const res = await this.client.inbox(limit, { timeoutMs: 5_000 });
+		this.lastInboxPending = 0;
+		return { fresh: res.messages.filter((m) => !seen.has(m.message_id)), all: res.messages };
+	}
+
+	inboxMessage(fresh: Envelope[]): { customType: string; content: string; display: boolean; details: { message_ids: string[] } } {
+		const content =
+			`Team inbox: ${fresh.length} new message(s) for ${this.identity?.agent_id}. They are durable org messages delivered by the controller.\n\n` +
+			fresh.map((m) => formatEnvelope(m)).join("\n\n---\n\n");
+		return { customType: INBOX_MESSAGE, content, display: true, details: { message_ids: fresh.map((m) => m.message_id) } };
+	}
+
+	markInjected(fresh: Envelope[]): void {
+		const seen = this.seen();
+		for (const m of fresh) seen.add(m.message_id);
+		if (seen.size > 5_000) for (const d of [...seen].slice(0, seen.size - 5_000)) seen.delete(d);
+	}
+
+	/** Ack every claimed ID (duplicates included). Failures are fine: redelivery is deduped. */
+	async ack(all: Envelope[]): Promise<void> {
+		for (const m of all) {
+			try {
+				await this.client.ack(m.message_id, { timeoutMs: 5_000 });
+			} catch (e) {
+				if (this.handleAgentError(e)) return;
+			}
+		}
+	}
+
+	/**
+	 * Interactive/RPC delivery path: inject via pi.sendMessage, then ack.
+	 * A human's session only receives them for the next turn unless triggerTurn is requested.
+	 * (Managed one-shot workers use the before_agent_start / agent_before_settle paths instead.)
+	 */
+	async deliverInbox(o: { triggerTurn?: boolean } = {}): Promise<Envelope[]> {
+		if (!this.identity || this.delivering) return [];
+		this.delivering = true;
+		try {
+			const { fresh, all } = await this.claimInbox();
+			if (fresh.length) {
+				const trigger = o.triggerTurn ?? false;
+				this.pi.sendMessage(
+					this.inboxMessage(fresh),
+					trigger ? (this.idle() ? { triggerTurn: true } : { triggerTurn: true, deliverAs: "followUp" }) : { deliverAs: "nextTurn" },
+				);
+				this.markInjected(fresh);
+			}
+			await this.ack(all);
+			return fresh;
+		} catch (e) {
+			this.handleAgentError(e);
+			return [];
+		} finally {
+			this.delivering = false;
+		}
+	}
+
+	/**
+	 * Managed one-shot worker, agent_before_settle: claim once; if there is new work, return it as a
+	 * custom_message entry plus ONE continuation. Guarded: never on abort/error (note: Pi 1.4.0 reports
+	 * context.canContinue=false at settle even though entries+continue work, so it is not used as a gate), or beyond MAX_SETTLE_CONTINUATIONS per process. Otherwise let Pi settle and exit.
+	 */
+	settleContinuations = 0;
+	async onBeforeSettle(ev: { outcome?: string; context?: { canContinue?: boolean } }): Promise<
+		{ entries: { type: "custom_message"; customType: string; content: string; display: boolean; details: unknown }[]; continue: true } | undefined
+	> {
+		if (!this.identity?.managed || this.delivering) return undefined;
+		if (ev.outcome && ev.outcome !== "completed") return undefined;
+		if (this.settleContinuations >= MAX_SETTLE_CONTINUATIONS) return undefined;
+		this.delivering = true;
+		try {
+			const { fresh, all } = await this.claimInbox();
+			if (!fresh.length) {
+				void this.ack(all);
+				return undefined;
+			}
+			this.settleContinuations++;
+			this.markInjected(fresh);
+			// Ack after Pi has appended the entry (the continuation keeps the process alive).
+			setTimeout(() => void this.ack(all), 0);
+			return { entries: [{ type: "custom_message", ...this.inboxMessage(fresh) }], continue: true };
+		} catch (e) {
+			this.handleAgentError(e);
+			return undefined;
+		} finally {
+			this.delivering = false;
+		}
+	}
+
+	/** Managed worker, before_agent_start: messages already pending when the run starts ride along with it. */
+	async inboxForRunStart(): Promise<ReturnType<TeamRuntime["inboxMessage"]> | undefined> {
+		if (!this.identity?.managed || this.delivering) return undefined;
+		this.delivering = true;
+		try {
+			const { fresh, all } = await this.claimInbox();
+			if (!fresh.length) {
+				void this.ack(all);
+				return undefined;
+			}
+			this.markInjected(fresh);
+			setTimeout(() => void this.ack(all), 0);
+			return this.inboxMessage(fresh);
+		} catch (e) {
+			this.handleAgentError(e);
+			return undefined;
+		} finally {
+			this.delivering = false;
+		}
+	}
+}
