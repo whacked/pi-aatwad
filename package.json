@@ -1,0 +1,27 @@
+{
+  "name": "pi-recursive-team",
+  "version": "0.1.0",
+  "description": "Recursive agent organizations for Pi: /team commands, org tools, and an auto-started local controller",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "engines": { "node": ">=22.13" },
+  "pi": {
+    "extensions": ["./src/extension/index.ts"]
+  },
+  "bin": {
+    "pi-team-controller": "./src/controller/main.ts"
+  },
+  "files": ["src", "db", "contracts", "docs", "scripts", "README.md"],
+  "scripts": {
+    "test": "node --test --test-concurrency=1 'test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "demo": "bash scripts/demo.sh"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

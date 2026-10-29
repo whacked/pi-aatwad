@@ -1,0 +1,30 @@
+server:
+  transport: unix
+  socket: AUTO_PER_USER_STATE_DIR/agent-org.sock # resolved by extension; no global /tmp socket
+storage:
+  sqlite_path: ./state/org.sqlite
+  wal: true
+limits:
+  max_live_agents: 12
+  max_pending_spawns: 8
+  emergency_max_depth: 12
+  max_run_usd: 25
+  max_run_seconds: 14400
+  max_agent_seconds: 3600
+  allow_providers: [anthropic, openrouter, local]
+models:
+  - id: reasoning-primary
+    provider: anthropic
+    model: REPLACE_WITH_AVAILABLE_MODEL_ID
+    capability_tags: [reasoning, coding, tools]
+    cost_per_m_input_usd: null # populate from provider contract
+    cost_per_m_output_usd: null
+    config_ref: ANTHROPIC_API_KEY
+  - id: economy-coder
+    provider: openrouter
+    model: REPLACE_WITH_AVAILABLE_MODEL_ID
+    capability_tags: [coding, tools]
+    cost_per_m_input_usd: null
+    cost_per_m_output_usd: null
+    config_ref: OPENROUTER_API_KEY
+# Startup MUST reject cost routing until prices or enforceable external budgets are set.

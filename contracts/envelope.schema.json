@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OrganizationMessageEnvelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "message_id",
+    "run_id",
+    "type",
+    "from",
+    "to",
+    "payload"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "task.assigned",
+        "task.progress",
+        "task.completed",
+        "question",
+        "answer",
+        "team.expand.request",
+        "team.expand.decision",
+        "agent.lifecycle",
+        "system.notice"
+      ]
+    },
+    "from": {
+      "type": "string",
+      "minLength": 1
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "causation_id": {
+      "type": "string"
+    },
+    "deadline": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

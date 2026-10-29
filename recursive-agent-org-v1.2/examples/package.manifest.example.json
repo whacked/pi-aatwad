@@ -1,0 +1,12 @@
+{
+  "name": "pi-recursive-team",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./src/extension/index.ts"
+    ]
+  },
+  "description": "Illustrative manifest only \u2014 implementation files are not supplied"
+}
