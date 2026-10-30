@@ -1,4 +1,4 @@
-import { planLayout, parseLayout, teamRegion, arrangeRegion } from "./layout.ts";
+import { planLayout, encodeLayout, parseLayout, teamRegion, arrangeRegion } from "./layout.ts";
 // Pane-scoped groups inside tmux; owned dedicated sessions when launched outside it.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -139,17 +139,16 @@ export class TmuxWatch {
 		return { width, height };
 	}
 	async arrange(panes: Pane[], dashboard: Pane): Promise<void> {
-		const current = await this.tmux("display-message", "-p", "-t", dashboard.window, "#{window_layout} #{window_zoomed_flag}");
-		if (current.endsWith(" 1")) return;
+		const current = await this.tmux("display-message", "-p", "-t", dashboard.window, "#{window_layout}\t#{window_zoomed_flag}");
+		const separator = current.lastIndexOf("\t");
+		if (separator < 0) throw new Error("tmux did not return a window layout and zoom state");
+		if (current.slice(separator + 1) === "1") return;
+		const raw = current.slice(0, separator);
+		const root = parseLayout(raw);
 		const members = panes.filter((p) => p.window === dashboard.window && p.id !== dashboard.id);
-		let layout: string | undefined;
-		if (this.opts.location) layout = arrangeRegion(parseLayout(current.split(" ")[0]), dashboard.id, members.map((p) => p.id));
-		else {
-			const { width, height } = await this.dimensions(dashboard.window);
-			layout = planLayout(width, height, dashboard.id, members.map((p) => p.id))?.layout;
-		}
-		if (!layout) throw new Error("Team window is too small; enlarge the terminal");
-		if (current.split(" ")[0] !== layout) await this.tmux("select-layout", "-t", dashboard.window, layout);
+		const before = encodeLayout(root);
+		const layout = arrangeRegion(root, dashboard.id, members.map((p) => p.id));
+		if (before !== layout) await this.tmux("select-layout", "-t", dashboard.window, layout);
 	}
 	async sync(nodes: TreeNode[], interactive = false): Promise<void> {
 		const panes = await this.panes();

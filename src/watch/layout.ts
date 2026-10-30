@@ -65,12 +65,34 @@ export function planLayout(width: number, height: number, leader: string, member
 	return best?.plan;
 }
 
-export interface LayoutNode extends Box { pane?: string; direction?: "{" | "["; children?: LayoutNode[] }
+export interface LayoutNode extends Box { pane?: string; direction?: "{" | "["; children?: LayoutNode[]; json?: Record<string, unknown>; document?: Record<string, unknown> }
 export function parseLayout(layout: string): LayoutNode {
+	layout = layout.trim();
+	if (layout.startsWith("{")) {
+		let document: Record<string, unknown>;
+		try { document = JSON.parse(layout); } catch { throw new Error("Cannot parse tmux JSON window layout"); }
+		if (document.V !== 2) throw new Error(`Unsupported tmux layout version ${document.V}`);
+		function cell(value: unknown): LayoutNode {
+			if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid tmux JSON layout cell");
+			const n = value as Record<string, unknown>;
+			if (![n.w, n.h, n.x, n.y].every(Number.isInteger) || Number(n.w) < 1 || Number(n.h) < 1) throw new Error("Invalid tmux JSON layout geometry");
+			const node: LayoutNode = { width: Number(n.w), height: Number(n.h), x: Number(n.x), y: Number(n.y), json: { ...n } };
+			if (n.t === "p" && typeof n.I === "string" && /^%\d+$/.test(n.I)) node.pane = n.I;
+			else if ((n.t === "h" || n.t === "v") && Array.isArray(n.c) && n.c.length) {
+				node.direction = n.t === "h" ? "{" : "[";
+				node.children = n.c.map(cell);
+			} else throw new Error("Invalid tmux JSON layout type or pane ID");
+			return node;
+		}
+		const root = cell(document.L);
+		root.document = document;
+		return root;
+	}
+	if (!/^[0-9a-f]{4},/i.test(layout)) throw new Error("Cannot parse tmux window layout: expected checksummed text or version 2 JSON");
 	const body = layout.slice(layout.indexOf(",") + 1);
 	let offset = 0;
 	function read(): LayoutNode {
-		const m = /^(\d+)x(\d+),(\d+),(\d+)/.exec(body.slice(offset));
+		const m = /^(\d+)x(\d+),(-?\d+),(-?\d+)/.exec(body.slice(offset));
 		if (!m) throw new Error("Cannot parse tmux window layout");
 		offset += m[0].length;
 		const node: LayoutNode = { width: +m[1], height: +m[2], x: +m[3], y: +m[4] };
@@ -90,6 +112,21 @@ export function parseLayout(layout: string): LayoutNode {
 	return node;
 }
 export function encodeLayout(root: LayoutNode): string {
+	if (root.document) {
+		function json(n: LayoutNode): Record<string, unknown> {
+			const { t: _t, w: _w, h: _h, x: _x, y: _y, c: _c, I, i, a, l, z, ...extra } = n.json ?? {};
+			const value: Record<string, unknown> = { ...extra, t: n.pane ? "p" : n.direction === "{" ? "h" : "v", w: n.width, h: n.height, x: n.x, y: n.y };
+			if (n.pane) {
+				if (a !== undefined) value.a = a;
+				if (l !== undefined) value.l = l;
+				if (i !== undefined) value.i = i;
+				if (z !== undefined) value.z = z;
+				value.I = n.pane;
+			} else value.c = n.children!.map(json);
+			return value;
+		}
+		return JSON.stringify({ ...root.document, L: json(root) });
+	}
 	function encode(n: LayoutNode): string {
 		return n.pane ? `${head(n)},${n.pane.slice(1)}` : `${head(n)}${n.direction}${n.children!.map(encode).join(",")}${n.direction === "{" ? "}" : "]"}`;
 	}
@@ -125,10 +162,17 @@ export function arrangeRegion(root: LayoutNode, leader: string, members: string[
 	const region = teamRegion(root, [leader, ...members]);
 	const plan = planLayout(region.width, region.height, leader, members);
 	if (!plan) throw new Error(`Team pane region ${region.width}x${region.height} is too small; enlarge it`);
+	const metadata = new Map<string, Record<string, unknown>>();
+	function remember(n: LayoutNode): void { if (n.pane && n.json) metadata.set(n.pane, n.json); n.children?.forEach(remember); }
+	remember(region);
 	const replacement = parseLayout(plan.layout);
+	function restore(n: LayoutNode): void { if (n.pane) n.json = metadata.get(n.pane); n.children?.forEach(restore); }
+	restore(replacement);
 	function shift(n: LayoutNode): void { n.x += region.x; n.y += region.y; n.children?.forEach(shift); }
 	shift(replacement);
+	const document = region.document;
 	Object.assign(region, replacement);
+	if (document) region.document = document;
 	if (replacement.pane) { delete region.children; delete region.direction; } else delete region.pane;
 	return encodeLayout(root);
 }

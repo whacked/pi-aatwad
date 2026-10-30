@@ -77,3 +77,8 @@ region dimensions. Closing an in-place view stops only its dashboard. Outside tm
 the dedicated-session fallback remains, including detaching clients on close;
 controller lifecycle operations stop workers. Explicit tmux pane/server destruction
 has normal PTY hangup semantics and may trigger controller recovery.
+
+The layout codec accepts legacy checksummed strings and tmux 3.8's version 2
+JSON format. It writes the format returned by the server, preserves JSON pane
+indexes, active/recent-pane metadata and unrelated cells, and separates layout
+output from zoom state with a tab rather than splitting JSON on spaces.

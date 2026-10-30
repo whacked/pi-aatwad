@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { TmuxWatch } from "../../src/watch/tmux.ts";
+import { parseLayout, encodeLayout } from "../../src/watch/layout.ts";
 import { clean, renderLog, recentOutput } from "../../src/watch/render.ts";
 import { harness, newRun, waitFor } from "../controller/helpers.ts";
 
@@ -139,6 +140,44 @@ test("inside tmux, team panes stay beside the leader without taking over unrelat
 		assert.equal((await recovered.panes()).length, 3);
 	} finally {
 		try { await view.tmux("kill-server"); } catch {}
+		await hs.cleanup();
+	}
+});
+
+
+test("watch handles JSON layout responses end-to-end while preserving unrelated panes", { skip: !haveTmux }, async () => {
+	const hs = await harness();
+	const { run_id } = await newRun(hs);
+	const view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket: join(hs.dir, "tmux.sock") });
+	const native = view.tmux.bind(view);
+	try {
+		const leader = await native("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "json-host", "-x", "180", "-y", "50", "/bin/sh");
+		const other = await native("split-window", "-d", "-h", "-l", "40", "-P", "-F", "#{pane_id}", "-t", leader, "/bin/sh");
+		const geometry = () => native("display-message", "-p", "-t", other, "#{pane_pid} #{pane_left} #{pane_top} #{pane_width} #{pane_height}");
+		const before = await geometry();
+		// This host has tmux 3.7. Translate the wire format only, exercising the
+		// complete watcher against 3.8-style JSON (with whitespace) and live panes.
+		view.tmux = async (...args: string[]) => {
+			if (args[0] === "select-layout") {
+				const root = parseLayout(args[args.length - 1]);
+				delete root.document;
+				return native(...args.slice(0, -1), encodeLayout(root));
+			}
+			const result = await native(...args);
+			if (args[0] === "display-message" && args.at(-1)?.includes("#{window_layout}")) {
+				const [raw, zoom] = result.split("\t");
+				const root = parseLayout(raw); root.document = { V: 2 };
+				const json = JSON.stringify(JSON.parse(encodeLayout(root)), null, 1);
+				return zoom === undefined ? json : `${json}\t${zoom}`;
+			}
+			return result;
+		};
+		await view.open(leader);
+		await view.launchAgent("json-member", "Member", ["/bin/sh"], hs.dir);
+		assert.equal((await view.panes()).length, 3);
+		assert.equal(await geometry(), before);
+	} finally {
+		try { await native("kill-server"); } catch {}
 		await hs.cleanup();
 	}
 });
