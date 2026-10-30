@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import type { TSchema } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MESSAGE_TYPES } from "../shared/protocol.ts";
-import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageType } from "../shared/protocol.ts";
+import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageType, TerminalLocation } from "../shared/protocol.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import type { ToolName } from "./names.ts";
@@ -292,21 +292,23 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 		Type.Object({ action: StringEnum(["open", "status", "focus", "close"] as const), agent_id: Type.Optional(Type.String({ description: "Required for focus" })) }),
 		async (p) => {
 			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
-			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id });
+			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
+			const opening = p.action === "open" || p.action === "focus";
+			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id,
+				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (p.action === "close") {
 				await view.close();
-				return text("Tmux detached; live Pi workers continue running", { open: await view.exists() });
+				return text("Team terminals left running; existing tmux sessions are unchanged", { open: await view.exists() });
 			}
 			if (p.action === "focus" && !p.agent_id) throw new Error("agent_id is required for focus");
 			if (p.action === "open" || p.action === "focus") {
-				await view.open();
-				await view.adoptLeader();
+				await view.open(process.env.TMUX_PANE);
 				const socket = await view.tmux("display-message", "-p", "#{socket_path}");
-				await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { socket });
+				await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { socket, location: view.opts.location });
 				await view.focus(p.action === "focus" ? p.agent_id : undefined);
 			}
 			const open = await view.exists();
-			return json("Tmux monitor", { open, session: view.name, panes: open ? await view.panes() : [], attach_command: `tmux attach-session -t ${view.name}` });
+			return json("Tmux monitor", { open, session: view.opts.location ? undefined : view.name, window: view.opts.location?.window, panes: open ? await view.panes() : [], attach_command: view.opts.location ? undefined : `tmux attach-session -t ${view.name}` });
 		},
 	);
 

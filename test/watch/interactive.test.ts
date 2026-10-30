@@ -23,8 +23,9 @@ test("real interactive Pi pane accepts keyboard input and leader assignments wit
 	try {
 		const { token, run_id } = await newRun(hs, { limits: { allow_providers: ["fakeoai"] }, models: [{ id: "interactive", provider: "fakeoai", model: "fake-1", capability_tags: ["tools"] }] });
 		view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket: join(hs.dir, "tmux.sock") });
-		await view.open();
-		const enabled = await hs.call("POST", `/runs/${run_id}/terminal`, { token, body: { socket: view.opts.socket } });
+		const leader = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "existing-session", "-x", "160", "-y", "50", "/bin/sh");
+		await view.open(leader);
+		const enabled = await hs.call("POST", `/runs/${run_id}/terminal`, { token, body: { socket: view.opts.socket, location: view.opts.location } });
 		assert.equal(enabled.status, 200);
 		const created = await hs.call("POST", "/members", { token, body: { name: "Adjudicator", responsibility: "Review the proposed changes and remain available", preferred_model_id: "interactive", max_runtime_seconds: 120 } });
 		assert.equal(created.status, 200, JSON.stringify(created.body));
@@ -34,6 +35,8 @@ test("real interactive Pi pane accepts keyboard input and leader assignments wit
 		const session = sql(hs, "SELECT s.* FROM sessions s JOIN agents a ON a.current_session_id=s.id WHERE a.id=?", id)[0];
 		const pane = (await view.panes()).find((p) => p.agent === id)!;
 		assert.ok(pane);
+		assert.equal(pane.window, view.opts.location!.window);
+		assert.equal((await view.tmux("list-sessions", "-F", "#{session_name}")).trim(), "existing-session");
 		const capture = () => view!.tmux("capture-pane", "-p", "-t", pane.id);
 		await waitFor(async () => (await capture()).includes("INTERACTIVE-ANSWER"), "visible Pi answer", 15000);
 		assert.equal(Number(await view.tmux("display-message", "-p", "-t", pane.id, "#{pane_pid}")), session.pid);

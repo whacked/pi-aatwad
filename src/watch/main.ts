@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Runs only in observer panes. Controller IPC is read-only and never auto-started.
-import type { EventView } from "../shared/protocol.ts";
+import type { EventView, TerminalLocation } from "../shared/protocol.ts";
 import { readFileSync } from "node:fs";
 import { TeamClient } from "../shared/client.ts";
 import { statePaths } from "../shared/paths.ts";
@@ -8,11 +8,11 @@ import { formatTree, formatBudget, formatEvents } from "../extension/format.ts";
 import { TmuxWatch, flatten } from "./tmux.ts";
 import { recentOutput, screen } from "./render.ts";
 
-const [stateDir, runId, agent, socket] = process.argv.slice(2);
+const [stateDir, runId, agent, socket, location] = process.argv.slice(2);
 if (!stateDir || !runId || !agent) throw new Error("watch requires state directory, run ID and pane role");
 const paths = statePaths(stateDir);
 const client = new TeamClient({ paths, noReconnect: true, token: () => readFileSync(paths.operatorToken, "utf8").trim() });
-const watch = new TmuxWatch({ stateDir, runId, socket: socket || undefined });
+const watch = new TmuxWatch({ stateDir, runId, socket: socket || undefined, location: location ? JSON.parse(location) as TerminalLocation : undefined });
 let eventCursor = 0;
 let recentEvents: EventView[] = [];
 while (true) {
@@ -20,8 +20,11 @@ while (true) {
 	try {
 		if (agent === "dashboard") {
 			const tree = await client.tree(runId, { timeoutMs: 2000 });
-			const terminal = await client.get<{ enabled: boolean; socket?: string }>(`/runs/${encodeURIComponent(runId)}/terminal`, { timeoutMs: 2000 });
-			if (terminal.socket) watch.opts.socket = terminal.socket;
+			const terminal = await client.get<{ enabled: boolean; socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(runId)}/terminal`, { timeoutMs: 2000 });
+			if (terminal.enabled) {
+				if (terminal.socket) watch.opts.socket = terminal.socket;
+				watch.opts.location = terminal.location;
+			}
 			await watch.sync(flatten(tree.root).slice(1), terminal.enabled);
 			const [budget, events] = await Promise.all([client.budget(tree.root.agent_id, { timeoutMs: 2000 }), client.events({ run_id: runId, after: eventCursor, limit: 1000 }, { timeoutMs: 2000 })]);
 			recentEvents = [...recentEvents, ...events.events].slice(-10);

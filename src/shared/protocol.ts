@@ -233,9 +233,11 @@ export const DEFAULT_PROVIDER = "default";
 /** What happens to an agent whose runtime deadline expires (see RunConfig.deadline_policy). */
 export type DeadlinePolicy = "BLOCKED" | "FAILED";
 
+export interface TerminalLocation { window: string; leader: string }
+
 export interface RunConfig {
 	/** Interactive Pi workers hosted by tmux; socket is primarily for isolated deployments/tests. */
-	terminal?: { socket?: string };
+	terminal?: { socket?: string; location?: TerminalLocation };
 	limits: GlobalLimits;
 	models: ModelCatalogEntry[];
 	root_envelope: Envelope_Limits;

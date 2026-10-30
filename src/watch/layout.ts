@@ -64,3 +64,71 @@ export function planLayout(width: number, height: number, leader: string, member
 	}
 	return best?.plan;
 }
+
+export interface LayoutNode extends Box { pane?: string; direction?: "{" | "["; children?: LayoutNode[] }
+export function parseLayout(layout: string): LayoutNode {
+	const body = layout.slice(layout.indexOf(",") + 1);
+	let offset = 0;
+	function read(): LayoutNode {
+		const m = /^(\d+)x(\d+),(\d+),(\d+)/.exec(body.slice(offset));
+		if (!m) throw new Error("Cannot parse tmux window layout");
+		offset += m[0].length;
+		const node: LayoutNode = { width: +m[1], height: +m[2], x: +m[3], y: +m[4] };
+		const separator = body[offset++];
+		if (separator === ",") {
+			const id = /^\d+/.exec(body.slice(offset));
+			if (!id) throw new Error("Missing tmux pane ID");
+			node.pane = `%${id[0]}`; offset += id[0].length;
+		} else if (separator === "{" || separator === "[") {
+			node.direction = separator; node.children = [];
+			do { node.children.push(read()); } while (body[offset++] === ",");
+		} else throw new Error("Invalid tmux layout cell");
+		return node;
+	}
+	const node = read();
+	if (offset !== body.length) throw new Error("Unexpected tmux layout suffix");
+	return node;
+}
+export function encodeLayout(root: LayoutNode): string {
+	function encode(n: LayoutNode): string {
+		return n.pane ? `${head(n)},${n.pane.slice(1)}` : `${head(n)}${n.direction}${n.children!.map(encode).join(",")}${n.direction === "{" ? "}" : "]"}`;
+	}
+	const text = encode(root);
+	return `${checksum(text)},${text}`;
+}
+/** Find the team-only subtree; never resize or reorder unrelated panes. */
+export function teamRegion(root: LayoutNode, paneIds: string[]): LayoutNode {
+	const wanted = new Set(paneIds);
+	function leaves(n: LayoutNode): string[] { return n.pane ? [n.pane] : n.children!.flatMap(leaves); }
+	function find(n: LayoutNode): LayoutNode | undefined {
+		const ids = leaves(n);
+		if (ids.length === wanted.size && ids.every((id) => wanted.has(id))) return n;
+		for (const child of n.children ?? []) { const found = find(child); if (found) return found; }
+		// tmux flattens adjacent splits with the same orientation. Reconstruct a
+		// contiguous team-only sibling group without including unrelated panes.
+		const children = n.children ?? [];
+		const selected = children.map((c, i) => ({ c, i, ids: leaves(c) })).filter(({ ids }) => ids.every((id) => wanted.has(id)));
+		if (selected.length && selected.flatMap((s) => s.ids).length === wanted.size && selected.every((s, i) => s.i === selected[0].i + i)) {
+			const cells = selected.map((s) => s.c);
+			const x = Math.min(...cells.map((c) => c.x)), y = Math.min(...cells.map((c) => c.y));
+			const group: LayoutNode = { x, y, width: Math.max(...cells.map((c) => c.x + c.width)) - x,
+				height: Math.max(...cells.map((c) => c.y + c.height)) - y, direction: n.direction, children: cells };
+			children.splice(selected[0].i, selected.length, group);
+			return group;
+		}
+	}
+	const region = find(root);
+	if (!region) throw new Error("Team panes no longer form a separate region; refusing to rearrange unrelated tmux panes");
+	return region;
+}
+export function arrangeRegion(root: LayoutNode, leader: string, members: string[]): string {
+	const region = teamRegion(root, [leader, ...members]);
+	const plan = planLayout(region.width, region.height, leader, members);
+	if (!plan) throw new Error(`Team pane region ${region.width}x${region.height} is too small; enlarge it`);
+	const replacement = parseLayout(plan.layout);
+	function shift(n: LayoutNode): void { n.x += region.x; n.y += region.y; n.children?.forEach(shift); }
+	shift(replacement);
+	Object.assign(region, replacement);
+	if (replacement.pane) { delete region.children; delete region.direction; } else delete region.pane;
+	return encodeLayout(root);
+}

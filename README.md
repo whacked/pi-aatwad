@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.0, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.1, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -147,29 +147,35 @@ to continue it. Future members launch directly into interactive panes. The contr
 owns launch, restart and cancellation, so a dashboard refresh never starts a
 competing Pi process. Without tmux mode, workers retain the headless one-shot path.
 
-When the leader Pi is already inside tmux, its **existing pane** is moved into the
-team window; it is not duplicated or reattached as a competing root session. The
-leader gets approximately 60% of the window and the remaining space is divided
-among member Pis and a small team dashboard. Layout adapts to dimensions and new
-members. Start the leader Pi inside tmux for this arrangement. If the leader is
-outside tmux, it stays in its original terminal; the team window contains the
-dashboard and interactive member Pis, and `/team watch` prints an attach command
-for another terminal.
+When Pi is already inside tmux, `/team watch` creates member panes **in the current
+window of the current session**, beside the existing Pi pane. It does not move Pi,
+create or switch sessions, rename windows, or change unrelated panes. The team
+uses only the region originally occupied by Pi: the leader receives approximately
+60% of that region, with member Pis and a small dashboard sharing the rest. The
+layout adapts to region dimensions and membership while preserving the position,
+size and processes of unrelated panes. The controller remembers this location so
+new and restarted members return to the same group.
+
+Outside tmux, the previous behavior remains: Pi stays in its original terminal,
+and `/team watch` creates a dedicated session with a dashboard and member Pis and
+prints an attach command for another terminal.
 
 Use tmux's default `Ctrl-b` then arrow keys to navigate panes, or `z` to zoom a
 pane temporarily. `/team watch focus <agent_id>` selects a member and
 `/team watch status` reports the session and panes. `Ctrl-b d` and
-`/team watch close` **detach** from live terminals; they do not destroy the session
-or stop Pi. Use `/team stop <agent_id>` to cancel a member, or `/team stop <run_id>`
-to cancel the team. Killing a tmux pane or server terminates the harnesses it hosts;
+`/team watch close` leave live Pi processes running. Inside an existing session,
+`/team watch close` stops only the small dashboard, without detaching your client
+or changing session/window selection; `/team watch` restores it. In a dedicated
+session, close detaches its clients without destroying live terminals. Use
+`/team stop <agent_id>` to cancel a member, or `/team stop <run_id>` to cancel the team. Killing a tmux pane or server terminates the harnesses it hosts;
 the controller may restart eligible members within its retry policy.
 
 To return later, `/team resume <run_id>` and `/team watch`. Interactive mode is
 persisted across controller restarts. Terminal panes survive controller outages
 and resume receiving assignments when it returns. Old log viewers are replaced by
-real Pi processes during promotion; old member windows are consolidated into the
-leader window. If there is insufficient space, enlarge the terminal rather than
-creating more windows. Managed members cannot manage the team terminal session.
+real Pi processes during promotion; dedicated sessions still consolidate old member
+windows into the leader window. If there is insufficient space, enlarge the terminal
+rather than creating more windows. Managed members cannot manage the team terminal session.
 
 
 ## Develop

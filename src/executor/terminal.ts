@@ -16,7 +16,7 @@ export async function launchTerminal(spec: LaunchSpec, piBin: string, args: stri
 	// tmux starts with a clean environment; shell exports don't expose keys in argv.
 	// exec replaces the pane shell with Pi, retaining the pane's PID and process group.
 	writeFileSync(script, `#!/bin/sh\n/bin/rm -f -- "$0"\n${Object.entries(env).map(([k, v]) => `export ${k}=${quote(v)}`).join("\n")}\nexec ${[piBin, ...args].map(quote).join(" ")}\n`, { mode: 0o600, flag: "wx" });
-	const view = new TmuxWatch({ stateDir: spec.state_dir, runId: spec.run_id, socket: spec.terminal?.socket });
+	const view = new TmuxWatch({ stateDir: spec.state_dir, runId: spec.run_id, socket: spec.terminal?.socket, location: spec.terminal?.location });
 	let pane: string | undefined;
 	try {
 		pane = await view.launchAgent(spec.agent_id, spec.role, ["/bin/sh", "-c", 'exec /usr/bin/env -i TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" /bin/sh "$1"', "pi-team", script], spec.cwd);

@@ -68,8 +68,12 @@ fencing logic remain authoritative. Dashboard refreshes only arrange these panes
 
 Interactive managed workers trigger model turns for inbox messages when idle;
 headless workers retain the bounded settle-continuation behavior. The leader's
-existing pane can be moved into the team window without duplicating its session.
+existing pane stays in its original session and window. Pane-scoped ownership
+and a persisted terminal location direct the executor to split that pane's region.
+Custom layout replacement is confined to the team subtree (including tmux's
+flattened sibling groups); unrelated pane geometry and processes are preserved.
 A roughly 60% leader allocation and the remaining member/dashboard grid adapt to
-window dimensions. Closing the UI detaches clients when harness panes are present;
+region dimensions. Closing an in-place view stops only its dashboard. Outside tmux,
+the dedicated-session fallback remains, including detaching clients on close;
 controller lifecycle operations stop workers. Explicit tmux pane/server destruction
 has normal PTY hangup semantics and may trigger controller recovery.

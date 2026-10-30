@@ -134,8 +134,8 @@ export class Reconciler {
 		 WHERE a.desired_state = 'RUNNING' AND a.status NOT IN ${TERMINAL_SQL} AND i.status = 'LIVE'`);
 		for (const a of rows) {
 			const terminal = runConfig(db, a.run_id).terminal;
-			const marker = parseJson<{ terminal?: boolean; terminal_socket?: string | null }>(a.process_marker, {});
-			if (!terminal || (marker.terminal && (marker.terminal_socket ?? null) === (terminal.socket ?? null))) continue;
+			const marker = parseJson<{ terminal?: boolean; terminal_socket?: string | null; terminal_location?: string }>(a.process_marker, {});
+			if (!terminal || (marker.terminal && (marker.terminal_socket ?? null) === (terminal.socket ?? null) && (marker.terminal_location ?? "null") === JSON.stringify(terminal.location ?? null))) continue;
 			if (a.pid != null) {
 				await this.executor.stop({ pid: a.pid, process_started_at: a.process_started_at ?? "" });
 				if (await this.executor.probe({ pid: a.pid, process_started_at: a.process_started_at ?? "" }) === "alive") continue;
@@ -226,7 +226,7 @@ export class Reconciler {
 			if (this.stopped || !this.isLeader()) return;
 			this.wtx(() => {
 				run(db, "UPDATE agents SET cwd = ? WHERE id = ?", launchSpec.cwd, launchSpec.agent_id);
-				run(db, "UPDATE sessions SET pid = ?, process_started_at = ?, launch_token = ?, process_marker = ? WHERE id = ?", ident.pid, ident.process_started_at, ident.launch_token, JSON.stringify({ pid: ident.pid, started: ident.process_started_at, terminal: launchSpec.terminal !== undefined, terminal_socket: launchSpec.terminal?.socket ?? null }), sessionId);
+				run(db, "UPDATE sessions SET pid = ?, process_started_at = ?, launch_token = ?, process_marker = ? WHERE id = ?", ident.pid, ident.process_started_at, ident.launch_token, JSON.stringify({ pid: ident.pid, started: ident.process_started_at, terminal: launchSpec.terminal !== undefined, terminal_socket: launchSpec.terminal?.socket ?? null, terminal_location: JSON.stringify(launchSpec.terminal?.location ?? null) }), sessionId);
 				const n = run(db, "UPDATE spawn_intents SET status = 'LAUNCHED', updated_at = ? WHERE id = ? AND status = 'LAUNCHING' AND session_id = ?", nowIso(), intentId, sessionId);
 				emit(db, { run_id: runId, actor_id: "controller", type: "spawn.launched", entity_id: launchSpec.agent_id, payload: { spawn_intent_id: intentId, session_id: sessionId, pid: ident.pid, already_enrolled: n === 0 } });
 			});

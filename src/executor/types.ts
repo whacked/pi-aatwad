@@ -1,8 +1,9 @@
+import type { TerminalLocation } from "../shared/protocol.ts";
 // Contract between controller (reconciler) and executor (process launcher).
 // Controller decides WHAT to run (inside SQL transactions); executor does the OS work (outside them).
 
 export interface LaunchSpec {
-	terminal?: { socket?: string };
+	terminal?: { socket?: string; location?: TerminalLocation };
 	run_id: string;
 	agent_id: string;
 	session_id: string;

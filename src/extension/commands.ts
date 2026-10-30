@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { RunConfig } from "../shared/protocol.ts";
+import type { RunConfig, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
 import { formatBudget, formatEvents, formatInspect, formatProposal, formatTree } from "./format.ts";
@@ -75,25 +75,27 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (!["open", "status", "close", "focus"].includes(action)) throw new Error("usage: /team watch [open|status|close|focus <agent_id>] [run_id]");
 			if (action === "focus" && !a[1]) throw new Error("usage: /team watch focus <agent_id> [run_id]");
 			const id = runId(a[action === "focus" ? 2 : 1]);
-			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id });
+			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(id)}/terminal`, { token: await rt.commandToken() });
+			const opening = action === "open" || action === "focus";
+			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id,
+				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (action === "close") {
 				await view.close();
-				out(ctx, `tmux detached for ${id}; live Pi workers continue running`);
+				out(ctx, `Team terminals left running for ${id}; your current tmux session is unchanged`);
 				return;
 			}
 			if (action === "status") {
-				out(ctx, await view.exists() ? `${view.name}: ${(await view.panes()).length} monitor panes; attach: tmux attach-session -t ${view.name}` : `no tmux monitor for ${id}; use /team watch`);
+				out(ctx, await view.exists() ? `${view.opts.location?.window ?? view.name}: ${(await view.panes()).length} team panes` : `no tmux monitor for ${id}; use /team watch`);
 				return;
 			}
 			// Validate access and run existence before creating terminal resources.
 			await rt.client.tree(id, { token: await rt.commandToken() });
-			await view.open();
-			if (rt.identity?.run_id === id && (await rt.client.me()).is_root) await view.adoptLeader();
+			await view.open(process.env.TMUX_PANE);
 			const socket = await view.tmux("display-message", "-p", "#{socket_path}");
-			await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { socket }, { token: await rt.commandToken() });
+			await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { socket, location: view.opts.location }, { token: await rt.commandToken() });
 			if (action === "focus") await view.focus(a[1]);
 			else await view.focus();
-			out(ctx, `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
+			out(ctx, view.opts.location ? `Team panes opened beside Pi in the current tmux window; interactive members appear automatically` : `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
 		},
 
 		send: async (a, ctx) => {

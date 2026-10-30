@@ -106,21 +106,37 @@ test("observer renders bounded logs and removes terminal escapes", () => {
 });
 
 
-test("adopting the leader moves its existing harness into the large pane without respawning it", { skip: !haveTmux }, async () => {
+test("inside tmux, team panes stay beside the leader without taking over unrelated panes or sessions", { skip: !haveTmux }, async () => {
 	const hs = await harness();
 	const { run_id } = await newRun(hs);
 	const view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket: join(hs.dir, "tmux.sock") });
 	try {
-		await view.open();
-		const pane = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "original-leader", "/bin/sh");
-		const pid = await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}");
-		await view.adoptLeader(pane);
-		assert.equal((await view.panes()).find((p) => p.agent === "leader")!.id, pane);
-		assert.equal(await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid);
-		const dims = (await view.tmux("list-panes", "-s", "-t", view.name, "-F", "#{@pi_team_agent} #{pane_width} #{pane_height}")).split("\n").map((line) => { const [agent, w, h] = line.split(" "); return { agent, area: Number(w) * Number(h) }; });
-		assert.ok(dims.find((p) => p.agent === "leader")!.area > dims.find((p) => p.agent === "dashboard")!.area);
+		const leader = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "original-session", "-x", "200", "-y", "60", "/bin/sh");
+		const unrelated = await view.tmux("split-window", "-d", "-h", "-l", "50", "-P", "-F", "#{pane_id}", "-t", leader, "/bin/sh");
+		await view.tmux("new-window", "-d", "-t", "original-session:", "-n", "unrelated-window", "/bin/sh");
+		const context = () => view.tmux("display-message", "-p", "-t", "original-session", "#{session_id} #{window_id} #{pane_id}");
+		const geometry = () => view.tmux("display-message", "-p", "-t", unrelated, "#{pane_pid} #{pane_left} #{pane_top} #{pane_width} #{pane_height}");
+		const beforeContext = await context(), beforeGeometry = await geometry();
+		const leaderPid = await view.tmux("display-message", "-p", "-t", leader, "#{pane_pid}");
+		await view.open(leader);
+		await view.open(leader);
+		assert.equal((await view.panes()).length, 2, "leader and one dashboard only");
+		const live = await view.launchAgent("live-agent", "Live member", ["/bin/sh"], hs.dir);
+		assert.equal((await view.panes()).length, 3);
+		assert.equal(await geometry(), beforeGeometry, "unrelated pane geometry and process stay unchanged");
+		assert.equal(await context(), beforeContext, "leader session, window and selection stay unchanged");
+		assert.equal(await view.tmux("display-message", "-p", "-t", leader, "#{pane_pid}"), leaderPid);
+		assert.equal((await view.tmux("list-sessions", "-F", "#{session_name}")).trim(), "original-session");
+		assert.equal((await view.tmux("list-windows", "-t", "original-session", "-F", "#{window_id}")).split("\n").length, 2);
+		const workerPid = await view.tmux("display-message", "-p", "-t", live, "#{pane_pid}");
 		await view.close();
-		assert.equal(await view.exists(), true, "detach preserves the live harness");
+		assert.equal(await geometry(), beforeGeometry);
+		assert.equal(await context(), beforeContext);
+		assert.equal(await view.tmux("display-message", "-p", "-t", live, "#{pane_pid}"), workerPid);
+		// Reconstructing from the persisted location (as the executor does) uses this same group.
+		const recovered = new TmuxWatch({ ...view.opts });
+		await recovered.open();
+		assert.equal((await recovered.panes()).length, 3);
 	} finally {
 		try { await view.tmux("kill-server"); } catch {}
 		await hs.cleanup();

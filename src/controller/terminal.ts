@@ -11,9 +11,16 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 	if (body !== undefined) {
 		if (p.kind !== "operator" && p.actor_id !== row.root_agent_id) fail("FORBIDDEN", "only the root may enable interactive terminals");
 		const b = obj(body);
-		onlyKeys(b, ["socket"]);
+		onlyKeys(b, ["socket", "location"]);
 		const socket = str(b, "socket", { optional: true });
-		cfg.terminal = socket ? { socket } : {};
+		let location: { window: string; leader: string } | undefined;
+		if (b.location !== undefined) {
+			const l = obj(b.location); onlyKeys(l, ["window", "leader"]);
+			const window = str(l, "window"), leader = str(l, "leader");
+			if (!/^@\d+$/.test(window) || !/^%\d+$/.test(leader)) fail("INVALID", "location must use tmux window/pane IDs");
+			location = { window, leader };
+		}
+		cfg.terminal = { ...(socket ? { socket } : {}), ...(location ? { location } : {}) };
 		run(ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), id);
 		emit(ctx.db, { run_id: id, actor_id: p.actor_id, type: "run.terminal_enabled", entity_id: id, payload: {} });
 		ctx.kick();
