@@ -46,7 +46,23 @@ test("tmux watcher discovers members, repairs closed panes, survives restart and
 		}
 		await waitFor(async () => (await view!.panes()).length === 6, "five members and dashboard", 10000);
 		const memberWindows = new Set((await view.panes()).filter((p) => p.agent !== "dashboard").map((p) => p.window));
-		assert.equal(memberWindows.size, 2, "paginate at four members per window");
+		assert.equal(memberWindows.size, 1, "all members share the leader window");
+		assert.equal((await view.tmux("list-windows", "-t", view.name, "-F", "#{window_id}")).split("\n").length, 1);
+		const dimensions = async () => (await view!.tmux("list-panes", "-s", "-t", view!.name, "-F", "#{@pi_team_agent} #{pane_width} #{pane_height}")).split("\n").map((line) => {
+			const [agent, w, h] = line.split(" "); return { agent, area: Number(w) * Number(h) };
+		});
+		const areas = await dimensions();
+		const managerArea = areas.find((p) => p.agent === "dashboard")!.area;
+		assert.ok(areas.filter((p) => p.agent !== "dashboard").every((p) => p.area < managerArea));
+		await view.tmux("break-pane", "-d", "-s", pane.id, "-n", "legacy-members");
+		await waitFor(async () => new Set((await view!.panes()).map((p) => p.window)).size === 1, "legacy member window consolidated", 10000);
+		const initialLayout = await view.tmux("display-message", "-p", "-t", (await view.panes())[0].window, "#{window_layout}");
+		await view.tmux("resize-window", "-t", (await view.panes())[0].window, "-x", "70", "-y", "70");
+		await waitFor(async () => {
+			const layout = await view!.tmux("display-message", "-p", "-t", (await view!.panes())[0].window, "#{window_layout}");
+			const newAreas = await dimensions();
+			return layout !== initialLayout && newAreas.find((p) => p.agent === "dashboard")!.area > 70 * 70 * 0.5;
+		}, "adaptive leader allocation after terminal resize", 10000);
 		const dashboard = (await view.panes()).find((p) => p.agent === "dashboard")!;
 		await view.tmux("respawn-pane", "-k", "-t", dashboard.id, "/usr/bin/true");
 		await waitFor(async () => (await view!.panes()).find((p) => p.agent === "dashboard")?.dead, "dead dashboard");

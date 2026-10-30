@@ -25,7 +25,7 @@ while (true) {
 			recentEvents = [...recentEvents, ...events.events].slice(-10);
 			if (events.events.length) eventCursor = events.events[events.events.length - 1].seq;
 			text = `TEAM MONITOR • ${watch.name}\n${runId} • ${new Date().toLocaleTimeString()}\n` +
-				"Member panes: tmux next/previous window (prefix n/p), choose pane (prefix arrows).\n" +
+				"Leader and members share this window. Choose pane (prefix arrows); zoom (prefix z).\n" +
 				"Send directions in the leader Pi: /team send <agent_id> <message>\n" +
 				"Close view: /team watch close (workers continue). Detach: prefix d.\n\n" +
 				formatTree(tree) + "\n\n" + formatBudget(budget) + "\n\n" + formatEvents(recentEvents, 10);

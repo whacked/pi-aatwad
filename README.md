@@ -135,14 +135,17 @@ Install `tmux` and put it on PATH, then run `/team watch` after initializing or
 resuming your team. You can also ask the leader “Open the tmux team monitor”; it
 uses `team_watch` to manage the same view. This creates one dedicated tmux session per run and state
 directory, with a dashboard plus member panes added automatically as agents are
-recruited. Member windows contain up to four tiled panes each. Panes show model,
+recruited. The manager and every member share one window. The manager reads the
+window dimensions and reserves approximately 60% of the area for itself, arranging
+members in a grid in the remaining space. The split and grid adapt to terminal
+shape, resizing, and new members. Panes show model,
 lifecycle state, tasks, and recent worker text/tool output; newer worker log
 generations are followed automatically after a relaunch.
 
 Inside tmux, the command switches to the monitor session. Outside tmux, it prints
 `tmux attach-session -t <session-name>` for you to run in a terminal. Use normal
-tmux navigation (default prefix `Ctrl-b`, then `n`/`p` for windows or arrow keys
-for panes); `Ctrl-b d` detaches. `/team watch focus <agent_id>` selects a member.
+tmux navigation (default prefix `Ctrl-b`, then arrow keys for panes, or `z`
+to zoom a pane temporarily); `Ctrl-b d` detaches. `/team watch focus <agent_id>` selects a member.
 `/team watch status` reports the session and pane count.
 
 The panes are monitors of the controller-managed workers. To send directions,
@@ -158,7 +161,10 @@ panes are recreated while monitoring is enabled; terminated members' panes remai
 for inspection. If the dashboard process exits, `/team watch` restarts it.
 Controller outages show a retry message and monitoring recovers when the
 controller returns. An open monitor keeps the controller active by polling it;
-close the view to allow the normal idle timeout. Managed workers cannot create
+close the view to allow the normal idle timeout. Existing member windows from
+older versions are consolidated into the manager window without restarting their
+monitor processes. If the terminal is too small to fit another pane, the dashboard
+asks you to enlarge it and retries; it does not create extra windows. Managed workers cannot create
 or close monitoring sessions.
 
 ## Develop

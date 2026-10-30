@@ -57,8 +57,12 @@ worker pi (same extension) ──enroll/heartbeat/tools──▶ controller
 
 ## tmux observer
 
-`/team watch` creates an owned tmux session with a dashboard process and up to
-four member panes per window. The dashboard reconciles panes against the durable
+`/team watch` creates an owned tmux session with a dashboard and member panes
+in one window. The dashboard reads the window size and applies a custom tmux
+layout with approximately 60% of the area for the manager and a balanced grid
+for the members. It reflows after resize or membership changes and migrates old
+member windows into the dashboard window. Physically impossible allocations
+wait for a larger terminal instead of creating extra windows. The dashboard reconciles panes against the durable
 controller tree every two seconds. Panes inspect state over IPC and render a
 bounded tail of the latest worker log generation. Worker execution and process
 identity are independent of tmux; closing the observer never stops workers.
