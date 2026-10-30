@@ -1,4 +1,5 @@
-// PiExecutor: runs each worker as a detached, non-interactive `pi` process.
+import { launchTerminal } from "./terminal.ts";
+// PiExecutor: interactive Pi in tmux for terminal-enabled runs; detached one-shot Pi otherwise.
 //
 // Verified against Pi 1.4.0 (see test/executor/pi-smoke.test.ts, which runs real `pi`
 // against a local fake OpenAI-compatible server, no paid credentials):
@@ -45,11 +46,10 @@ export function defaultExtensionPath(): string {
 }
 
 /** argv (without the binary) for a worker launch. Pure; exported for tests. */
-export function buildPiArgs(spec: LaunchSpec, extensionPath: string = defaultExtensionPath()): string[] {
+export function buildPiArgs(spec: LaunchSpec, extensionPath: string = defaultExtensionPath(), interactive = false): string[] {
 	const prompt = spec.resume ? (spec.resume_prompt ?? DEFAULT_RESUME_PROMPT) : spec.bootstrap_prompt;
 	return [
-		"--mode", "json",
-		"-p",
+		...(interactive ? [] : ["--mode", "json", "-p"]),
 		"--session", spec.pi_session_path,
 		// "default" = controller had no explicit leader model: let pi pick its configured default.
 		...(spec.provider && spec.provider !== "default" ? ["--provider", spec.provider] : []),
@@ -70,6 +70,7 @@ export class PiExecutor implements Executor {
 	}
 
 	async launch(spec: LaunchSpec): Promise<ProcessIdentity> {
+		if (spec.terminal) return launchTerminal(spec, this.piBin, buildPiArgs(spec, this.extensionPath, true));
 		const launchToken = newLaunchToken();
 		return launchDetached({
 			spec,

@@ -2,6 +2,7 @@
 // Controller decides WHAT to run (inside SQL transactions); executor does the OS work (outside them).
 
 export interface LaunchSpec {
+	terminal?: { socket?: string };
 	run_id: string;
 	agent_id: string;
 	session_id: string;

@@ -28,7 +28,7 @@ worker pi (same extension) ──enroll/heartbeat/tools──▶ controller
 - Launch (verified against Pi 1.4.0 by `test/executor/pi-smoke.test.ts` and `test/e2e/real-pi-worker.test.ts`):
   `pi --mode json -p --session <file> [--provider P] [--model M] -e <pkg>/src/extension/index.ts -- "<prompt>"`.
   `--provider/--model` are omitted for the `default` model. No `--continue` (ambiguous), no `--approve` (workers don't trust project-local `.pi`).
-- Workers are **one-shot**: the process exits when its prompt settles (observed STOPPED, not a failure). The controller relaunches with `resume=true` on the **same** `--session` file when the agent has unacked inbox deliveries or an open task. In the worker, the extension claims the inbox in `before_agent_start` and once more in `agent_before_settle` (one guarded continuation, at most 20 per process).
+- Without terminal mode, workers are **one-shot**: the process exits when its prompt settles (observed STOPPED, not a failure). The controller relaunches with `resume=true` on the **same** `--session` file when the agent has unacked inbox deliveries or an open task. In the worker, the extension claims the inbox in `before_agent_start` and once more in `agent_before_settle` (one guarded continuation, at most 20 per process).
 - Worker env is an allowlist (`src/executor/env.ts`). Workers get `PI_TEAM_ENROLL_FILE` and `PI_TEAM_LAUNCH_TOKEN` but **not** `PI_TEAM_STATE_DIR`. In managed mode the extension uses only the enroll file's `socket_path`, never reads `operator.token`, and never starts a controller.
 - Process identity = pid + process start time (`ps -o lstart= -p PID`) + launch token stored in `sessions`.
 - Tests/demo use `PI_TEAM_EXECUTOR=<node script>`: a fake worker that speaks the same enrollment/heartbeat/tool HTTP protocol without an LLM, so no paid credentials are required.
@@ -55,16 +55,21 @@ worker pi (same extension) ──enroll/heartbeat/tools──▶ controller
 - `pending_work_policy=reassign` only sends a handoff notice; it does not re-own tasks. The outbox is logged, not consumed externally.
 - Same-uid workers are not isolated (see README Limitations).
 
-## tmux observer
+## Interactive tmux workers
 
-`/team watch` creates an owned tmux session with a dashboard and member panes
-in one window. The dashboard reads the window size and applies a custom tmux
-layout with approximately 60% of the area for the manager and a balanced grid
-for the members. It reflows after resize or membership changes and migrates old
-member windows into the dashboard window. Physically impossible allocations
-wait for a larger terminal instead of creating extra windows. The dashboard reconciles panes against the durable
-controller tree every two seconds. Panes inspect state over IPC and render a
-bounded tail of the latest worker log generation. Worker execution and process
-identity are independent of tmux; closing the observer never stops workers.
-Only sessions tagged with the matching run/state-directory hash may be managed.
-`/team send` uses the existing authenticated message API, not `tmux send-keys`.
+`/team watch` persists terminal mode through `/runs/:id/terminal`. The reconciler
+stops existing headless processes once and relaunches on the same transcripts and
+agent IDs. New launch specs carry the persisted terminal configuration. PiExecutor
+then creates or respawns real PTY panes with interactive Pi argv (no JSON/print
+flags). A private, self-deleting shell launch file supplies the allowlisted worker
+environment; credentials never appear in tmux argv. Shell `exec` preserves the
+pane PID and process group as Pi's identity, so existing probe/stop/recovery and
+fencing logic remain authoritative. Dashboard refreshes only arrange these panes.
+
+Interactive managed workers trigger model turns for inbox messages when idle;
+headless workers retain the bounded settle-continuation behavior. The leader's
+existing pane can be moved into the team window without duplicating its session.
+A roughly 60% leader allocation and the remaining member/dashboard grid adapt to
+window dimensions. Closing the UI detaches clients when harness panes are present;
+controller lifecycle operations stop workers. Explicit tmux pane/server destruction
+has normal PTY hangup semantics and may trigger controller recovery.

@@ -44,7 +44,7 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 ```
 
 - **The controller is auto-started** by the first command that needs it. It is a detached process, so it keeps running when your Pi exits, and it exits by itself once idle (no live workers or pending spawns). Its state dir is `~/Library/Application Support/pi-recursive-team/` on macOS and `${XDG_STATE_HOME:-~/.local/state}/pi-recursive-team/` on Linux, with mode 0700. The socket is per-user, never under `/tmp`.
-- **Workers** are detached `pi --mode json -p --session <file>` processes. Each enrolls with a one-time credential passed through a 0600 file (never argv) and works in its own git worktree under `<workspace>/.team-worktrees/<run>/<agent>`. A worker runs until its prompt settles. When new work arrives, the controller relaunches it on the **same Pi transcript and the same agent ID**.
+- **Workers** run as interactive Pi harnesses in tmux when `/team watch` is enabled, or detached `pi --mode json -p --session <file>` processes otherwise. Each enrolls with a one-time credential passed through a 0600 file (never argv) and works in its own git worktree under `<workspace>/.team-worktrees/<run>/<agent>`. Interactive workers stay at their Pi prompt between assignments. Headless workers exit when their prompt settles and are relaunched on the **same Pi transcript and the same agent ID** for new work.
 - **Identity.** A logical agent ID is independent of the Pi session, process and model. If you close the root Pi, its reports keep working. Reopen Pi and use `/team resume <run>` (or the same Pi session re-attaches automatically). A forked or cloned Pi session is never silently adopted.
 
 ### Configuration
@@ -129,43 +129,48 @@ message “Was there a typo in the url or port?”. The client recognizes that c
 and uses a direct socket probe when only the misleading message is available,
 so absent or refused sockets trigger controller startup.
 
-### tmux monitoring
+### Interactive Pi teams in tmux
 
-Install `tmux` and put it on PATH, then run `/team watch` after initializing or
-resuming your team. You can also ask the leader “Open the tmux team monitor”; it
-uses `team_watch` to manage the same view. This creates one dedicated tmux session per run and state
-directory, with a dashboard plus member panes added automatically as agents are
-recruited. The manager and every member share one window. The manager reads the
-window dimensions and reserves approximately 60% of the area for itself, arranging
-members in a grid in the remaining space. The split and grid adapt to terminal
-shape, resizing, and new members. Panes show model,
-lifecycle state, tasks, and recent worker text/tool output; newer worker log
-generations are followed automatically after a relaunch.
+Install `tmux` and put it on PATH. Run `/team watch` or ask the leader to open the
+team terminals. **Each member pane runs a separate, interactive Pi harness** on a
+real tmux PTY: its own prompt, model, transcript, worktree and process identity.
+These are not log-tail panels. Type directly in a member's Pi prompt, or have the
+leader delegate tasks and send messages with `team_send_message` or
+`/team send <agent_id> <message>`. An idle interactive member automatically starts
+a new turn when a controller message arrives, and remains open after its turn
+finishes. The usual per-agent spend and runtime limits still apply.
 
-Inside tmux, the command switches to the monitor session. Outside tmux, it prints
-`tmux attach-session -t <session-name>` for you to run in a terminal. Use normal
-tmux navigation (default prefix `Ctrl-b`, then arrow keys for panes, or `z`
-to zoom a pane temporarily); `Ctrl-b d` detaches. `/team watch focus <agent_id>` selects a member.
-`/team watch status` reports the session and pane count.
+The first `/team watch` enables interactive workers for the run. Existing headless
+workers are stopped and relaunched in panes on their saved transcripts, preserving
+agent IDs and tasks; an active turn is interrupted and the resumed Pi is instructed
+to continue it. Future members launch directly into interactive panes. The controller
+owns launch, restart and cancellation, so a dashboard refresh never starts a
+competing Pi process. Without tmux mode, workers retain the headless one-shot path.
 
-The panes are monitors of the controller-managed workers. To send directions,
-use `/team send <agent_id> <message>` in the leader Pi or ask the leader to use
-`team_send_message`. Worker input is delivered through the controller, including
-when an idle worker needs to be relaunched. Typing in a monitor does not send
-input to the worker's stdin. Use `/team stop <agent_id>` to cancel a member.
+When the leader Pi is already inside tmux, its **existing pane** is moved into the
+team window; it is not duplicated or reattached as a competing root session. The
+leader gets approximately 60% of the window and the remaining space is divided
+among member Pis and a small team dashboard. Layout adapts to dimensions and new
+members. Start the leader Pi inside tmux for this arrangement. If the leader is
+outside tmux, it stays in its original terminal; the team window contains the
+dashboard and interactive member Pis, and `/team watch` prints an attach command
+for another terminal.
 
-`/team watch close` removes only the monitoring session; workers continue.
-Detaching or exiting the leader Pi leaves the view and workers running. Reopen
-Pi, `/team resume <run_id>`, then `/team watch` to reuse the view. Closed member
-panes are recreated while monitoring is enabled; terminated members' panes remain
-for inspection. If the dashboard process exits, `/team watch` restarts it.
-Controller outages show a retry message and monitoring recovers when the
-controller returns. An open monitor keeps the controller active by polling it;
-close the view to allow the normal idle timeout. Existing member windows from
-older versions are consolidated into the manager window without restarting their
-monitor processes. If the terminal is too small to fit another pane, the dashboard
-asks you to enlarge it and retries; it does not create extra windows. Managed workers cannot create
-or close monitoring sessions.
+Use tmux's default `Ctrl-b` then arrow keys to navigate panes, or `z` to zoom a
+pane temporarily. `/team watch focus <agent_id>` selects a member and
+`/team watch status` reports the session and panes. `Ctrl-b d` and
+`/team watch close` **detach** from live terminals; they do not destroy the session
+or stop Pi. Use `/team stop <agent_id>` to cancel a member, or `/team stop <run_id>`
+to cancel the team. Killing a tmux pane or server terminates the harnesses it hosts;
+the controller may restart eligible members within its retry policy.
+
+To return later, `/team resume <run_id>` and `/team watch`. Interactive mode is
+persisted across controller restarts. Terminal panes survive controller outages
+and resume receiving assignments when it returns. Old log viewers are replaced by
+real Pi processes during promotion; old member windows are consolidated into the
+leader window. If there is insufficient space, enlarge the terminal rather than
+creating more windows. Managed members cannot manage the team terminal session.
+
 
 ## Develop
 

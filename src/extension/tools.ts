@@ -287,19 +287,22 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	);
 
 	reg(
-		"team_watch", "Team: tmux monitor",
-		"Root only: open, inspect, focus or close the team's tmux monitoring session when the user requests it. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Panes show status, tasks and output; send directions using team_send_message. Outside tmux, return the attach command to the user. Requires tmux and Node on PATH.",
+		"team_watch", "Team: tmux terminals",
+		"Root only: open, inspect, focus or close the team's live Pi terminal session when the user requests it. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Requires tmux and Node on PATH.",
 		Type.Object({ action: StringEnum(["open", "status", "focus", "close"] as const), agent_id: Type.Optional(Type.String({ description: "Required for focus" })) }),
 		async (p) => {
 			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
 			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id });
 			if (p.action === "close") {
 				await view.close();
-				return text("Tmux monitor closed; workers continue running", { open: false });
+				return text("Tmux detached; live Pi workers continue running", { open: await view.exists() });
 			}
 			if (p.action === "focus" && !p.agent_id) throw new Error("agent_id is required for focus");
 			if (p.action === "open" || p.action === "focus") {
 				await view.open();
+				await view.adoptLeader();
+				const socket = await view.tmux("display-message", "-p", "#{socket_path}");
+				await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { socket });
 				await view.focus(p.action === "focus" ? p.agent_id : undefined);
 			}
 			const open = await view.exists();

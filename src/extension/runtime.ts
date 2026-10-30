@@ -473,7 +473,7 @@ export class TeamRuntime {
 			);
 			this.lastInboxPending = r.inbox_pending;
 			// Managed one-shot workers pick messages up at run start / before settling instead.
-			if (r.inbox_pending > 0 && this.idle() && !this.identity?.managed) await this.deliverInbox();
+			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: this.identity?.managed && this.ctx?.mode === "tui" });
 		} catch (e) {
 			if (this.handleAgentError(e)) return;
 			try {
@@ -583,7 +583,7 @@ export class TeamRuntime {
 	async onBeforeSettle(ev: { outcome?: string; context?: { canContinue?: boolean } }): Promise<
 		{ entries: { type: "custom_message"; customType: string; content: string; display: boolean; details: unknown }[]; continue: true } | undefined
 	> {
-		if (!this.identity?.managed || this.delivering) return undefined;
+		if (!this.identity?.managed || this.ctx?.mode === "tui" || this.delivering) return undefined;
 		if (ev.outcome && ev.outcome !== "completed") return undefined;
 		if (this.settleContinuations >= MAX_SETTLE_CONTINUATIONS) return undefined;
 		this.delivering = true;

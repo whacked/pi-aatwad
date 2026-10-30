@@ -23,7 +23,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "events", args: "[run_id]", help: "recent audit events" },
 	{ name: "inspect", args: "<agent_id>", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "stop", args: "<agent_id|run_id>", help: "controlled cancellation (cascades to subtree)" },
-	{ name: "watch", args: "[open|status|close|focus <agent_id>] [run_id]", help: "manage the tmux team monitor" },
+	{ name: "watch", args: "[open|status|close|focus <agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
 	{ name: "send", args: "<agent_id> <message>", help: "send directions to a team member" },
 ];
 
@@ -78,7 +78,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id });
 			if (action === "close") {
 				await view.close();
-				out(ctx, `tmux monitor closed for ${id}; team workers continue running`);
+				out(ctx, `tmux detached for ${id}; live Pi workers continue running`);
 				return;
 			}
 			if (action === "status") {
@@ -88,9 +88,12 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			// Validate access and run existence before creating terminal resources.
 			await rt.client.tree(id, { token: await rt.commandToken() });
 			await view.open();
+			if (rt.identity?.run_id === id && (await rt.client.me()).is_root) await view.adoptLeader();
+			const socket = await view.tmux("display-message", "-p", "#{socket_path}");
+			await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { socket }, { token: await rt.commandToken() });
 			if (action === "focus") await view.focus(a[1]);
 			else await view.focus();
-			out(ctx, `tmux monitor ${view.name} opened; members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
+			out(ctx, `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
 		},
 
 		send: async (a, ctx) => {

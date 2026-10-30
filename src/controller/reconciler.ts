@@ -104,6 +104,7 @@ export class Reconciler {
 		this.publishOutbox();
 		await this.recoverUncertain(false);
 		await this.enforceDeadlines();
+		await this.promoteTerminals();
 		await this.observeExits();
 		this.expireLeases();
 		await this.scheduleRestarts();
@@ -123,6 +124,32 @@ export class Reconciler {
 		this.wtx(() => {
 			for (const r of rows) run(db, "UPDATE outbox SET status = 'PUBLISHED', attempts = attempts + 1 WHERE id = ?", r.id);
 		});
+	}
+
+	/** Switch existing headless sessions once, preserving transcripts, tasks and logical IDs. */
+	async promoteTerminals(): Promise<void> {
+		const db = this.ctx.db;
+		const rows = all(db, `SELECT a.*, s.pid, s.process_started_at, s.process_marker, i.id AS intent_id FROM agents a
+		 JOIN sessions s ON s.id = a.current_session_id JOIN spawn_intents i ON i.agent_id = a.id
+		 WHERE a.desired_state = 'RUNNING' AND a.status NOT IN ${TERMINAL_SQL} AND i.status = 'LIVE'`);
+		for (const a of rows) {
+			const terminal = runConfig(db, a.run_id).terminal;
+			const marker = parseJson<{ terminal?: boolean; terminal_socket?: string | null }>(a.process_marker, {});
+			if (!terminal || (marker.terminal && (marker.terminal_socket ?? null) === (terminal.socket ?? null))) continue;
+			if (a.pid != null) {
+				await this.executor.stop({ pid: a.pid, process_started_at: a.process_started_at ?? "" });
+				if (await this.executor.probe({ pid: a.pid, process_started_at: a.process_started_at ?? "" }) === "alive") continue;
+			}
+			this.wtx(() => {
+				const current = getAgent(db, a.id);
+				if (current.current_session_id !== a.current_session_id || current.desired_state !== 'RUNNING' || isTerminal(current.status)) return;
+				run(db, "UPDATE agents SET observed_state = 'STOPPED', lease_until = NULL WHERE id = ?", a.id);
+				run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE id = ?", nowIso(), a.current_session_id);
+				run(db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'interactive terminal promotion' WHERE session_id = ?", nowIso(), a.current_session_id);
+				run(db, "UPDATE spawn_intents SET status = 'PENDING', updated_at = ? WHERE id = ?", nowIso(), a.intent_id);
+				emit(db, { run_id: a.run_id, actor_id: "controller", type: "agent.terminal_promoted", entity_id: a.id, payload: {} });
+			});
+		}
 	}
 
 	/** One launch attempt for a PENDING intent. Phase 1 (txn) → launch (no txn) → phase 2 (txn). */
@@ -161,6 +188,7 @@ export class Reconciler {
 			const cfg = runConfig(db, a.run_id);
 			const parent = getAncestry(db, a.id)[0] ?? null;
 			const launchSpec: LaunchSpec = {
+				terminal: cfg.terminal,
 				run_id: a.run_id,
 				agent_id: a.id,
 				session_id: s.session_id,
@@ -198,7 +226,7 @@ export class Reconciler {
 			if (this.stopped || !this.isLeader()) return;
 			this.wtx(() => {
 				run(db, "UPDATE agents SET cwd = ? WHERE id = ?", launchSpec.cwd, launchSpec.agent_id);
-				run(db, "UPDATE sessions SET pid = ?, process_started_at = ?, launch_token = ?, process_marker = ? WHERE id = ?", ident.pid, ident.process_started_at, ident.launch_token, JSON.stringify({ pid: ident.pid, started: ident.process_started_at }), sessionId);
+				run(db, "UPDATE sessions SET pid = ?, process_started_at = ?, launch_token = ?, process_marker = ? WHERE id = ?", ident.pid, ident.process_started_at, ident.launch_token, JSON.stringify({ pid: ident.pid, started: ident.process_started_at, terminal: launchSpec.terminal !== undefined, terminal_socket: launchSpec.terminal?.socket ?? null }), sessionId);
 				const n = run(db, "UPDATE spawn_intents SET status = 'LAUNCHED', updated_at = ? WHERE id = ? AND status = 'LAUNCHING' AND session_id = ?", nowIso(), intentId, sessionId);
 				emit(db, { run_id: runId, actor_id: "controller", type: "spawn.launched", entity_id: launchSpec.agent_id, payload: { spawn_intent_id: intentId, session_id: sessionId, pid: ident.pid, already_enrolled: n === 0 } });
 			});
@@ -322,7 +350,7 @@ export class Reconciler {
 		);
 		for (const a of rows) {
 			// One-shot workers exit after their prompt settles (observed STOPPED). Relaunch only when work is waiting.
-			if (a.observed_state === "STOPPED" && !hasPendingWork(db, a.id)) continue;
+			if (a.observed_state === "STOPPED" && !runConfig(db, a.run_id).terminal && !hasPendingWork(db, a.id)) continue;
 			if (a.pid != null) {
 				const alive = (await this.executor.probe({ pid: a.pid, process_started_at: a.process_started_at ?? "" })) === "alive";
 				if (alive) {

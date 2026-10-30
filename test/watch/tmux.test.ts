@@ -51,6 +51,11 @@ test("tmux watcher discovers members, repairs closed panes, survives restart and
 		const dimensions = async () => (await view!.tmux("list-panes", "-s", "-t", view!.name, "-F", "#{@pi_team_agent} #{pane_width} #{pane_height}")).split("\n").map((line) => {
 			const [agent, w, h] = line.split(" "); return { agent, area: Number(w) * Number(h) };
 		});
+		await waitFor(async () => {
+			const measured = await dimensions();
+			const main = measured.find((p) => p.agent === "dashboard")!.area;
+			return measured.filter((p) => p.agent !== "dashboard").every((p) => p.area < main);
+		}, "manager allocation after final pane is tagged", 10000);
 		const areas = await dimensions();
 		const managerArea = areas.find((p) => p.agent === "dashboard")!.area;
 		assert.ok(areas.filter((p) => p.agent !== "dashboard").every((p) => p.area < managerArea));
@@ -98,4 +103,26 @@ test("observer renders bounded logs and removes terminal escapes", () => {
 	assert.match(renderLog(JSON.stringify({ type: "tool_execution_start", toolName: "read" })), /tool started: read/);
 	assert.equal(recentOutput("/nonexistent", "agent_1"), "Waiting for worker log…");
 	assert.throws(() => recentOutput("/tmp", "../bad"), /invalid agent/);
+});
+
+
+test("adopting the leader moves its existing harness into the large pane without respawning it", { skip: !haveTmux }, async () => {
+	const hs = await harness();
+	const { run_id } = await newRun(hs);
+	const view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket: join(hs.dir, "tmux.sock") });
+	try {
+		await view.open();
+		const pane = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "original-leader", "/bin/sh");
+		const pid = await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}");
+		await view.adoptLeader(pane);
+		assert.equal((await view.panes()).find((p) => p.agent === "leader")!.id, pane);
+		assert.equal(await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid);
+		const dims = (await view.tmux("list-panes", "-s", "-t", view.name, "-F", "#{@pi_team_agent} #{pane_width} #{pane_height}")).split("\n").map((line) => { const [agent, w, h] = line.split(" "); return { agent, area: Number(w) * Number(h) }; });
+		assert.ok(dims.find((p) => p.agent === "leader")!.area > dims.find((p) => p.agent === "dashboard")!.area);
+		await view.close();
+		assert.equal(await view.exists(), true, "detach preserves the live harness");
+	} finally {
+		try { await view.tmux("kill-server"); } catch {}
+		await hs.cleanup();
+	}
 });

@@ -20,21 +20,23 @@ while (true) {
 	try {
 		if (agent === "dashboard") {
 			const tree = await client.tree(runId, { timeoutMs: 2000 });
-			await watch.sync(flatten(tree.root).slice(1));
+			const terminal = await client.get<{ enabled: boolean; socket?: string }>(`/runs/${encodeURIComponent(runId)}/terminal`, { timeoutMs: 2000 });
+			if (terminal.socket) watch.opts.socket = terminal.socket;
+			await watch.sync(flatten(tree.root).slice(1), terminal.enabled);
 			const [budget, events] = await Promise.all([client.budget(tree.root.agent_id, { timeoutMs: 2000 }), client.events({ run_id: runId, after: eventCursor, limit: 1000 }, { timeoutMs: 2000 })]);
 			recentEvents = [...recentEvents, ...events.events].slice(-10);
 			if (events.events.length) eventCursor = events.events[events.events.length - 1].seq;
-			text = `TEAM MONITOR • ${watch.name}\n${runId} • ${new Date().toLocaleTimeString()}\n` +
+			text = `TEAM CONTROL • ${watch.name}\n${runId} • ${new Date().toLocaleTimeString()}\n` +
 				"Leader and members share this window. Choose pane (prefix arrows); zoom (prefix z).\n" +
-				"Send directions in the leader Pi: /team send <agent_id> <message>\n" +
-				"Close view: /team watch close (workers continue). Detach: prefix d.\n\n" +
+				"Member panes run interactive Pi. Type directly or use /team send <agent_id> <message>.\n" +
+				"Detach: prefix d or /team watch close. Stop agents through /team stop.\n\n" +
 				formatTree(tree) + "\n\n" + formatBudget(budget) + "\n\n" + formatEvents(recentEvents, 10);
 		} else {
 			const r = await client.inspect(agent, { timeoutMs: 2000 });
 			const a = r.agent;
 			text = `${a.role} [${agent}]\n${a.status}/${a.observed_state} • desired ${a.desired_state} • ${a.model ?? "default model"}\n` +
 				`Tasks: ${r.tasks.map((t) => `${t.status}: ${t.title}`).join("; ") || "none"}\n` +
-				`Sessions: ${r.sessions.length} • ${new Date().toLocaleTimeString()}\nMonitor only; send messages from leader Pi.\n\n` + recentOutput(paths.workerLogs, agent);
+				`Sessions: ${r.sessions.length} • ${new Date().toLocaleTimeString()}\nLegacy headless output; /team watch enables interactive Pi.\n\n` + recentOutput(paths.workerLogs, agent);
 		}
 	} catch (e) {
 		text = `Team monitor • ${runId}\n${agent}\n${(e as Error).message}\nRetrying; workers are managed independently of this view.`;

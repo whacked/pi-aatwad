@@ -234,6 +234,8 @@ export const DEFAULT_PROVIDER = "default";
 export type DeadlinePolicy = "BLOCKED" | "FAILED";
 
 export interface RunConfig {
+	/** Interactive Pi workers hosted by tmux; socket is primarily for isolated deployments/tests. */
+	terminal?: { socket?: string };
 	limits: GlobalLimits;
 	models: ModelCatalogEntry[];
 	root_envelope: Envelope_Limits;

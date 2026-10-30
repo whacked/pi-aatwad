@@ -100,6 +100,6 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 
 	// Interactive sessions: deliver pending messages as soon as Pi settles instead of waiting for the next heartbeat.
 	pi.on("agent_settled", () => {
-		if (rt.identity && !rt.identity.managed && rt.lastInboxPending > 0) void rt.deliverInbox();
+		if (rt.identity && (!rt.identity.managed || rt.ctx?.mode === "tui") && rt.lastInboxPending > 0) void rt.deliverInbox({ triggerTurn: rt.identity.managed });
 	});
 }
