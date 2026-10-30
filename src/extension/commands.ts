@@ -1,3 +1,4 @@
+import { TmuxWatch } from "../watch/tmux.ts";
 // `/team` command with subcommands. Human-facing; uses the operator token unless this is a managed worker.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -22,7 +23,8 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "events", args: "[run_id]", help: "recent audit events" },
 	{ name: "inspect", args: "<agent_id>", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "stop", args: "<agent_id|run_id>", help: "controlled cancellation (cascades to subtree)" },
-	{ name: "watch", args: "", help: "tmux observer (not implemented in v0.1)" },
+	{ name: "watch", args: "[open|status|close|focus <agent_id>] [run_id]", help: "manage the tmux team monitor" },
+	{ name: "send", args: "<agent_id> <message>", help: "send directions to a team member" },
 ];
 
 export function helpText(pi: Pick<ExtensionAPI, "getAllTools">, rt: TeamRuntime): string {
@@ -66,7 +68,37 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	const handlers: Record<string, (a: string[], ctx: ExtensionCommandContext) => Promise<void>> = {
 		help: async (_a, ctx) => out(ctx, helpText(pi, rt)),
 
-		watch: async (_a, ctx) => out(ctx, "tmux observer not implemented in v0.1"),
+		watch: async (a, ctx) => {
+			await rt.ready;
+			if (rt.managed) throw new Error("managed workers cannot manage tmux views; use the leader session");
+			const action = a[0] ?? "open";
+			if (!["open", "status", "close", "focus"].includes(action)) throw new Error("usage: /team watch [open|status|close|focus <agent_id>] [run_id]");
+			if (action === "focus" && !a[1]) throw new Error("usage: /team watch focus <agent_id> [run_id]");
+			const id = runId(a[action === "focus" ? 2 : 1]);
+			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id });
+			if (action === "close") {
+				await view.close();
+				out(ctx, `tmux monitor closed for ${id}; team workers continue running`);
+				return;
+			}
+			if (action === "status") {
+				out(ctx, await view.exists() ? `${view.name}: ${(await view.panes()).length} monitor panes; attach: tmux attach-session -t ${view.name}` : `no tmux monitor for ${id}; use /team watch`);
+				return;
+			}
+			// Validate access and run existence before creating terminal resources.
+			await rt.client.tree(id, { token: await rt.commandToken() });
+			await view.open();
+			if (action === "focus") await view.focus(a[1]);
+			else await view.focus();
+			out(ctx, `tmux monitor ${view.name} opened; members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
+		},
+
+		send: async (a, ctx) => {
+			await rt.requireIdentity();
+			if (!a[0] || !a[1]) throw new Error("usage: /team send <agent_id> <message>");
+			const sent = await rt.agentCall(() => rt.client.sendMessage({ to: a[0], type: "question", payload: { text: a.slice(1).join(" ") } }));
+			out(ctx, `message ${sent.message_id} sent to ${a[0]}`);
+		},
 
 		init: async (a, ctx) => {
 			await rt.ready;
@@ -209,7 +241,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, tree, status, budget, inbox, proposals, events, inspect, stop, watch (see /team help)",
+		description: "Recursive agent team: init, resume, tree, status, budget, inbox, proposals, events, inspect, stop, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {

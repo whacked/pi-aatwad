@@ -47,10 +47,20 @@ worker pi (same extension) ──enroll/heartbeat/tools──▶ controller
 - The code was independently reviewed twice; every finding (8 initial, 4 from the re-review) was fixed with regression tests (`test/controller/review-fixes*.test.ts`).
 
 ## Not in v0.1 (known gaps against the brief)
-- tmux `/team watch`; git worktree merge/cleanup; Windows IPC; npm-registry install (needs a JS build).
+- git worktree merge/cleanup; Windows IPC; npm-registry install (needs a JS build).
 - Model switch for an existing agent (new session under the same agent ID) has no API yet.
 - Usage reconciliation only sums worker-reported `/sessions/usage`; nothing pulls usage from providers.
 - Fork-as-new-agent and detach attach modes. A forked Pi session gets a notice and must `/team resume` explicitly.
 - No compaction-hook test for org context. Context is re-fetched from `/me` on every `before_agent_start`, never cached.
 - `pending_work_policy=reassign` only sends a handoff notice; it does not re-own tasks. The outbox is logged, not consumed externally.
 - Same-uid workers are not isolated (see README Limitations).
+
+## tmux observer
+
+`/team watch` creates an owned tmux session with a dashboard process and up to
+four member panes per window. The dashboard reconciles panes against the durable
+controller tree every two seconds. Panes inspect state over IPC and render a
+bounded tail of the latest worker log generation. Worker execution and process
+identity are independent of tmux; closing the observer never stops workers.
+Only sessions tagged with the matching run/state-directory hash may be managed.
+`/team send` uses the existing authenticated message API, not `tmux send-keys`.

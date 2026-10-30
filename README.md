@@ -28,9 +28,12 @@ Inside Pi:
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
 | `/team inspect <agent_id>` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
+| `/team watch [open\|status\|close] [run_id]` | Open or manage a tmux dashboard and automatic member panes. |
+| `/team watch focus <agent_id> [run_id]` | Focus a member monitor pane. |
+| `/team send <agent_id> <message>` | Send directions through durable team messaging. |
 | `/team stop <agent_id\|run_id>` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
 
-Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_get_models`, `team_get_budget`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
+Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_get_models`, `team_get_budget`, plus root-only `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
 
 ### What happens underneath
 
@@ -47,6 +50,116 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 ### Configuration
 
 `/team init config.json` accepts a partial `RunConfig` (see `src/shared/protocol.ts`): global hard caps (`limits`), a model catalog (`models`), and the root's envelope. Without one, the defaults from `recursive-agent-org-v1.2/examples/config.example.yaml` apply, and the catalog contains just the root's own model (id `leader`). Provider API keys stay in your environment. They are never stored in SQLite or sent in messages.
+
+### Conversational teams and model selection
+
+No configuration file is required. Start Pi in your repository, then:
+
+```text
+/team init
+
+Implement the feature described below. Create whatever team you need.
+[Your requirements here.]
+```
+
+The leader decides useful roles and creates members using its initial model.
+It may briefly offer alternatives discovered from Pi without requiring model
+selection before work starts. Default member limits are $2 and 600 seconds;
+normal run budgets and governance still apply.
+
+To specify a member and model directly:
+
+```text
+Create a member called Adjudicator using <exact Pi model ID or name>.
+Have it independently review the proposed solution and report defects.
+```
+
+The leader resolves the model using Pi's authenticated model registry, registers
+its provider/model association in the current run, and creates the member with
+its task. Qualified IDs such as `provider/model-id` avoid ambiguity; OpenRouter
+IDs can contain another slash (`openrouter/vendor/model-id`). Ambiguous names
+require a choice, and unknown or unauthenticated models produce an actionable
+error rather than a silent substitution. OpenRouter credentials alone do not
+make every remote model discoverable: configure the model in Pi if it is absent.
+
+The tools supporting this interaction are:
+
+- `team_get_models` with `source: "available"`: discover authenticated Pi models.
+  The default source, `catalog`, lists models registered in the run.
+- `team_register_model`: resolve an exact model ID or unique name and add it to
+  the run. Only the root can register models. This also permits its provider in
+  global policy; delegated provider restrictions still apply.
+- `team_create_member`: create one named member, assign its responsibility, and
+  approve recruitment within the root's budget. Omit `model` to use `leader`,
+  pass `model` for discovery and registration on the fly, or use
+  `preferred_model_id` for an existing catalog entry. Specify optional
+  `max_cost_usd` and `max_runtime_seconds` to override member defaults.
+
+Subordinate managers still recruit through reviewed expansion proposals.
+Registrations persist in the controller database across session resumes and
+controller restarts; no config file or reload is needed. Existing members keep
+their models. Failed direct recruitment rolls back its model registration and
+task creation; retries with the same tool-call ID do not create duplicate members.
+
+Use `/team tree`, `/team inspect <agent_id>`, and `/team events` to inspect the
+team. Creation returns provisioned IDs; workers start asynchronously. Each worker
+uses its own worktree, so integration of commits or patches is explicit.
+
+Authenticate providers in Pi or supply their API keys before starting the
+controller. Workers use Pi authentication and the controller's inherited
+allowlisted environment. Changing a later root session's environment does not
+update an already running controller. Models registered only in memory by another
+extension must also be made available to worker Pi processes. Discovery checks
+configured authentication, not a live API call or credit balance. Capability tags
+for discovered chat models are broad defaults, not verified performance claims.
+
+After upgrading an existing installation, reload/restart Pi and let any old controller
+exit (it exits when idle) before using the new runtime configuration tools. A controller
+already running older code will not have the new endpoints.
+
+`/team init config.json` remains available for advanced initial policy settings.
+For lower-level expansion proposals without an explicit model preference, the
+controller chooses the cheapest eligible catalog entry by configured input/output
+cost sum; unknown costs count as zero. Direct conversational member creation
+explicitly defaults to `leader` instead.
+
+Standalone Pi still needs `node` on PATH for the controller. Its embedded runtime
+reports an unavailable Unix socket as `FailedToOpenSocket`, sometimes with the
+message “Was there a typo in the url or port?”. The client recognizes that code
+and uses a direct socket probe when only the misleading message is available,
+so absent or refused sockets trigger controller startup.
+
+### tmux monitoring
+
+Install `tmux` and put it on PATH, then run `/team watch` after initializing or
+resuming your team. You can also ask the leader “Open the tmux team monitor”; it
+uses `team_watch` to manage the same view. This creates one dedicated tmux session per run and state
+directory, with a dashboard plus member panes added automatically as agents are
+recruited. Member windows contain up to four tiled panes each. Panes show model,
+lifecycle state, tasks, and recent worker text/tool output; newer worker log
+generations are followed automatically after a relaunch.
+
+Inside tmux, the command switches to the monitor session. Outside tmux, it prints
+`tmux attach-session -t <session-name>` for you to run in a terminal. Use normal
+tmux navigation (default prefix `Ctrl-b`, then `n`/`p` for windows or arrow keys
+for panes); `Ctrl-b d` detaches. `/team watch focus <agent_id>` selects a member.
+`/team watch status` reports the session and pane count.
+
+The panes are monitors of the controller-managed workers. To send directions,
+use `/team send <agent_id> <message>` in the leader Pi or ask the leader to use
+`team_send_message`. Worker input is delivered through the controller, including
+when an idle worker needs to be relaunched. Typing in a monitor does not send
+input to the worker's stdin. Use `/team stop <agent_id>` to cancel a member.
+
+`/team watch close` removes only the monitoring session; workers continue.
+Detaching or exiting the leader Pi leaves the view and workers running. Reopen
+Pi, `/team resume <run_id>`, then `/team watch` to reuse the view. Closed member
+panes are recreated while monitoring is enabled; terminated members' panes remain
+for inspection. If the dashboard process exits, `/team watch` restarts it.
+Controller outages show a retry message and monitoring recovers when the
+controller returns. An open monitor keeps the controller active by polling it;
+close the view to allow the normal idle timeout. Managed workers cannot create
+or close monitoring sessions.
 
 ## Develop
 
@@ -70,5 +183,5 @@ The tests never spend provider credits. Worker scenarios use `PI_TEAM_EXECUTOR=t
 
 - **Not a sandbox.** Limits apply only to *managed* workers. Any agent with shell access can start unmanaged processes, spend money directly, or read files the OS user can read, including the controller's `operator.token`. Governance is cooperative accounting plus process supervision, not isolation. Managed workers are not given `PI_TEAM_STATE_DIR` and reach the controller only through the socket named in their one-time enrollment file. But a same-uid worker can still find the state dir at its default path (and read `operator.token` / `org.sqlite`), so this is mitigation, not isolation.
 - Cost accounting is approximate. Reservations are estimates; actual spend is reconciled only from usage that workers report (`/sessions/usage`).
-- There is no tmux observer (`/team watch` is a stub), no worktree merge or cleanup, no fork-as-new-agent attach mode, and no Windows IPC.
+- There is no automatic worktree merge or cleanup, no fork-as-new-agent attach mode, and no Windows IPC.
 - Model ids containing `:` are interpreted by Pi as a thinking-level suffix.

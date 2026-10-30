@@ -1,8 +1,10 @@
+import { TmuxWatch } from "../watch/tmux.ts";
+import { availableModels, resolveAvailableModel } from "./models.ts";
 // Organization tools. Identical set for every agent; the controller authorizes each action.
 // No tool accepts the caller's own identity: actor = the session credential held by the extension.
 import { Type } from "typebox";
 import type { TSchema } from "typebox";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MESSAGE_TYPES } from "../shared/protocol.ts";
 import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageType } from "../shared/protocol.ts";
 import type { TeamRuntime } from "./runtime.ts";
@@ -49,7 +51,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 		label: string,
 		description: string,
 		parameters: P,
-		run: (params: any, toolCallId: string) => Promise<{ content: { type: "text"; text: string }[]; details: unknown }>,
+		run: (params: any, toolCallId: string, ctx: ExtensionContext) => Promise<{ content: { type: "text"; text: string }[]; details: unknown }>,
 		snippet?: string,
 	) => {
 		pi.registerTool({
@@ -58,8 +60,9 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			description,
 			promptSnippet: snippet,
 			parameters,
-			async execute(toolCallId, params) {
-				return rt.agentCall(() => run(params, toolCallId));
+			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+				rt.ctx = ctx;
+				return rt.agentCall(() => run(params, toolCallId, ctx));
 			},
 		});
 	};
@@ -243,15 +246,64 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_get_models",
 		"Team: models",
-		"List the model catalog with capability tags, costs and whether each is eligible for agents you could request.",
-		Type.Object({}),
-		async () => {
+		"List the run catalog (default), or authenticated models discovered from Pi with source=available. Discovery does not change the run or spend credits. Use exact qualified IDs when registering models. Credentials are never returned. Availability is configured authentication, not a successful live API check.",
+		Type.Object({ source: Type.Optional(StringEnum(["catalog", "available"] as const)) }),
+		async (p, _id, ctx) => {
+			if (p.source === "available") {
+				return json("Available Pi models", { models: availableModels(ctx) });
+			}
 			const r = await rt.client.models();
 			const lines = r.models.map(
 				(m) =>
 					`${m.id} (${m.provider}/${m.model}) tags=[${m.capability_tags.join(",")}] in=$${m.cost_per_m_input_usd ?? "?"}/M out=$${m.cost_per_m_output_usd ?? "?"}/M ${m.eligible ? "eligible" : `INELIGIBLE: ${m.ineligible_reason ?? ""}`}`,
 			);
 			return text(lines.join("\n") || "no models configured", r);
+		},
+	);
+
+	reg(
+		"team_register_model", "Team: register model",
+		"Root only: resolve an authenticated Pi model by exact provider/model ID, model ID or unique display name and add it to this run. Also permits its provider globally; delegated provider restrictions still apply. Existing members keep their models. Ask the user when a name is ambiguous; never silently substitute. No config file or reload needed.",
+		Type.Object({ model: Type.String({ description: "Exact qualified Pi model ID or unique model name" }) }),
+		async (p, id, ctx) => {
+			const model = resolveAvailableModel(ctx, p.model);
+			return json("Registered model", await rt.client.post("/models", model, { idempotencyKey: key("team_register_model", id) }));
+		},
+	);
+
+	reg(
+		"team_create_member", "Team: create member",
+		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. Defaults: $2 and 600 seconds. Subordinate managers use team_request_expansion instead.",
+		Type.Object({
+			name: Type.String(), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
+			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),
+			max_cost_usd: Type.Optional(Type.Number({ minimum: 0 })), max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1 })),
+		}),
+		async (p, id, ctx) => {
+			if (p.model && p.preferred_model_id) throw new Error("Specify model or preferred_model_id, not both");
+			const body = { ...p, model: p.model ? resolveAvailableModel(ctx, p.model) : undefined };
+			return json("Member provisioned", await rt.client.post("/members", body, { idempotencyKey: key("team_create_member", id) }));
+		},
+	);
+
+	reg(
+		"team_watch", "Team: tmux monitor",
+		"Root only: open, inspect, focus or close the team's tmux monitoring session when the user requests it. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Panes show status, tasks and output; send directions using team_send_message. Outside tmux, return the attach command to the user. Requires tmux and Node on PATH.",
+		Type.Object({ action: StringEnum(["open", "status", "focus", "close"] as const), agent_id: Type.Optional(Type.String({ description: "Required for focus" })) }),
+		async (p) => {
+			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
+			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id });
+			if (p.action === "close") {
+				await view.close();
+				return text("Tmux monitor closed; workers continue running", { open: false });
+			}
+			if (p.action === "focus" && !p.agent_id) throw new Error("agent_id is required for focus");
+			if (p.action === "open" || p.action === "focus") {
+				await view.open();
+				await view.focus(p.action === "focus" ? p.agent_id : undefined);
+			}
+			const open = await view.exists();
+			return json("Tmux monitor", { open, session: view.name, panes: open ? await view.panes() : [], attach_command: `tmux attach-session -t ${view.name}` });
 		},
 	);
 

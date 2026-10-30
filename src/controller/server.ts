@@ -1,3 +1,4 @@
+import { registerModel, createMember } from "./members.ts";
 // HTTP API over the unix socket: protocol check, auth, idempotency, routing, one BEGIN IMMEDIATE txn per request.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
@@ -60,6 +61,8 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/agents/:id/lifecycle", "any", ({ p, scope, params, body }) => lifecycle(ctx, p, scope, params[0], body)),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
 		R("GET", "/budgets/:id", "any", ({ p, params }) => budget(ctx, p, params[0])),
+		R("POST", "/models", "agent", ({ p, body }) => registerModel(ctx, p, body)),
+		R("POST", "/members", "agent", ({ p, body }) => createMember(ctx, p, body)),
 		R("GET", "/models", "any", ({ p, q }) => models(ctx, p, q)),
 		R("GET", "/events", "any", ({ p, q }) => events(ctx, p, q)),
 		R(

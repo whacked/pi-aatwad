@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+// Runs only in observer panes. Controller IPC is read-only and never auto-started.
+import type { EventView } from "../shared/protocol.ts";
+import { readFileSync } from "node:fs";
+import { TeamClient } from "../shared/client.ts";
+import { statePaths } from "../shared/paths.ts";
+import { formatTree, formatBudget, formatEvents } from "../extension/format.ts";
+import { TmuxWatch, flatten } from "./tmux.ts";
+import { recentOutput, screen } from "./render.ts";
+
+const [stateDir, runId, agent, socket] = process.argv.slice(2);
+if (!stateDir || !runId || !agent) throw new Error("watch requires state directory, run ID and pane role");
+const paths = statePaths(stateDir);
+const client = new TeamClient({ paths, noReconnect: true, token: () => readFileSync(paths.operatorToken, "utf8").trim() });
+const watch = new TmuxWatch({ stateDir, runId, socket: socket || undefined });
+let eventCursor = 0;
+let recentEvents: EventView[] = [];
+while (true) {
+	let text: string;
+	try {
+		if (agent === "dashboard") {
+			const tree = await client.tree(runId, { timeoutMs: 2000 });
+			await watch.sync(flatten(tree.root).slice(1));
+			const [budget, events] = await Promise.all([client.budget(tree.root.agent_id, { timeoutMs: 2000 }), client.events({ run_id: runId, after: eventCursor, limit: 1000 }, { timeoutMs: 2000 })]);
+			recentEvents = [...recentEvents, ...events.events].slice(-10);
+			if (events.events.length) eventCursor = events.events[events.events.length - 1].seq;
+			text = `TEAM MONITOR • ${watch.name}\n${runId} • ${new Date().toLocaleTimeString()}\n` +
+				"Member panes: tmux next/previous window (prefix n/p), choose pane (prefix arrows).\n" +
+				"Send directions in the leader Pi: /team send <agent_id> <message>\n" +
+				"Close view: /team watch close (workers continue). Detach: prefix d.\n\n" +
+				formatTree(tree) + "\n\n" + formatBudget(budget) + "\n\n" + formatEvents(recentEvents, 10);
+		} else {
+			const r = await client.inspect(agent, { timeoutMs: 2000 });
+			const a = r.agent;
+			text = `${a.role} [${agent}]\n${a.status}/${a.observed_state} • desired ${a.desired_state} • ${a.model ?? "default model"}\n` +
+				`Tasks: ${r.tasks.map((t) => `${t.status}: ${t.title}`).join("; ") || "none"}\n` +
+				`Sessions: ${r.sessions.length} • ${new Date().toLocaleTimeString()}\nMonitor only; send messages from leader Pi.\n\n` + recentOutput(paths.workerLogs, agent);
+		}
+	} catch (e) {
+		text = `Team monitor • ${runId}\n${agent}\n${(e as Error).message}\nRetrying; workers are managed independently of this view.`;
+	}
+	process.stdout.write(screen(text, Math.max(5, (process.stdout.rows || 40) - 1), process.stdout.columns || 120));
+	await new Promise((resolve) => setTimeout(resolve, 2000));
+}

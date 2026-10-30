@@ -1,8 +1,11 @@
-import { test, describe } from "node:test";
+import { EventEmitter } from "node:events";
+import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
+import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import {
 	TeamClient,
 	TeamApiError,
@@ -19,6 +22,42 @@ import { makeState, startMock, health, sleep } from "./helpers.ts";
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-controller.ts");
 
 describe("TeamClient transport", () => {
+	test("standalone URL error recovers missing-socket errno but preserves errors for live sockets", async () => {
+		const { paths, cleanup } = makeState();
+		const m = await startMock(paths);
+		const original = http.request;
+		const runtimeError = new Error("Was there a typo in the url or port?");
+		const mocked = mock.method(http, "request", () => { throw runtimeError; });
+		syncBuiltinESMExports();
+		try {
+			await assert.rejects(rawRequest(join(paths.dir, "missing", "controller.sock"), "GET", "/health"),
+				(e: unknown) => e instanceof ControllerUnavailableError && e.errno === "ENOENT");
+			await assert.rejects(rawRequest(paths.socket, "GET", "/health"), (e: unknown) => e === runtimeError);
+			// Restore the HTTP binding after simulating the runtime failure.
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+			assert.equal(http.request, original);
+		} finally {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+			await m.close();
+			cleanup();
+		}
+	});
+
+	test("classifies synchronous Bun FailedToOpenSocket independently of message text", async () => {
+		const error = Object.assign(new Error("Unable to connect"), { code: "FailedToOpenSocket" });
+		const mocked = mock.method(http, "request", () => { throw error; });
+		syncBuiltinESMExports();
+		try {
+			await assert.rejects(rawRequest("/unused/controller.sock", "GET", "/health"),
+				(e: unknown) => e instanceof ControllerUnavailableError && e.errno === "FailedToOpenSocket");
+		} finally {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+		}
+	});
+
 	test("sends protocol header, bearer and an auto idempotency key on POST only", async () => {
 		const { paths, cleanup } = makeState();
 		const m = await startMock(paths);
@@ -175,6 +214,37 @@ describe("ensureController", () => {
 				try {
 					process.kill(pid, "SIGTERM");
 				} catch {}
+				await sleep(100);
+			}
+			cleanup();
+		}
+	});
+
+	test("standalone async FailedToOpenSocket bootstraps from an absent state directory", async () => {
+		const { paths, cleanup } = makeState();
+		rmSync(paths.dir, { recursive: true });
+		const original = http.request;
+		const mocked = mock.method(http, "request", (...args: any[]) => {
+			if (existsSync(paths.socket)) return (original as any)(...args);
+			const req = new EventEmitter() as any;
+			req.setTimeout = () => req;
+			req.end = () => queueMicrotask(() => req.emit("error", Object.assign(new Error("Unable to connect"), { code: "FailedToOpenSocket" })));
+			return req;
+		});
+		syncBuiltinESMExports();
+		let pid: number | undefined;
+		try {
+			const before = spawnCount();
+			const result = await ensureController(paths, { entry: FAKE });
+			pid = result.health.pid;
+			assert.equal(result.spawned, true);
+			assert.equal(spawnCount() - before, 1);
+			assert.equal(await readOperatorToken(paths), "op-token-fake");
+		} finally {
+			mocked.mock.restore();
+			syncBuiltinESMExports();
+			if (pid) {
+				process.kill(pid, "SIGTERM");
 				await sleep(100);
 			}
 			cleanup();

@@ -3,6 +3,7 @@
 // must stay erasable TypeScript with explicit .ts imports and zero npm deps.
 import { request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, fstatSync } from "node:fs";
 import { basename } from "node:path";
@@ -87,7 +88,8 @@ export class ControllerIncompatibleError extends Error {
 	}
 }
 
-const UNAVAILABLE_CODES = new Set(["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "ENOTSOCK", "ETIMEDOUT_CONNECT"]);
+// Bun-backed standalone Pi uses FailedToOpenSocket instead of a POSIX errno.
+const UNAVAILABLE_CODES = new Set(["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "ENOTSOCK", "ETIMEDOUT_CONNECT", "FailedToOpenSocket"]);
 
 export function isUnavailable(err: unknown): err is ControllerUnavailableError {
 	return err instanceof ControllerUnavailableError;
@@ -179,6 +181,43 @@ export function rawRequest<T>(socketPath: string, method: "GET" | "POST", path: 
 		});
 		if (payload !== undefined) req.write(payload);
 		req.end();
+	}).catch(async (error: unknown) => {
+		// Some runtimes throw during request construction instead of emitting error.
+		const errno = (error as NodeJS.ErrnoException | null)?.code;
+		if (errno && UNAVAILABLE_CODES.has(errno)) {
+			throw new ControllerUnavailableError(`controller not reachable at ${socketPath} (${errno})`, errno);
+		}
+		// Standalone Pi's Bun runtime can lose the Unix-socket errno in its
+		// HTTP bridge. Verify via net rather than treating every URL error as
+		// permission to start a controller. This also covers synchronous throws.
+		if (error instanceof Error && error.message.includes("Was there a typo in the url or port?")) {
+			await probeSocket(socketPath, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+		}
+		throw error;
+	});
+}
+
+/** Recover a real connection errno when the HTTP runtime has hidden it. */
+function probeSocket(socketPath: string, timeoutMs: number): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const socket = connect({ path: socketPath });
+		const timer = setTimeout(() => {
+			socket.destroy();
+			reject(new ControllerUnavailableError(`controller connection timed out at ${socketPath}`, "ETIMEDOUT"));
+		}, timeoutMs);
+		socket.once("connect", () => {
+			clearTimeout(timer);
+			socket.destroy();
+			resolve();
+		});
+		socket.once("error", (error: NodeJS.ErrnoException) => {
+			clearTimeout(timer);
+			socket.destroy();
+			const errno = error.code ?? "EUNKNOWN";
+			reject(UNAVAILABLE_CODES.has(errno)
+				? new ControllerUnavailableError(`controller not reachable at ${socketPath} (${errno})`, errno)
+				: error);
+		});
 	});
 }
 

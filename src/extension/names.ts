@@ -9,6 +9,9 @@ export const TOOL_NAMES = [
 	"team_report_progress",
 	"team_complete_task",
 	"team_get_models",
+	"team_register_model",
+	"team_create_member",
+	"team_watch",
 	"team_get_budget",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
