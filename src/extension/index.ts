@@ -78,7 +78,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 				"For a user task, decide the useful number and responsibilities of members, then use team_create_member once per member. " +
 				"Default to the initial leader model when no model is specified. You may briefly offer alternative models using team_get_models(source=available), without blocking work on a model-selection question. " +
 				"Honor explicit member names and model choices. Resolve exact models through Pi; ask on ambiguity and never guess or silently substitute. " +
-				"State the intended team and default per-member limits ($2, 600 seconds); check team_get_budget and stay within it. " +
+				"Check team_get_budget. With operator unlimited policy, do not invent dollar allocations or runtime caps. Otherwise default member limits are $2 and 600 seconds. If the user requests unlimited mode when it is bounded, tell them to use /team admin unlimited; the human operator can remove those caps. " +
 				"Members get separate worktrees. Report their actual IDs and provisioning state, and integrate results explicitly. " +
 				"When the user requests tmux monitoring, use team_watch to open or manage the view; report its attach command when needed. " +
 				"Runtime model registrations persist in this run; existing members retain their selected models.";

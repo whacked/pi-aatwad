@@ -34,6 +34,7 @@ function moveEdge(db: DB, runId: string, child: string, newParent: string, versi
 
 /** emergency_max_depth also bounds topology moves: checked on the post-move snapshot inside the txn. */
 function assertDepthWithinCap(db: DB, runId: string, moved: string[]): void {
+	if (runConfig(db, runId).operator_unlimited) return;
 	const cap = runConfig(db, runId).limits.emergency_max_depth;
 	let worst = 0;
 	let who = "";
@@ -187,6 +188,7 @@ export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string
 	if (isTerminal(a.status)) return;
 	const ts = nowIso();
 	run(db, "UPDATE agents SET status = ?, desired_state = 'RETIRED', observed_state = CASE WHEN ? = 'FAILED' THEN 'FAILED' ELSE 'STOPPED' END, lease_until = NULL WHERE id = ?", status, status, agentId);
+	if (status === "CANCELLED") run(db, "UPDATE runs SET status = 'CANCELLED' WHERE root_agent_id = ?", agentId);
 	revokeAgentCredentials(db, agentId, status.toLowerCase());
 	const procs = all(db, "SELECT pid, process_started_at FROM sessions WHERE agent_id = ? AND status IN ('REQUESTED','STARTING','LIVE','LOST') AND pid IS NOT NULL", agentId);
 	run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE agent_id = ? AND status IN ('REQUESTED','STARTING','LIVE','LOST')", ts, agentId);
@@ -232,6 +234,9 @@ export function lifecycle(ctx: Ctx, p: Principal, scope: ReqScope, agentId: stri
 	const cpol = oneOf(b, "children_policy", ["cascade", "transfer_children_to", "pause_subtree"] as const, { optional: true });
 	const subject = getAgent(db, agentId);
 	assertManages(db, p, subject);
+	if (action === "cancel" && subject.status === "CANCELLED") {
+		return { agent_id: agentId, status: subject.status, desired_state: subject.desired_state, affected_agent_ids: [] };
+	}
 	if (isTerminal(subject.status)) fail("CONFLICT", `agent is already ${subject.status}`);
 	const runId = subject.run_id as string;
 	const from = senderFor(db, p, runId);

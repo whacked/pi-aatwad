@@ -13,6 +13,7 @@ function clip(s: string, n: number): string {
 }
 
 export function formatBudget(b: BudgetView): string {
+	if (b.unlimited) return `budget for ${b.agent_id}:\n  policy: UNLIMITED (human operator); no spend, runtime, member-count or depth caps\n  consumed ${usd(b.consumed_usd)}, reserved ${usd(b.reserved_usd)}; ${b.subtree_live_agents} active descendants`;
 	return [
 		`budget for ${b.agent_id}:`,
 		`  usd: consumed ${usd(b.consumed_usd)}, reserved ${usd(b.reserved_usd)}, available ${usd(b.available_usd)} (subtree ceiling ${usd(b.limits?.max_subtree_usd)})`,
@@ -93,7 +94,8 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 		lines.push(`Your tasks: ${shown.join("; ")}${c.tasks.length > MAX_LIST ? "; …" : ""}`);
 	} else lines.push("Your tasks: none assigned");
 	const b = c.budget;
-	if (b) lines.push(`Budget: ${usd(b.available_usd)} available of ${usd(b.limits?.max_subtree_usd)} subtree ceiling; ${b.available_slots} spawn slot(s) available.`);
+	if (b?.unlimited) lines.push("Budget: UNLIMITED, authorized by the human operator. No spend, runtime, slot or depth caps apply; do not invent finite allocations. Accounting and identity permissions remain active.");
+	else if (b) lines.push(`Budget: ${usd(b.available_usd)} available of ${usd(b.limits?.max_subtree_usd)} subtree ceiling; ${b.available_slots} spawn slot(s) available.`);
 	if (c.pending_proposals_to_review > 0) lines.push(`Pending expansion proposals awaiting YOUR review: ${c.pending_proposals_to_review} (use team_review_expansion).`);
 	if (c.inbox_pending > 0) lines.push(`Unread team messages: ${c.inbox_pending} (they will be delivered; or call team_get_inbox).`);
 	if (c.desired_state !== "RUNNING") lines.push(`Controller desired state for you: ${c.desired_state} — stop starting new work.`);

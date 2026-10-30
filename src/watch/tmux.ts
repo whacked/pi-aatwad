@@ -125,6 +125,20 @@ export class TmuxWatch {
 		}
 		await this.tmux("kill-session", "-t", this.name);
 	}
+	/** Release only this team's UI after its members stop; preserve the human Pi pane. */
+	async releaseLayout(): Promise<void> {
+		if (!await this.exists()) return;
+		await this.assertOwned();
+		const panes = await this.panes();
+		// Stop the coordinator first so it cannot recreate the panes being removed.
+		for (const p of [...panes.filter((p) => p.agent === "dashboard"), ...panes.filter((p) => p.agent && p.agent !== "dashboard" && p.agent !== "leader")])
+			await this.tmux("kill-pane", "-t", p.id).catch(() => {});
+		for (const p of panes.filter((p) => p.agent === "leader")) {
+			for (const key of ["@pi_team_owner", "@pi_team_agent", "@pi_team_harness"]) await this.tmux("set-option", "-p", "-u", "-t", p.id, key);
+		}
+		if (!this.opts.location && await this.exists()) await this.tmux("set-option", "-u", "-t", this.name, "@pi_team_watch");
+	}
+
 	async focus(agent = "leader"): Promise<void> {
 		const all = await this.panes();
 		const pane = all.find((p) => p.agent === agent) ?? (agent === "leader" ? all.find((p) => p.agent === "dashboard") : undefined);

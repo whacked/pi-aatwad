@@ -396,6 +396,7 @@ export class Reconciler {
 			 WHERE a.desired_state = 'RUNNING' AND a.status NOT IN ${TERMINAL_SQL}`,
 		);
 		for (const r of rows) {
+			if (runConfig(db, r.run_id).operator_unlimited) continue;
 			const sessionLimit = Number(parseJson<{ max_session_seconds?: number }>(r.limits_json, {}).max_session_seconds ?? 0);
 			const meta = parseJson<{ max_runtime_seconds?: number | null; runtime_epoch?: string }>(r.metadata_json, {});
 			const runtimeLimit = Number(meta.max_runtime_seconds ?? 0);

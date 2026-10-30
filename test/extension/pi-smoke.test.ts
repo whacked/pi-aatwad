@@ -136,7 +136,7 @@ describe("real Pi smoke", { skip }, () => {
 			assert.match(st.message, /controller: not running/);
 
 			run.send({ id: "w", type: "prompt", message: "/team watch" });
-			await run.waitFor(notify(/no run:/), 10_000, "/team watch");
+			await run.waitFor(notify(/No resumable teams/), 10_000, "/team watch");
 
 			// unenrolled: nothing created in the state dir (no controller, socket, db)
 			assert.deepEqual(readdirSync(paths.dir).filter((f) => !["enroll", "workers"].includes(f)), []);
@@ -157,7 +157,7 @@ describe("real Pi smoke", { skip }, () => {
 				env: { ...process.env, PI_CODING_AGENT_DIR: isolatedAgentDir(), PI_TEAM_STATE_DIR: paths.dir, PI_OFFLINE: "1" },
 			});
 			assert.equal(r.status, 0, r.stderr);
-			assert.match(r.stderr, /no run:/);
+			assert.match(r.stderr, /No resumable teams/);
 		} finally {
 			cleanup();
 		}

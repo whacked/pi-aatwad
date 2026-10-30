@@ -1,3 +1,4 @@
+import { adminPolicy } from "./admin.ts";
 import { terminalMode } from "./terminal.ts";
 import { registerModel, createMember } from "./members.ts";
 // HTTP API over the unix socket: protocol check, auth, idempotency, routing, one BEGIN IMMEDIATE txn per request.
@@ -43,6 +44,8 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/runs", "operator", ({ p, body }) => createRun(ctx, p, body)),
 		R("GET", "/runs", "operator", ({ p }) => listRuns(ctx, p)),
 		R("POST", "/runs/:id/attach", "operator", ({ p, params, body }) => attach(ctx, p, params[0], body)),
+		R("GET", "/runs/:id/admin", "any", ({ p, params }) => adminPolicy(ctx, p, params[0])),
+		R("POST", "/runs/:id/admin", "operator", ({ p, params, body }) => adminPolicy(ctx, p, params[0], body ?? {})),
 		R("GET", "/runs/:id/terminal", "any", ({ p, params }) => terminalMode(ctx, p, params[0])),
 		R("POST", "/runs/:id/terminal", "any", ({ p, params, body }) => terminalMode(ctx, p, params[0], body ?? {})),
 		R("GET", "/runs/:id/tree", "any", ({ p, params }) => tree(ctx, p, params[0])),

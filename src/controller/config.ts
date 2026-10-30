@@ -69,7 +69,8 @@ export function buildRunConfig(partial: Partial<RunConfig> | undefined, root: Ro
 	for (const k of ["max_live_agents", "max_pending_spawns", "emergency_max_depth", "max_run_usd"] as const) {
 		if (typeof limits[k] !== "number" || limits[k] < 0) fail("INVALID", `limits.${k} must be a non-negative number`);
 	}
-	return { limits, models, root_envelope, root_failure_policy, workspace_root, deadline_policy };
+	if (p.operator_unlimited !== undefined && typeof p.operator_unlimited !== "boolean") fail("INVALID", "operator_unlimited must be boolean");
+	return { limits, models, root_envelope, root_failure_policy, workspace_root, deadline_policy, ...(p.operator_unlimited ? { operator_unlimited: true } : {}) };
 }
 
 function normalizeModel(m: Partial<ModelCatalogEntry>): ModelCatalogEntry {

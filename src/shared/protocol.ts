@@ -236,6 +236,8 @@ export type DeadlinePolicy = "BLOCKED" | "FAILED";
 export interface TerminalLocation { window: string; leader: string }
 
 export interface RunConfig {
+	/** Human operator authorization to remove numeric spend, runtime and recruitment caps. */
+	operator_unlimited?: boolean;
 	/** Interactive Pi workers hosted by tmux; socket is primarily for isolated deployments/tests. */
 	terminal?: { socket?: string; location?: TerminalLocation };
 	limits: GlobalLimits;
@@ -287,6 +289,9 @@ export interface RunListResponse {
 	runs: RunSummary[];
 }
 export interface RunSummary {
+	root_status?: AgentStatus;
+	active_members?: number;
+	live_members?: number;
 	run_id: string;
 	status: RunStatus;
 	root_agent_id: string;
@@ -523,6 +528,7 @@ export interface LifecycleResponse {
 
 /** GET /budgets/:agent_id (self or ancestor or operator) */
 export interface BudgetView {
+	unlimited?: boolean;
 	agent_id: string;
 	limits: Envelope_Limits;
 	reserved_slots: number;
@@ -531,8 +537,8 @@ export interface BudgetView {
 	settled_usd?: number;
 	consumed_usd: number;
 	subtree_live_agents: number;
-	available_slots: number;
-	available_usd: number;
+	available_slots: number | null;
+	available_usd: number | null;
 }
 
 /** GET /models (agent) */

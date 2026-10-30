@@ -118,8 +118,11 @@ export function createRun(ctx: Ctx, p: Principal, body: unknown): CreateRunRespo
 
 export function listRuns(ctx: Ctx, p: Principal): RunListResponse {
 	requireOperator(p);
-	const rows = all(ctx.db, "SELECT r.*, (SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id) AS n FROM runs r ORDER BY r.created_at");
-	return { runs: rows.map((r) => ({ run_id: r.id, status: r.status, root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
+	const rows = all(ctx.db, `SELECT r.*, root.status AS root_status, (SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id) AS n,
+		(SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id AND a.id <> r.root_agent_id AND a.status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED')) AS active_members,
+		(SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id AND a.id <> r.root_agent_id AND a.status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') AND a.observed_state = 'LIVE' AND a.desired_state = 'RUNNING') AS live_members
+		FROM runs r LEFT JOIN agents root ON root.id = r.root_agent_id ORDER BY r.created_at`);
+	return { runs: rows.map((r) => ({ run_id: r.id, status: r.root_status === "CANCELLED" ? "CANCELLED" : r.status, root_status: r.root_status, active_members: Number(r.active_members), live_members: Number(r.live_members), root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
 }
 
 export function attach(ctx: Ctx, p: Principal, runId: string, body: unknown): AttachResponse {
@@ -239,7 +242,7 @@ export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportR
 	const consumed = getAllocation(db, a.actor_id).consumed_usd;
 	emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "usage.reported", entity_id: a.actor_id, payload: { cost_usd: cost, input_tokens: b.input_tokens ?? null, output_tokens: b.output_tokens ?? null, consumed_usd: consumed } });
 	const own = ownBudgetUsd(db, a.actor_id);
-	const exhausted = own !== null && consumed >= own - 1e-9;
+	const exhausted = !runConfig(db, a.run_id).operator_unlimited && own !== null && consumed >= own - 1e-9;
 	if (exhausted && getAgent(db, a.actor_id).desired_state === "RUNNING") {
 		run(db, "UPDATE agents SET desired_state = 'PAUSED', status = CASE WHEN status = 'RUNNING' THEN 'PAUSED' ELSE status END WHERE id = ?", a.actor_id);
 		emit(db, { run_id: a.run_id, actor_id: "controller", type: "budget.exhausted", entity_id: a.actor_id, payload: { consumed_usd: consumed, budget_usd: own } });

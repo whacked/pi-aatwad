@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.2, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.3, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -19,19 +19,56 @@ Requires Node ≥ 22.13 (for built-in `node:sqlite` and type stripping). There a
 
 ## Use
 
+To return to an existing team in a fresh Pi session:
+
+```text
+/team resume
+/team watch
+```
+
+`resume` shows a picker with active member/running process counts. No `init` is
+required. Cancelled and terminal teams are excluded from the picker and resume/stop
+autocomplete, while `/team list all` and history commands retain the audit record.
+`/team watch` from an unattached session offers the same resume picker. If you
+already ran `init`, resuming a different team cancels only that unused new team
+when it has no members or work. Existing teams with work continue independently.
+
+For a new team with no resource caps:
+
+```text
+/team init --unlimited
+Create alpha and beta. Have each declare readiness, then wait for assignments.
+/team watch
+```
+
+In tmux, member creation through the leader's tool opens live Pi panes immediately.
+`watch` opens or reuses the view. A fresh `init` alone creates an **empty** team;
+`reports 0` and `live workers 0` mean there are no member processes to display.
+Use `/team list` to find other teams instead of repeatedly creating new ones.
+
+`/team stop` stops the current team. An explicit run or agent ID stops another
+team/member. Repeated stops of cancelled targets succeed harmlessly. Stopping your
+own team ends the local association without claiming a newer session took over,
+and you can still issue operator commands for other teams. Stopped team panes and
+ownership tags are released without killing the human's Pi pane. A leftover pane
+tag with no active members is recovered automatically; active foreign teams are
+protected with instructions to resume or stop them first.
+
 Inside Pi:
 
 | Command | What it does |
 |---|---|
-| `/team init [config.json]` | Makes this session the **root** of a new organization. This is the only way an org is created; installing the package creates nothing. |
-| `/team resume <run_id> [agent_id]` | Deliberately re-attach this session to an existing run or agent. This fences any older session of that agent. |
+| `/team init [--unlimited] [config.json]` | Makes this session the **root** of a new organization. This is the only way an org is created; installing the package creates nothing. |
+| `/team resume [run_id] [agent_id]` | Pick a resumable team or attach directly. Works in a fresh Pi session without init. |
+| `/team list [all]` | List active teams with member counts; `all` includes history. |
+| `/team admin [status\|unlimited\|bounded] [run_id]` | Human operator: inspect, remove or restore resource caps. |
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
 | `/team inspect <agent_id>` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
 | `/team watch [open\|status\|close] [run_id]` | Open or manage a tmux dashboard and automatic member panes. |
 | `/team watch focus <agent_id> [run_id]` | Focus a member monitor pane. |
 | `/team send <agent_id> <message>` | Send directions through durable team messaging. |
-| `/team stop <agent_id\|run_id>` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
+| `/team stop [agent_id\|run_id]` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
 
 Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_get_models`, `team_get_budget`, plus root-only `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
 
@@ -51,6 +88,22 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 
 `/team init config.json` accepts a partial `RunConfig` (see `src/shared/protocol.ts`): global hard caps (`limits`), a model catalog (`models`), and the root's envelope. Without one, the defaults from `recursive-agent-org-v1.2/examples/config.example.yaml` apply, and the catalog contains just the root's own model (id `leader`). Provider API keys stay in your environment. They are never stored in SQLite or sent in messages.
 
+### Human operator resource policy
+
+The initial human operator has a separate controller credential. `/team admin unlimited`
+removes numeric spend, runtime, member-count, pending-spawn, grant and recursion-depth
+caps from the current run, including existing members. `/team init --unlimited` enables
+this when creating a run. `/team admin bounded` restores enforcement of the stored
+bounded limits. Accounting remains enabled in both modes. Removing caps does not
+resume already-paused agents automatically.
+
+Agents can read the policy through `team_get_budget` but cannot change it using their
+session credentials. Unlimited policy is a run-wide human decision; it does not grant
+agents operator identity, cross-run access or permission to bypass reporting hierarchy.
+The leader should honor an unlimited policy rather than inventing dollar allocations.
+If the user requests unlimited mode in a bounded run, it should explain the human
+command `/team admin unlimited`, not claim that unlimited runs are impossible.
+
 ### Conversational teams and model selection
 
 No configuration file is required. Start Pi in your repository, then:
@@ -64,8 +117,8 @@ Implement the feature described below. Create whatever team you need.
 
 The leader decides useful roles and creates members using its initial model.
 It may briefly offer alternatives discovered from Pi without requiring model
-selection before work starts. Default member limits are $2 and 600 seconds;
-normal run budgets and governance still apply.
+selection before work starts. In bounded mode, default member limits are $2 and 600 seconds. In operator
+unlimited mode, no finite allocations or runtime caps are needed.
 
 To specify a member and model directly:
 

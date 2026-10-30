@@ -23,6 +23,7 @@ export const NOT_ENROLLED = "not enrolled: run /team init (new organization) or 
 
 /** Persisted via pi.appendEntry. Never contains a token. */
 export interface IdentityEntry {
+	ended?: string;
 	version: 1;
 	run_id: string;
 	agent_id: string;
@@ -235,6 +236,11 @@ export class TeamRuntime {
 		// (b) persisted mapping in this Pi session.
 		const entry = this.latestIdentityEntry();
 		if (entry) {
+			if (entry.ended) {
+				this.notice = `Previous team agent ${entry.agent_id} is ${entry.ended}; start a new team or resume a different active run.`;
+				this.updateStatus();
+				return;
+			}
 			if (entry.pi_session_id !== pis.id) {
 				this.notice =
 					`This Pi session was forked/cloned from team agent ${entry.agent_id} (run ${entry.run_id}). ` +
@@ -394,17 +400,39 @@ export class TeamRuntime {
 	}
 
 	// ------------------------------------------------------------------ errors
+	/** End the local association without disabling operator commands for other runs. */
+	releaseStoppedIdentity(status: string): void {
+		const id = this.identity;
+		if (!id) return;
+		identityCache().delete(id.pi_session_id);
+		this.identity = undefined;
+		this.fenced = false;
+		if (this.timer) clearInterval(this.timer);
+		this.timer = undefined;
+		this.notice = `Team agent ${id.agent_id} in run ${id.run_id} is ${status}; start a new team or resume a different active run.`;
+		this.pi.appendEntry(IDENTITY_ENTRY, { version: 1, run_id: id.run_id, agent_id: id.agent_id, pi_session_id: id.pi_session_id, managed: id.managed, role: id.role, ended: status } satisfies IdentityEntry);
+		this.updateStatus();
+	}
+
 	/** Map fencing/auth errors to local state. Returns true if the identity was dropped. */
 	handleAgentError(e: unknown): boolean {
 		if (e instanceof TeamApiError && (e.code === "STALE_SESSION" || e.code === "UNAUTHENTICATED") && this.identity) {
 			const id = this.identity;
+			const details = e.details as { reason?: string; agent_status?: string } | undefined;
+			// Older controllers only supplied the revocation reason in the message.
+			const ended = details?.reason === "agent_terminal" ? details.agent_status : /agent is (CANCELLED|COMPLETED|FAILED|RETIRED)|session token revoked \((cancelled|completed|failed|retired)\)/i.exec(e.message)?.slice(1).find(Boolean)?.toUpperCase();
+			if (ended) {
+				this.releaseStoppedIdentity(ended);
+				this.say(`team: agent ${id.agent_id} is ${ended}; this session has left that team. You can still use /team stop for other runs.`, "info");
+				return true;
+			}
 			identityCache().delete(id.pi_session_id);
 			this.identity = undefined;
 			this.fenced = true;
 			if (this.timer) clearInterval(this.timer);
 			this.timer = undefined;
 			this.say(
-				e.code === "STALE_SESSION"
+				e.code === "STALE_SESSION" && (details?.reason === "superseded" || /superseded|generation fenced/i.test(e.message))
 					? `team: this session was FENCED — a newer session attempt now represents agent ${id.agent_id}. Tools are disabled here. Run /team resume ${id.run_id} ${id.agent_id} to take it back.`
 					: `team: session credential for ${id.agent_id} was rejected (${e.message}). Run /team resume ${id.run_id} ${id.agent_id}.`,
 				"error",
@@ -427,11 +455,13 @@ export class TeamRuntime {
 
 	/** Run an agent-authenticated call; maps STALE_SESSION to a clear error. */
 	async agentCall<T>(fn: (o: CallOptions) => Promise<T>, o: CallOptions = {}): Promise<T> {
-		await this.requireIdentity();
+		const identity = await this.requireIdentity();
 		try {
 			return await fn(o);
 		} catch (e) {
+			if (this.identity !== identity) throw e;
 			if (this.handleAgentError(e)) {
+				if (!this.fenced) throw new Error(this.notice ?? NOT_ENROLLED);
 				throw new Error(`session fenced (${(e as TeamApiError).code}): this Pi session no longer represents the agent. Run /team resume.`);
 			}
 			if (isUnavailable(e)) throw new Error(`team controller unreachable: ${(e as Error).message}`);
@@ -465,16 +495,19 @@ export class TeamRuntime {
 
 	async heartbeat(): Promise<void> {
 		if (!this.identity || this.stopped) return;
+		const identity = this.identity;
 		const pis = this.piSession();
 		try {
 			const r = await this.client.heartbeat(
 				{ busy: !this.idle(), pi_session_id: pis.id, pi_session_path: pis.path },
 				{ idempotencyKey: `hb:${this.identity.session_id}:${randomUUID()}`, timeoutMs: 5_000 },
 			);
+			if (this.identity !== identity) return;
 			this.lastInboxPending = r.inbox_pending;
 			// Managed one-shot workers pick messages up at run start / before settling instead.
 			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: this.identity?.managed && this.ctx?.mode === "tui" });
 		} catch (e) {
+			if (this.identity !== identity) return;
 			if (this.handleAgentError(e)) return;
 			try {
 				this.ctx?.ui.setStatus(STATUS_KEY, `team: controller unreachable (${(e as Error).message.slice(0, 60)})`);
@@ -553,9 +586,11 @@ export class TeamRuntime {
 	 */
 	async deliverInbox(o: { triggerTurn?: boolean } = {}): Promise<Envelope[]> {
 		if (!this.identity || this.delivering) return [];
+		const identity = this.identity;
 		this.delivering = true;
 		try {
 			const { fresh, all } = await this.claimInbox();
+			if (this.identity !== identity) return [];
 			if (fresh.length) {
 				const trigger = o.triggerTurn ?? false;
 				this.pi.sendMessage(

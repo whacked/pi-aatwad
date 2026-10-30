@@ -34,7 +34,7 @@ worker pi (same extension) ──enroll/heartbeat/tools──▶ controller
 - Tests/demo use `PI_TEAM_EXECUTOR=<node script>`: a fake worker that speaks the same enrollment/heartbeat/tool HTTP protocol without an LLM, so no paid credentials are required.
 
 ## Governance accounting
-- An approval is a grant from the reviewer's pool. Reservations are recorded at **every** ancestor, so siblings cannot overcommit. Global hard caps (`max_live_agents`, `max_pending_spawns`, `emergency_max_depth`, `max_run_usd`, `max_run_seconds`, `allow_providers`) are checked first and cannot be overridden by root.
+- An approval is a grant from the reviewer's pool. Reservations are recorded at **every** ancestor, so siblings cannot overcommit. In bounded mode, global hard caps (`max_live_agents`, `max_pending_spawns`, `emergency_max_depth`, `max_run_usd`, `max_run_seconds`, `allow_providers`) are checked first. The human operator may explicitly disable numeric resource caps using the persisted `operator_unlimited` policy; agent credentials cannot change it. Provider eligibility and hierarchy authorization still apply.
 - `max_run_usd` counts consumed spend across the run (root included) plus the unconsumed part of active reservations. On terminate, the unspent part is released and a settled charge (`BudgetView.settled_usd`) stays at each ancestor.
 - Deadlines: per-session, per-role runtime and per-run wallclock. Policy `BLOCKED` (default: pause and keep budget) or `FAILED`.
 
@@ -82,3 +82,23 @@ The layout codec accepts legacy checksummed strings and tmux 3.8's version 2
 JSON format. It writes the format returned by the server, preserves JSON pane
 indexes, active/recent-pane metadata and unrelated cells, and separates layout
 output from zoom state with a tab rather than splitting JSON on spaces.
+
+## Session workflow and operator policy
+
+`/team resume` discovers active roots through the shared controller and provides a
+picker with active/live member counts. It does not create a new run. `init` followed
+by `resume` retires the unused just-created empty root only after a successful
+attachment. Cancelled runs remain durable but are excluded from active suggestions,
+including old records whose run status lagged behind the root status.
+
+Cancellation and supersession have separate structured stale-token reasons. A
+stopped local identity is persisted as ended, with its heartbeat/cache cleared,
+so reload does not reattach a cancelled agent. In-flight requests from an old
+identity cannot invalidate a newly resumed one. Repeated cancellation is a no-op.
+Pane ownership is released for stopped runs; operator-verified stale groups with
+zero active members can be reused without taking over active groups.
+
+`/runs/:id/admin` permits only operator credentials to change numeric resource
+enforcement. Unlimited mode is a persisted boolean rather than a large finite
+number. Budget views return `unlimited: true` with null available amounts; usage
+accounting continues, while resource/grant checks and deadlines are disabled.

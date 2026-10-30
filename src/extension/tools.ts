@@ -1,3 +1,4 @@
+import { openTerminals } from "./terminals.ts";
 import { TmuxWatch } from "../watch/tmux.ts";
 import { availableModels, resolveAvailableModel } from "./models.ts";
 // Organization tools. Identical set for every agent; the controller authorizes each action.
@@ -273,7 +274,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_create_member", "Team: create member",
-		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. Defaults: $2 and 600 seconds. Subordinate managers use team_request_expansion instead.",
+		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. Bounded-mode defaults: $2 and 600 seconds. Under human operator unlimited policy, no numeric spend/runtime/recruitment caps are enforced and no finite allocations are needed. Subordinate managers use team_request_expansion instead.",
 		Type.Object({
 			name: Type.String(), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
 			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),
@@ -282,6 +283,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 		async (p, id, ctx) => {
 			if (p.model && p.preferred_model_id) throw new Error("Specify model or preferred_model_id, not both");
 			const body = { ...p, model: p.model ? resolveAvailableModel(ctx, p.model) : undefined };
+			if (process.env.TMUX_PANE && !rt.managed) await openTerminals(rt, rt.identity!.run_id);
 			return json("Member provisioned", await rt.client.post("/members", body, { idempotencyKey: key("team_create_member", id) }));
 		},
 	);
@@ -294,7 +296,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
 			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
 			const opening = p.action === "open" || p.action === "focus";
-			const view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id,
+			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (p.action === "close") {
 				await view.close();
@@ -302,9 +304,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			}
 			if (p.action === "focus" && !p.agent_id) throw new Error("agent_id is required for focus");
 			if (p.action === "open" || p.action === "focus") {
-				await view.open(process.env.TMUX_PANE);
-				const socket = await view.tmux("display-message", "-p", "#{socket_path}");
-				await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { socket, location: view.opts.location });
+				view = await openTerminals(rt, rt.identity!.run_id);
 				await view.focus(p.action === "focus" ? p.agent_id : undefined);
 			}
 			const open = await view.exists();

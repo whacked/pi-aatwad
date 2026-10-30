@@ -55,8 +55,10 @@ export function resolvePrincipal(db: DB, operatorToken: string, authorization: s
 	if (safeEq(token, operatorToken)) return { kind: "operator", actor_id: "operator" };
 	const row = get(db, "SELECT t.*, a.current_session_id, a.status AS agent_status FROM auth_tokens t JOIN agents a ON a.id = t.agent_id WHERE t.token_hash = ?", hashToken(token));
 	if (!row) fail("UNAUTHENTICATED", "unknown token");
-	if (row.revoked_at) fail("STALE_SESSION", `session token revoked (${row.revoke_reason ?? "revoked"})`);
-	if (row.current_session_id !== row.session_id) fail("STALE_SESSION", "session attempt has been superseded");
-	if (["COMPLETED", "FAILED", "CANCELLED", "RETIRED"].includes(row.agent_status)) fail("STALE_SESSION", `agent is ${row.agent_status}`);
+	if (["COMPLETED", "FAILED", "CANCELLED", "RETIRED"].includes(row.agent_status))
+		fail("STALE_SESSION", `agent is ${row.agent_status}`, { reason: "agent_terminal", agent_status: row.agent_status });
+	if (row.current_session_id !== row.session_id || row.revoke_reason === "superseded")
+		fail("STALE_SESSION", "session attempt has been superseded", { reason: "superseded" });
+	if (row.revoked_at) fail("STALE_SESSION", `session token revoked (${row.revoke_reason ?? "revoked"})`, { reason: "credential_revoked", revoke_reason: row.revoke_reason });
 	return { kind: "agent", actor_id: row.agent_id, run_id: row.run_id, session_id: row.session_id, generation: row.generation };
 }

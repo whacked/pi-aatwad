@@ -5,7 +5,7 @@
 // reported as settled_usd. max_subtree_slots bounds reserved_slots; max_subtree_usd bounds reserved_usd + settled_usd.
 import { type DB, all, get, run, newId, nowIso, emit } from "./db.ts";
 import { fail } from "./errors.ts";
-import { getAllocation, getAncestry, getSubtree, TERMINAL_SQL } from "./queries.ts";
+import { getAllocation, getAncestry, runConfig, getSubtree, TERMINAL_SQL } from "./queries.ts";
 import type { BudgetView, Envelope_Limits } from "../shared/protocol.ts";
 
 const EPS = 1e-9;
@@ -69,6 +69,8 @@ export function recomputeAllocations(db: DB, runId: string): void {
 
 export function assertWithinEnvelopes(db: DB, agents: Iterable<string>, hint?: string): void {
 	for (const a of agents) {
+		const runId = get(db, "SELECT run_id FROM agents WHERE id=?", a)!.run_id;
+		if (runConfig(db, runId).operator_unlimited) continue;
 		const al = getAllocation(db, a);
 		if (al.reserved_slots > al.limits.max_subtree_slots || al.committed_usd > al.limits.max_subtree_usd + EPS) {
 			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} would be exceeded`, { agent_id: a, reserved_slots: al.reserved_slots, max_subtree_slots: al.limits.max_subtree_slots, reserved_usd: al.reserved_usd, settled_usd: al.settled_usd, max_subtree_usd: al.limits.max_subtree_usd, hint });
@@ -107,6 +109,7 @@ export function ownBudgetUsd(db: DB, agentId: string): number | null {
 }
 
 export function budgetView(db: DB, agentId: string): BudgetView {
+	const unlimited = !!runConfig(db, get(db, "SELECT run_id FROM agents WHERE id=?", agentId)!.run_id).operator_unlimited;
 	const al = getAllocation(db, agentId);
 	const sub = getSubtree(db, agentId).slice(1);
 	let live = 0;
@@ -115,13 +118,14 @@ export function budgetView(db: DB, agentId: string): BudgetView {
 	}
 	return {
 		agent_id: agentId,
+		unlimited,
 		limits: al.limits,
 		reserved_slots: al.reserved_slots,
 		reserved_usd: al.reserved_usd,
 		settled_usd: al.settled_usd,
 		consumed_usd: al.consumed_usd,
 		subtree_live_agents: live,
-		available_slots: Math.max(0, al.limits.max_subtree_slots - al.reserved_slots),
-		available_usd: Math.max(0, Math.round((al.limits.max_subtree_usd - al.committed_usd) * 1e6) / 1e6),
+		available_slots: unlimited ? null : Math.max(0, al.limits.max_subtree_slots - al.reserved_slots),
+		available_usd: unlimited ? null : Math.max(0, Math.round((al.limits.max_subtree_usd - al.committed_usd) * 1e6) / 1e6),
 	};
 }

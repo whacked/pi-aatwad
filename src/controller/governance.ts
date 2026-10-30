@@ -185,7 +185,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const usd = request.roles.reduce((s, r) => s + r.count * r.max_cost_usd, 0);
 	const runRow = getRun(db, runId);
 
-	// 1) Global hard caps. Nobody (root, operator) overrides these.
+	// 1) Bounded-mode caps. Only an explicit human operator policy disables numeric caps.
 	const L = cfg.limits;
 	const live = Number(get(db, `SELECT COUNT(*) AS n FROM agents WHERE run_id = ? AND status NOT IN ${TERMINAL_SQL}`, runId)!.n);
 	const pending = Number(get(db, "SELECT COUNT(*) AS n FROM spawn_intents i JOIN agents a ON a.id = i.agent_id WHERE a.run_id = ? AND i.status IN ('PENDING','LAUNCHING','LAUNCHED')", runId)!.n);
@@ -193,12 +193,12 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const depth = chain.length; // depth of the new child (root = 0)
 	const runSpend = runSpendUsd(db, runId, runRow.root_agent_id);
 	const violations: string[] = [];
-	if (live + n > L.max_live_agents) violations.push(`max_live_agents ${L.max_live_agents} (live ${live} + requested ${n})`);
-	if (pending + n > L.max_pending_spawns) violations.push(`max_pending_spawns ${L.max_pending_spawns} (pending ${pending} + requested ${n})`);
+	if (!cfg.operator_unlimited && live + n > L.max_live_agents) violations.push(`max_live_agents ${L.max_live_agents} (live ${live} + requested ${n})`);
+	if (!cfg.operator_unlimited && pending + n > L.max_pending_spawns) violations.push(`max_pending_spawns ${L.max_pending_spawns} (pending ${pending} + requested ${n})`);
 	const runAgeS = (Date.now() - Date.parse(runRow.created_at)) / 1000;
-	if (L.max_run_seconds > 0 && runAgeS > L.max_run_seconds) violations.push(`max_run_seconds ${L.max_run_seconds} (run age ${Math.round(runAgeS)}s)`);
-	if (depth > L.emergency_max_depth) violations.push(`emergency_max_depth ${L.emergency_max_depth} (new depth ${depth})`);
-	if (runSpend + usd > L.max_run_usd + 1e-9) violations.push(`max_run_usd ${L.max_run_usd} (consumed+reserved ${Math.round(runSpend * 1e6) / 1e6} + requested ${usd})`);
+	if (!cfg.operator_unlimited && L.max_run_seconds > 0 && runAgeS > L.max_run_seconds) violations.push(`max_run_seconds ${L.max_run_seconds} (run age ${Math.round(runAgeS)}s)`);
+	if (!cfg.operator_unlimited && depth > L.emergency_max_depth) violations.push(`emergency_max_depth ${L.emergency_max_depth} (new depth ${depth})`);
+	if (!cfg.operator_unlimited && runSpend + usd > L.max_run_usd + 1e-9) violations.push(`max_run_usd ${L.max_run_usd} (consumed+reserved ${Math.round(runSpend * 1e6) / 1e6} + requested ${usd})`);
 	for (const c of choices) if (!L.allow_providers.includes(c.entry.provider)) violations.push(`provider ${c.entry.provider} not in allow_providers`);
 	if (violations.length) {
 		const ts = nowIso();
@@ -210,7 +210,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	}
 
 	// 2) Reviewer's per-decision grant authority.
-	if (p.kind === "agent") {
+	if (p.kind === "agent" && !cfg.operator_unlimited) {
 		const g = getAllocation(db, actor).limits;
 		if (n > g.max_grant_slots || usd > g.max_grant_usd + 1e-9) {
 			fail("FORBIDDEN", `request (${n} slots, $${usd}) exceeds your per-decision grant (${g.max_grant_slots} slots, $${g.max_grant_usd}); ESCALATE to your manager`, { hint: "ESCALATE", max_grant_slots: g.max_grant_slots, max_grant_usd: g.max_grant_usd });
@@ -223,6 +223,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const below = chain.slice(0, reviewerIdx);
 	const checked = chain.slice(reviewerIdx);
 	for (const a of checked) {
+		if (cfg.operator_unlimited) continue;
 		const al = getAllocation(db, a);
 		if (al.reserved_slots + n > al.limits.max_subtree_slots || al.committed_usd + usd > al.limits.max_subtree_usd + 1e-9) {
 			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} cannot absorb ${n} slots / $${usd}`, {

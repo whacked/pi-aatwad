@@ -8,7 +8,7 @@ import { ENV_ENROLL_FILE } from "../../src/shared/protocol.ts";
 import type { EnrollmentFile, Envelope, OrgContext } from "../../src/shared/protocol.ts";
 import { formatOrgContext, MAX_CONTEXT_CHARS } from "../../src/extension/format.ts";
 import { makeState, startMock, waitFor, sleep } from "./helpers.ts";
-import { spawnCount } from "../../src/shared/client.ts";
+import { TeamApiError, spawnCount } from "../../src/shared/client.ts";
 import { readdirSync } from "node:fs";
 
 beforeEach(() => __resetProcessStateForTests());
@@ -400,4 +400,19 @@ describe("org context", () => {
 		assert.match(small, /team_review_expansion/);
 		assert.match(small, /not guarantees/);
 	});
+});
+
+
+test("legacy cancellation errors leave the team without claiming another session took over", async () => {
+	const pi = fakePi();
+	const ctx = fakeCtx(pi, "stopped-pi");
+	const rt = new TeamRuntime(pi as any);
+	rt.ctx = ctx;
+	rt.identity = { run_id: "run-stopped", agent_id: "agent-stopped", session_id: "ses-stopped", token: "old", managed: false, pi_session_id: "stopped-pi" };
+	assert.equal(rt.handleAgentError(new TeamApiError("STALE_SESSION", "session token revoked (cancelled)", 409)), true);
+	assert.equal(rt.fenced, false);
+	assert.equal(rt.identity, undefined);
+	assert.ok(ctx.notes.some((n: any) => /CANCELLED/.test(n.text)));
+	assert.ok(!ctx.notes.some((n: any) => /FENCED|newer session/.test(n.text)));
+	rt.stop();
 });
