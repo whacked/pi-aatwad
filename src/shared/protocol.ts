@@ -234,12 +234,13 @@ export const DEFAULT_PROVIDER = "default";
 export type DeadlinePolicy = "BLOCKED" | "FAILED";
 
 export interface TerminalLocation { window: string; leader: string }
+export interface TerminalOptions { socket?: string; location?: TerminalLocation; debug?: boolean }
 
 export interface RunConfig {
 	/** Human operator authorization to remove numeric spend, runtime and recruitment caps. */
 	operator_unlimited?: boolean;
 	/** Interactive Pi workers hosted by tmux; socket is primarily for isolated deployments/tests. */
-	terminal?: { socket?: string; location?: TerminalLocation };
+	terminal?: TerminalOptions;
 	limits: GlobalLimits;
 	models: ModelCatalogEntry[];
 	root_envelope: Envelope_Limits;
@@ -566,7 +567,7 @@ export interface EventView {
 /** GET /agents/:id (inspect) */
 export interface InspectResponse {
 	agent: TreeNode & { metadata: Record<string, unknown>; created_at: string; last_heartbeat_at: string | null };
-	sessions: { session_id: string; status: SessionStatus; provider: string; model: string; pi_session_path: string | null; started_at: string | null; ended_at: string | null; pid: number | null }[];
+	sessions: { session_id: string; status: SessionStatus; provider: string; model: string; pi_session_path: string | null; started_at: string | null; ended_at: string | null; pid: number | null; process_started_at?: string | null }[];
 	tasks: { task_id: string; title: string; status: TaskStatus }[];
 	reporting_history: { parent_id: string; valid_from: string; valid_to: string | null }[];
 	budget: BudgetView;

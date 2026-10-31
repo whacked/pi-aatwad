@@ -16,7 +16,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "help", args: "", help: "show this help" },
 	{ name: "init", args: "[--unlimited] [config-json-path]", help: "create a new organization with this session as root" },
 	{ name: "resume", args: "[run_id] [agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
-	{ name: "tree", args: "[run_id]", help: "live logical hierarchy" },
+	{ name: "tree", args: "[run_id] [--all]", help: "live logical hierarchy" },
 	{ name: "status", args: "", help: "controller, run, agent and pending work" },
 	{ name: "budget", args: "[agent_id]", help: "limits, reservations and usage" },
 	{ name: "inbox", args: "", help: "deliver pending team messages into this session" },
@@ -26,7 +26,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
 	{ name: "admin", args: "[status|unlimited|bounded] [run_id]", help: "human operator resource policy" },
 	{ name: "stop", args: "[agent_id|run_id]", help: "controlled cancellation (cascades to subtree)" },
-	{ name: "watch", args: "[open|status|close|focus <agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
+	{ name: "watch", args: "[open|status|close|debug|focus <agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
 	{ name: "send", args: "<agent_id> <message>", help: "send directions to a team member" },
 ];
 
@@ -84,19 +84,20 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			await rt.ready;
 			if (rt.managed) throw new Error("managed workers cannot manage tmux views; use the leader session");
 			const action = a[0] ?? "open";
-			if (!["open", "status", "close", "focus"].includes(action)) throw new Error("usage: /team watch [open|status|close|focus <agent_id>] [run_id]");
+			if (!["open", "status", "close", "focus", "debug"].includes(action)) throw new Error("usage: /team watch [open|status|close|debug|focus <agent_id>] [run_id]");
 			if (action === "focus" && !a[1]) throw new Error("usage: /team watch focus <agent_id> [run_id]");
 			const explicitRun = a[action === "focus" ? 2 : 1];
-			if (!explicitRun && !rt.identity && (action === "open" || action === "focus")) {
+			if (!explicitRun && !rt.identity && (action === "open" || action === "focus" || action === "debug")) {
 				await handlers.resume([], ctx);
 				if (!rt.identity) return;
 			}
 			const id = runId(explicitRun);
-			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(id)}/terminal`, { token: await rt.commandToken() });
-			const opening = action === "open" || action === "focus";
+			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(id)}/terminal`, { token: await rt.commandToken() });
+			const opening = action === "open" || action === "focus" || action === "debug";
 			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (action === "close") {
+				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { socket: terminal.socket, location: terminal.location, debug: false }, { token: await rt.commandToken() });
 				await view.close();
 				out(ctx, `Team terminals left running for ${id}; your current tmux session is unchanged`);
 				return;
@@ -107,7 +108,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			}
 			// Validate access and run existence before creating terminal resources.
 			await rt.client.tree(id, { token: await rt.commandToken() });
-			view = await openTerminals(rt, id);
+			view = await openTerminals(rt, id, { debug: action === "debug" });
 			if (action === "focus") await view.focus(a[1]);
 			else await view.focus();
 			out(ctx, view.opts.location ? `Team panes opened beside Pi in the current tmux window; interactive members appear automatically` : `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
@@ -203,7 +204,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			let emptyNewRoot: string | undefined;
 			if (rt.identity && rt.identity.run_id === initializedRunId) {
 				const me = await rt.client.me();
-				if (me.is_root && !me.children.length && !me.tasks.length && !me.inbox_pending && !me.pending_proposals_to_review) emptyNewRoot = me.agent_id;
+				if (me.is_root && runs.find((r) => r.run_id === initializedRunId)?.agents === 1 && !me.children.length && !me.tasks.length && !me.inbox_pending && !me.pending_proposals_to_review) emptyNewRoot = me.agent_id;
 			}
 			// Attach first: a failed resume must leave the current team intact.
 			await rt.attach(target, a[1]);
@@ -216,7 +217,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		},
 
 		tree: async (a, ctx) => {
-			const t = await rt.client.tree(runId(a[0]), { token: await rt.commandToken() });
+			const t = await rt.client.tree(runId(a.find((arg) => arg !== "--all")), { token: await rt.commandToken() }, !a.includes("--all"));
 			out(ctx, formatTree(t, rt.identity?.agent_id));
 		},
 

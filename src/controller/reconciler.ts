@@ -8,7 +8,7 @@ import type { Executor, LaunchSpec, ProcessIdentity } from "../executor/types.ts
 import type { EnrollmentFile } from "../shared/protocol.ts";
 import { mintSecret, hashToken } from "./auth.ts";
 import { getAgent, getAncestry, getSubtree, isTerminal, runConfig, TERMINAL_SQL } from "./queries.ts";
-import { newSessionAttempt } from "./runs.ts";
+import { tree, newSessionAttempt } from "./runs.ts";
 import { prepareWorkspace } from "../executor/workspace.ts";
 import { assertLeaseHeld, FencedError } from "./fence.ts";
 import { terminateAgent } from "./topology.ts";
@@ -112,6 +112,25 @@ export class Reconciler {
 		for (const r of pending) {
 			if (this.stopped) return;
 			await this.launch(r.id);
+		}
+		await this.syncTerminals();
+	}
+
+	/** The existing controller coordinates layout; normal usage needs no control pane/process. */
+	private async syncTerminals(): Promise<void> {
+		if (!this.executor.syncTerminal) return;
+		for (const r of all(this.ctx.db, "SELECT id FROM runs WHERE status IN ('RUNNING','PAUSED')")) {
+			const cfg = runConfig(this.ctx.db, r.id);
+			if (!cfg.terminal) continue;
+			try {
+				const nodes = tree(this.ctx, { kind: "operator", actor_id: "operator" }, r.id);
+				const flat = (node: typeof nodes.root): typeof nodes.root[] => [node, ...node.children.flatMap(flat)];
+				const processes = new Map(all(this.ctx.db, "SELECT a.id, s.pid, s.process_started_at FROM agents a LEFT JOIN sessions s ON s.id=a.current_session_id WHERE a.run_id=?", r.id).map((a) => [a.id, a]));
+				await this.executor.syncTerminal(this.ctx.paths.dir, r.id, cfg.terminal, flat(nodes.root).slice(1).map((m) => {
+					const p = processes.get(m.agent_id);
+					return { ...m, ...(p?.pid ? { process: { pid: p.pid, process_started_at: p.process_started_at ?? "" } } : {}) };
+				}));
+			} catch (e) { this.ctx.log("warn", "terminal layout update failed", { run_id: r.id, error: String(e) }); }
 		}
 	}
 

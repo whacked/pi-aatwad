@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.3, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.4, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -65,12 +65,12 @@ Inside Pi:
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
 | `/team inspect <agent_id>` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
-| `/team watch [open\|status\|close] [run_id]` | Open or manage a tmux dashboard and automatic member panes. |
+| `/team watch [open\|status\|close\|debug] [run_id]` | Manage live member panes; show optional controls with `debug`. |
 | `/team watch focus <agent_id> [run_id]` | Focus a member monitor pane. |
 | `/team send <agent_id> <message>` | Send directions through durable team messaging. |
 | `/team stop [agent_id\|run_id]` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
 
-Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_get_models`, `team_get_budget`, plus root-only `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
+Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, plus root-only `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
 
 ### What happens underneath
 
@@ -199,31 +199,48 @@ The first `/team watch` enables interactive workers for the run. Existing headle
 workers are stopped and relaunched in panes on their saved transcripts, preserving
 agent IDs and tasks; an active turn is interrupted and the resumed Pi is instructed
 to continue it. Future members launch directly into interactive panes. The controller
-owns launch, restart and cancellation, so a dashboard refresh never starts a
+owns launch, restart and cancellation, so a view refresh never starts a
 competing Pi process. Without tmux mode, workers retain the headless one-shot path.
 
 When Pi is already inside tmux, `/team watch` creates member panes **in the current
 window of the current session**, beside the existing Pi pane. It does not move Pi,
 create or switch sessions, rename windows, or change unrelated panes. The team
 uses only the region originally occupied by Pi: the leader receives approximately
-60% of that region, with member Pis and a small dashboard sharing the rest. The
+60% of that region, with member Pis sharing the rest. The
 layout adapts to region dimensions and membership while preserving the position,
 size and processes of unrelated panes. The controller remembers this location so
 new and restarted members return to the same group.
 
 Outside tmux, the previous behavior remains: Pi stays in its original terminal,
-and `/team watch` creates a dedicated session with a dashboard and member Pis and
-prints an attach command for another terminal.
+and `/team watch` creates a dedicated session for member Pis and prints an attach
+command for another terminal. A temporary readiness pane is replaced by the first
+member, so it does not occupy space while agents are working.
 
 Use tmux's default `Ctrl-b` then arrow keys to navigate panes, or `z` to zoom a
 pane temporarily. `/team watch focus <agent_id>` selects a member and
 `/team watch status` reports the session and panes. `Ctrl-b d` and
 `/team watch close` leave live Pi processes running. Inside an existing session,
-`/team watch close` stops only the small dashboard, without detaching your client
-or changing session/window selection; `/team watch` restores it. In a dedicated
+`/team watch close` hides any debug controls without detaching your client or
+changing session/window selection. In a dedicated
 session, close detaches its clients without destroying live terminals. Use
 `/team stop <agent_id>` to cancel a member, or `/team stop <run_id>` to cancel the team. Killing a tmux pane or server terminates the harnesses it hosts;
 the controller may restart eligible members within its retry policy.
+
+Normal use shows **only the leader and member Pi panes**. Layout coordination runs
+inside the existing background controller; there is no TEAM CONTROL pane or extra
+coordinator process to watch. `/team watch debug` (or `team_watch` with action
+`debug`) opens one optional diagnostic pane. Normal view opening hides legacy
+control panes, including duplicates. Pane titles use the assigned member names
+rather than Pi's default `π` and worktree identifier.
+
+To close members, ask the leader to use `team_close_member` with their agent IDs.
+It cancels the member and descendants, revokes credentials, stops their Pi
+processes, releases reservations, and removes their panes. Its response explicitly
+reports whether process shutdown is confirmed. Repeating a close is harmless.
+Completing a task or changing its budget does not terminate an agent. Closed
+members leave `/team tree` and `team_get_tree` by default; `/team tree --all`,
+`team_get_tree` with `include_closed: true`, inspect and events retain history.
+Recruit replacements normally with `team_create_member`.
 
 To return later, `/team resume <run_id>` and `/team watch`. Interactive mode is
 persisted across controller restarts. Terminal panes survive controller outages

@@ -1,3 +1,4 @@
+import { probeIdentity, processStartTime } from "../executor/proc.ts";
 import { openTerminals } from "./terminals.ts";
 import { TmuxWatch } from "../watch/tmux.ts";
 import { availableModels, resolveAvailableModel } from "./models.ts";
@@ -183,11 +184,11 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_get_tree",
 		"Team: org tree",
-		"Show the current organization tree of your run (roles, status, models). Fetched fresh from the controller.",
-		Type.Object({}),
-		async () => {
+		"Show the active organization tree (roles, live status, models), fetched fresh from the controller. Closed agents are hidden unless include_closed=true.",
+		Type.Object({ include_closed: Type.Optional(Type.Boolean({ description: "Include cancelled/retired/completed history; default false" })) }),
+		async (p) => {
 			const id = rt.identity!;
-			const t = await rt.client.tree(id.run_id);
+			const t = await rt.client.tree(id.run_id, undefined, !p.include_closed);
 			return text(formatTree(t, id.agent_id), t);
 		},
 	);
@@ -289,22 +290,45 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	);
 
 	reg(
+		"team_close_member", "Team: close member",
+		"Actually terminate a member in your subtree when requested. Cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. Use agent_id from team_get_tree, not a role name. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
+		Type.Object({ agent_id: Type.String(), reason: Type.Optional(Type.String()) }),
+		async (p, id) => {
+			const result = await rt.client.lifecycle(p.agent_id, { action: "cancel", reason: p.reason ?? "manager requested member close", children_policy: "cascade" }, { idempotencyKey: key("team_close_member", id) });
+			const ids = result.affected_agent_ids.length ? result.affected_agent_ids : [p.agent_id];
+			const sessions = (await Promise.all(ids.map((agentId: string) => rt.client.inspect(agentId)))).flatMap((r) => r.sessions.slice(-1)).filter((s) => s.pid);
+			const deadline = Date.now() + 8000;
+			let stopped = false;
+			do {
+				const running = await Promise.all(sessions.map(async (s) => s.process_started_at
+					? await probeIdentity({ pid: s.pid!, process_started_at: s.process_started_at }) === "alive"
+					: await processStartTime(s.pid!) !== null));
+				stopped = running.every((alive) => !alive);
+				if (stopped || Date.now() >= deadline) break;
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} while (true);
+			return json(stopped ? (result.affected_agent_ids.length ? "Member closed; Pi process stopped" : "Member already closed") : "Cancellation recorded; process shutdown is still pending — do not claim fully stopped yet", { ...result, processes_stopped: stopped });
+		},
+	);
+
+	reg(
 		"team_watch", "Team: tmux terminals",
-		"Root only: open, inspect, focus or close the team's live Pi terminal session when the user requests it. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Requires tmux and Node on PATH.",
-		Type.Object({ action: StringEnum(["open", "status", "focus", "close"] as const), agent_id: Type.Optional(Type.String({ description: "Required for focus" })) }),
+		"Root only: open, inspect, focus or close the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Requires tmux and Node on PATH.",
+		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug"] as const), agent_id: Type.Optional(Type.String({ description: "Required for focus" })) }),
 		async (p) => {
 			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
-			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
-			const opening = p.action === "open" || p.action === "focus";
+			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
+			const opening = p.action === "open" || p.action === "focus" || p.action === "debug";
 			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (p.action === "close") {
+				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { socket: terminal.socket, location: terminal.location, debug: false });
 				await view.close();
 				return text("Team terminals left running; existing tmux sessions are unchanged", { open: await view.exists() });
 			}
 			if (p.action === "focus" && !p.agent_id) throw new Error("agent_id is required for focus");
-			if (p.action === "open" || p.action === "focus") {
-				view = await openTerminals(rt, rt.identity!.run_id);
+			if (p.action === "open" || p.action === "focus" || p.action === "debug") {
+				view = await openTerminals(rt, rt.identity!.run_id, { debug: p.action === "debug" });
 				await view.focus(p.action === "focus" ? p.agent_id : undefined);
 			}
 			const open = await view.exists();

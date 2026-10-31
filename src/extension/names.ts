@@ -11,6 +11,7 @@ export const TOOL_NAMES = [
 	"team_get_models",
 	"team_register_model",
 	"team_create_member",
+	"team_close_member",
 	"team_watch",
 	"team_get_budget",
 ] as const;

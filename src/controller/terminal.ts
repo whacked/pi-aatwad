@@ -11,7 +11,8 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 	if (body !== undefined) {
 		if (p.kind !== "operator" && p.actor_id !== row.root_agent_id) fail("FORBIDDEN", "only the root may enable interactive terminals");
 		const b = obj(body);
-		onlyKeys(b, ["socket", "location"]);
+		onlyKeys(b, ["socket", "location", "debug"]);
+		if (b.debug !== undefined && typeof b.debug !== "boolean") fail("INVALID", "debug must be boolean");
 		const socket = str(b, "socket", { optional: true });
 		let location: { window: string; leader: string } | undefined;
 		if (b.location !== undefined) {
@@ -20,7 +21,7 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 			if (!/^@\d+$/.test(window) || !/^%\d+$/.test(leader)) fail("INVALID", "location must use tmux window/pane IDs");
 			location = { window, leader };
 		}
-		cfg.terminal = { ...(socket ? { socket } : {}), ...(location ? { location } : {}) };
+		cfg.terminal = { ...(socket ? { socket } : {}), ...(location ? { location } : {}), ...(b.debug ? { debug: true } : {}) };
 		run(ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), id);
 		emit(ctx.db, { run_id: id, actor_id: p.actor_id, type: "run.terminal_enabled", entity_id: id, payload: {} });
 		ctx.kick();

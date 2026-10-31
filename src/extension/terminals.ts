@@ -1,11 +1,12 @@
 import { TmuxWatch } from "../watch/tmux.ts";
-import type { TerminalLocation } from "../shared/protocol.ts";
+import type { TerminalLocation, TerminalOptions } from "../shared/protocol.ts";
 import type { TeamRuntime } from "./runtime.ts";
 
 /** Resolve stale pane tags using controller state, rather than treating them as agent identity. */
-export async function openTerminals(rt: TeamRuntime, runId: string): Promise<TmuxWatch> {
+export async function openTerminals(rt: TeamRuntime, runId: string, options: { debug?: boolean } = {}): Promise<TmuxWatch> {
 	const token = await rt.commandToken();
-	const view = new TmuxWatch({ stateDir: rt.paths.dir, runId });
+	const cfg = await rt.client.get<TerminalOptions>(`/runs/${encodeURIComponent(runId)}/terminal`, { token });
+	const view = new TmuxWatch({ stateDir: rt.paths.dir, runId, debug: options.debug ?? cfg.debug ?? false });
 	const pane = process.env.TMUX_PANE;
 	if (pane) {
 		const owner = await view.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner");
@@ -22,6 +23,6 @@ export async function openTerminals(rt: TeamRuntime, runId: string): Promise<Tmu
 	}
 	await view.open(pane);
 	const socket = await view.tmux("display-message", "-p", "#{socket_path}");
-	await rt.client.post(`/runs/${encodeURIComponent(runId)}/terminal`, { socket, location: view.opts.location }, { token });
+	await rt.client.post(`/runs/${encodeURIComponent(runId)}/terminal`, { socket, location: view.opts.location, debug: view.opts.debug }, { token });
 	return view;
 }

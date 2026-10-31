@@ -540,8 +540,8 @@ export class TeamClient {
 	me(o?: CallOptions): Promise<OrgContext> {
 		return this.get("/me", o);
 	}
-	tree(runId: string, o?: CallOptions): Promise<TreeResponse> {
-		return this.get(`/runs/${enc(runId)}/tree`, o);
+	tree(runId: string, o?: CallOptions, activeOnly = false): Promise<TreeResponse> {
+		return this.get(`/runs/${enc(runId)}/tree${activeOnly ? "?active_only=1" : ""}`, o);
 	}
 	sendMessage(req: SendMessageRequest, o?: CallOptions): Promise<SendMessageResponse> {
 		return this.post("/messages", req, o);

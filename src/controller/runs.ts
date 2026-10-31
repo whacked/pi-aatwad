@@ -257,11 +257,11 @@ function nodeOf(db: DB, a: Row): Omit<TreeNode, "children"> {
 	return { agent_id: a.id, role: a.role, status: a.status, desired_state: a.desired_state, observed_state: a.observed_state, model: a.model ? `${a.provider}/${a.model}` : null, parent_id: getCurrentManager(db, a.id) };
 }
 
-export function tree(ctx: Ctx, p: Principal, runId: string): TreeResponse {
+export function tree(ctx: Ctx, p: Principal, runId: string, activeOnly = false): TreeResponse {
 	assertRunRead(p, runId);
 	const db = ctx.db;
 	const r = getRun(db, runId);
-	const build = (id: string): TreeNode => ({ ...nodeOf(db, getAgent(db, id)), children: getChildren(db, id).map(build) });
+	const build = (id: string): TreeNode => ({ ...nodeOf(db, getAgent(db, id)), children: getChildren(db, id).filter((child) => !activeOnly || !isTerminal(getAgent(db, child).status)).map(build) });
 	const history = all(db, "SELECT child_id, parent_id, valid_from, valid_to FROM reporting_edges WHERE run_id = ? ORDER BY valid_from, rowid", runId) as TreeResponse["history"];
 	return { run_id: runId, topology_version: r.topology_version, root: build(r.root_agent_id), history };
 }
@@ -279,7 +279,7 @@ export function me(ctx: Ctx, p: Principal): OrgContext {
 		role: ag.role,
 		is_root: parentId === null,
 		parent: parent ? { agent_id: parent.id, role: parent.role } : null,
-		children: getChildren(db, a.actor_id).map((c) => {
+		children: getChildren(db, a.actor_id).filter((id) => !isTerminal(getAgent(db, id).status)).map((c) => {
 			const x = getAgent(db, c);
 			return { agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state };
 		}),
@@ -315,6 +315,7 @@ export function inspect(ctx: Ctx, p: Principal, agentId: string): InspectRespons
 			started_at: s.started_at ?? null,
 			ended_at: s.ended_at ?? null,
 			pid: s.pid ?? null,
+			process_started_at: s.process_started_at ?? null,
 		})),
 		tasks: all(db, "SELECT id, title, status FROM tasks WHERE owner_id = ? ORDER BY created_at", agentId).map((t) => ({ task_id: t.id, title: t.title, status: t.status })),
 		reporting_history: getReportingHistory(db, agentId).map((h) => ({ parent_id: h.parent_id, valid_from: h.valid_from, valid_to: h.valid_to })),

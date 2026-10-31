@@ -79,6 +79,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 				"Default to the initial leader model when no model is specified. You may briefly offer alternative models using team_get_models(source=available), without blocking work on a model-selection question. " +
 				"Honor explicit member names and model choices. Resolve exact models through Pi; ask on ambiguity and never guess or silently substitute. " +
 				"Check team_get_budget. With operator unlimited policy, do not invent dollar allocations or runtime caps. Otherwise default member limits are $2 and 600 seconds. If the user requests unlimited mode when it is bounded, tell them to use /team admin unlimited; the human operator can remove those caps. " +
+				"To close members when requested, use team_close_member. Completing tasks or zeroing a budget does not terminate a Pi process. Never claim a member is closed without a successful lifecycle result. " +
 				"Members get separate worktrees. Report their actual IDs and provisioning state, and integrate results explicitly. " +
 				"When the user requests tmux monitoring, use team_watch to open or manage the view; report its attach command when needed. " +
 				"Runtime model registrations persist in this run; existing members retain their selected models.";
@@ -100,6 +101,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 
 	// Interactive sessions: deliver pending messages as soon as Pi settles instead of waiting for the next heartbeat.
 	pi.on("agent_settled", () => {
+		rt.updateStatus();
 		if (rt.identity && (!rt.identity.managed || rt.ctx?.mode === "tui") && rt.lastInboxPending > 0) void rt.deliverInbox({ triggerTurn: rt.identity.managed });
 	});
 }

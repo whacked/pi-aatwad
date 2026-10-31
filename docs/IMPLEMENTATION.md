@@ -64,7 +64,7 @@ then creates or respawns real PTY panes with interactive Pi argv (no JSON/print
 flags). A private, self-deleting shell launch file supplies the allowlisted worker
 environment; credentials never appear in tmux argv. Shell `exec` preserves the
 pane PID and process group as Pi's identity, so existing probe/stop/recovery and
-fencing logic remain authoritative. Dashboard refreshes only arrange these panes.
+fencing logic remain authoritative. Controller reconciliation arranges these panes.
 
 Interactive managed workers trigger model turns for inbox messages when idle;
 headless workers retain the bounded settle-continuation behavior. The leader's
@@ -72,8 +72,8 @@ existing pane stays in its original session and window. Pane-scoped ownership
 and a persisted terminal location direct the executor to split that pane's region.
 Custom layout replacement is confined to the team subtree (including tmux's
 flattened sibling groups); unrelated pane geometry and processes are preserved.
-A roughly 60% leader allocation and the remaining member/dashboard grid adapt to
-region dimensions. Closing an in-place view stops only its dashboard. Outside tmux,
+A roughly 60% leader allocation and the remaining member grid adapt to
+region dimensions. Closing an in-place view hides optional debug controls. Outside tmux,
 the dedicated-session fallback remains, including detaching clients on close;
 controller lifecycle operations stop workers. Explicit tmux pane/server destruction
 has normal PTY hangup semantics and may trigger controller recovery.
@@ -102,3 +102,18 @@ zero active members can be reused without taking over active groups.
 enforcement. Unlimited mode is a persisted boolean rather than a large finite
 number. Budget views return `unlimited: true` with null available amounts; usage
 accounting continues, while resource/grant checks and deadlines are disabled.
+
+## Quiet team layout and member lifecycle
+
+The controller invokes the Pi executor's terminal reconciliation hook on its
+normal tick. Default layouts contain only live harness panes; no visible control
+pane or separate coordinator process is needed. Dedicated sessions use a temporary
+placeholder until their first Pi starts. Explicit debug mode retains one diagnostic
+pane, with deterministic deduplication and cleanup of legacy controls.
+
+The extension sets the terminal title to the controller-assigned role/name and
+refreshes it after startup and turns; reconciliation also restores member titles.
+`team_close_member` uses the existing manager-scoped cancellation API and confirms
+process exit using PID/start-time identity. Reconciliation removes ended panes only
+after their worker identity is dead. Active tree/children projections hide terminal
+agents by default in user/model tools, with explicit archival tree access preserved.

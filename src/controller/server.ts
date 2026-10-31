@@ -48,7 +48,7 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/runs/:id/admin", "operator", ({ p, params, body }) => adminPolicy(ctx, p, params[0], body ?? {})),
 		R("GET", "/runs/:id/terminal", "any", ({ p, params }) => terminalMode(ctx, p, params[0])),
 		R("POST", "/runs/:id/terminal", "any", ({ p, params, body }) => terminalMode(ctx, p, params[0], body ?? {})),
-		R("GET", "/runs/:id/tree", "any", ({ p, params }) => tree(ctx, p, params[0])),
+		R("GET", "/runs/:id/tree", "any", ({ p, params, q }) => tree(ctx, p, params[0], q.get("active_only") === "1")),
 		R("GET", "/runs/:id/recovery", "operator", ({ params }) => getRecoveryStatus(ctx.db, params[0])),
 		R("POST", "/enroll", "none", ({ body }) => enroll(ctx, body)),
 		R("POST", "/sessions/heartbeat", "agent", ({ p, body }) => heartbeat(ctx, p, body), false),

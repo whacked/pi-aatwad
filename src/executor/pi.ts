@@ -1,3 +1,5 @@
+import { TmuxWatch } from "../watch/tmux.ts";
+import type { TerminalOptions } from "../shared/protocol.ts";
 import { launchTerminal } from "./terminal.ts";
 // PiExecutor: interactive Pi in tmux for terminal-enabled runs; detached one-shot Pi otherwise.
 //
@@ -28,7 +30,7 @@ import { packageRoot } from "../shared/paths.ts";
 import { buildWorkerEnv } from "./env.ts";
 import { launchDetached, newLaunchToken } from "./launch.ts";
 import { probeIdentity, stopIdentity } from "./proc.ts";
-import type { Executor, LaunchSpec, ProbeResult, ProcessIdentity } from "./types.ts";
+import type { Executor, LaunchSpec, ProbeResult, ProcessIdentity, TerminalMember } from "./types.ts";
 
 export const DEFAULT_RESUME_PROMPT =
 	"You were restarted by the team controller. Your previous conversation is above. " +
@@ -80,6 +82,16 @@ export class PiExecutor implements Executor {
 			env: buildWorkerEnv(spec, launchToken),
 			launchToken,
 		});
+	}
+
+	async syncTerminal(stateDir: string, runId: string, terminal: TerminalOptions, members: TerminalMember[]): Promise<void> {
+		const view = new TmuxWatch({ stateDir, runId, ...terminal });
+		if (!await view.exists()) return;
+		const paneAgents = new Set((await view.panes()).map((p) => p.agent));
+		for (const member of members.filter((m) => paneAgents.has(m.agent_id) && ["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(m.status))) {
+			if (!member.process || await this.probe(member.process) === "dead") await view.removeMember(member.agent_id);
+		}
+		await view.sync(members.filter((m) => !["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(m.status)), true);
 	}
 
 	probe(id: Pick<ProcessIdentity, "pid" | "process_started_at">): Promise<ProbeResult> {

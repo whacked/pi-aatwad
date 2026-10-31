@@ -16,7 +16,7 @@ test("tmux watcher discovers members, repairs closed panes, survives restart and
 	let view: TmuxWatch | undefined;
 	try {
 		const { token, run_id } = await newRun(hs, { models: [] });
-		view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket });
+		view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket, debug: true });
 		assert.equal(await view.exists(), false);
 		await view.open();
 		await view.open(); // idempotent, no duplicate dashboard
@@ -121,9 +121,9 @@ test("inside tmux, team panes stay beside the leader without taking over unrelat
 		const leaderPid = await view.tmux("display-message", "-p", "-t", leader, "#{pane_pid}");
 		await view.open(leader);
 		await view.open(leader);
-		assert.equal((await view.panes()).length, 2, "leader and one dashboard only");
+		assert.equal((await view.panes()).length, 1, "only the existing leader; no control pane");
 		const live = await view.launchAgent("live-agent", "Live member", ["/bin/sh"], hs.dir);
-		assert.equal((await view.panes()).length, 3);
+		assert.equal((await view.panes()).length, 2);
 		assert.equal(await geometry(), beforeGeometry, "unrelated pane geometry and process stay unchanged");
 		assert.equal(await context(), beforeContext, "leader session, window and selection stay unchanged");
 		assert.equal(await view.tmux("display-message", "-p", "-t", leader, "#{pane_pid}"), leaderPid);
@@ -137,7 +137,7 @@ test("inside tmux, team panes stay beside the leader without taking over unrelat
 		// Reconstructing from the persisted location (as the executor does) uses this same group.
 		const recovered = new TmuxWatch({ ...view.opts });
 		await recovered.open();
-		assert.equal((await recovered.panes()).length, 3);
+		assert.equal((await recovered.panes()).length, 2);
 	} finally {
 		try { await view.tmux("kill-server"); } catch {}
 		await hs.cleanup();
@@ -174,10 +174,37 @@ test("watch handles JSON layout responses end-to-end while preserving unrelated 
 		};
 		await view.open(leader);
 		await view.launchAgent("json-member", "Member", ["/bin/sh"], hs.dir);
-		assert.equal((await view.panes()).length, 3);
+		assert.equal((await view.panes()).length, 2);
 		assert.equal(await geometry(), before);
 	} finally {
 		try { await native("kill-server"); } catch {}
 		await hs.cleanup();
 	}
+});
+
+
+test("normal view removes duplicate legacy controls; explicit debug has just one", { skip: !haveTmux }, async () => {
+	const hs = await harness();
+	const { run_id } = await newRun(hs);
+	const view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket: join(hs.dir, "tmux.sock") });
+	try {
+		const leader = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "normal-view", "-x", "180", "-y", "50", "/bin/sh");
+		await Promise.all([view.open(leader), view.open(leader)]);
+		assert.equal((await view.panes()).length, 1, "overlapping normal opens never create controls");
+		for (let i = 0; i < 2; i++) {
+			const pane = await view.tmux("split-window", "-d", "-h", "-P", "-F", "#{pane_id}", "-t", leader, "/bin/sh");
+			await view.tag(pane, "dashboard");
+		}
+		const legacyWindow = await view.tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "normal-view:", "-n", "old-control", "/bin/sh");
+		await view.tag(legacyWindow, "dashboard");
+		await view.open(leader);
+		assert.equal((await view.panes()).length, 1);
+		assert.equal((await view.tmux("list-windows", "-t", "normal-view", "-F", "#{window_id}")).split("\n").length, 1, "old owned control window removed");
+		view.opts.debug = true;
+		await view.open(leader); await view.open(leader);
+		assert.equal((await view.panes()).filter((p) => p.agent === "dashboard").length, 1);
+		view.opts.debug = false;
+		await view.open(leader);
+		assert.equal((await view.panes()).length, 1);
+	} finally { try { await view.tmux("kill-server"); } catch {} await hs.cleanup(); }
 });

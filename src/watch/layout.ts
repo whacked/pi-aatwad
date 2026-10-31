@@ -16,7 +16,7 @@ function segments(size: number, count: number): number[] {
 }
 
 /** Leader gets 60% of the area; members share the remaining region in a balanced grid. */
-export function planLayout(width: number, height: number, leader: string, members: string[]): Plan | undefined {
+export function planLayout(width: number, height: number, leader: string, members: string[], leaderShare = 0.6): Plan | undefined {
 	if (!Number.isInteger(width) || !Number.isInteger(height) || width < MIN_WIDTH || height < MIN_HEIGHT) return;
 	const root: Box = { width, height, x: 0, y: 0 };
 	if (!members.length) {
@@ -27,7 +27,7 @@ export function planLayout(width: number, height: number, leader: string, member
 	for (const orientation of ["side", "stack"] as const) {
 		const side = orientation === "side";
 		const total = side ? width : height;
-		const mainSize = Math.round((total - 1) * 0.6);
+		const mainSize = Math.round((total - 1) * leaderShare);
 		const leaderBox: Box = { ...root, ...(side ? { width: mainSize } : { height: mainSize }) };
 		const region: Box = side ? { ...root, width: total - mainSize - 1, x: mainSize + 1 }
 			: { ...root, height: total - mainSize - 1, y: mainSize + 1 };
@@ -158,9 +158,9 @@ export function teamRegion(root: LayoutNode, paneIds: string[]): LayoutNode {
 	if (!region) throw new Error("Team panes no longer form a separate region; refusing to rearrange unrelated tmux panes");
 	return region;
 }
-export function arrangeRegion(root: LayoutNode, leader: string, members: string[]): string {
+export function arrangeRegion(root: LayoutNode, leader: string, members: string[], leaderShare = 0.6): string {
 	const region = teamRegion(root, [leader, ...members]);
-	const plan = planLayout(region.width, region.height, leader, members);
+	const plan = planLayout(region.width, region.height, leader, members, leaderShare);
 	if (!plan) throw new Error(`Team pane region ${region.width}x${region.height} is too small; enlarge it`);
 	const metadata = new Map<string, Record<string, unknown>>();
 	function remember(n: LayoutNode): void { if (n.pane && n.json) metadata.set(n.pane, n.json); n.children?.forEach(remember); }

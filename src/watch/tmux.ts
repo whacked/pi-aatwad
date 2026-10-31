@@ -9,7 +9,7 @@ import { clean } from "./render.ts";
 import type { TreeNode, TerminalLocation } from "../shared/protocol.ts";
 const exec = promisify(execFile);
 
-export interface WatchOptions { stateDir: string; runId: string; socket?: string; node?: string; location?: TerminalLocation }
+export interface WatchOptions { stateDir: string; runId: string; socket?: string; node?: string; location?: TerminalLocation; debug?: boolean }
 export interface Pane { id: string; window: string; agent: string; dead: boolean }
 export class TmuxWatch {
 	opts: WatchOptions;
@@ -79,26 +79,9 @@ export class TmuxWatch {
 			await this.tmux("set-option", "-p", "-t", inPlacePane, "@pi_team_owner", this.owner);
 			await this.tmux("set-option", "-p", "-t", inPlacePane, "@pi_team_agent", "leader");
 		}
-		if (this.opts.location) {
+		if (this.opts.location || await this.exists()) {
 			await this.assertOwned();
-			const panes = await this.panes();
-			const leader = panes.find((p) => p.id === this.opts.location!.leader)!;
-			const dashboard = panes.find((p) => p.agent === "dashboard");
-			if (dashboard) {
-				if (dashboard.dead) await this.tmux("respawn-pane", "-k", "-t", dashboard.id, ...this.command("dashboard"));
-			} else {
-				const horizontal = await this.prepareSplit(panes, leader);
-				const pane = await this.tmux("split-window", "-d", horizontal ? "-h" : "-v", "-P", "-F", "#{pane_id}", "-t", leader.id, ...this.command("dashboard"));
-				await this.tag(pane, "dashboard");
-				panes.push({ id: pane, window: leader.window, agent: "dashboard", dead: false });
-				await this.arrange(panes, leader);
-			}
-			return;
-		}
-		if (await this.exists()) {
-			const dashboard = (await this.panes()).find((p) => p.agent === "dashboard");
-			if (!dashboard) throw new Error("Team dashboard pane is missing; close and reopen the watch session");
-			if (dashboard.dead) await this.tmux("respawn-pane", "-k", "-t", dashboard.id, ...this.command("dashboard"));
+			await this.controls();
 			return;
 		}
 		let width = process.stdout.columns || process.stderr.columns || 120, height = process.stdout.rows || process.stderr.rows || 40;
@@ -106,10 +89,48 @@ export class TmuxWatch {
 			const size = await this.tmux("display-message", "-p", "#{window_width} #{window_height}");
 			[width, height] = size.split(" ").map(Number);
 		}
-		const pane = await this.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", this.name, "-e", `PATH=${process.env.PATH ?? "/usr/bin:/bin"}`, "-n", "team", "-x", String(width), "-y", String(height), ...this.command("dashboard"));
+		const pane = await this.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", this.name, "-e", `PATH=${process.env.PATH ?? "/usr/bin:/bin"}`, "-n", "team", "-x", String(width), "-y", String(height), ...this.command(this.opts.debug ? "dashboard" : "placeholder"));
 		await this.tmux("set-option", "-t", this.name, "@pi_team_watch", this.owner);
-		await this.tag(pane, "dashboard");
+		await this.tag(pane, this.opts.debug ? "dashboard" : "placeholder");
 	}
+	private async controlPanes(): Promise<Pane[]> {
+		const raw = await this.tmux("list-panes", "-s", "-t", this.opts.location?.window ?? this.name, "-F", "#{pane_id}\t#{window_id}\t#{@pi_team_agent}\t#{pane_dead}\t#{@pi_team_owner}");
+		return raw.split("\n").filter((line) => { const fields = line.split("\t"); return fields[2] === "dashboard" && fields[4] === this.owner; }).map((line) => {
+			const [id, window, agent, dead] = line.split("\t"); return { id, window, agent, dead: dead === "1" };
+		});
+	}
+
+	/** Normal layout has no control UI. Debug mode has one canonical dashboard. */
+	private async controls(): Promise<void> {
+		let panes = await this.panes();
+		let controls = (await this.controlPanes()).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+		if (!this.opts.debug) {
+			for (const p of controls) {
+				if (!this.opts.location && (await this.panes()).length === 1) {
+					await this.tmux("respawn-pane", "-k", "-t", p.id, ...this.command("placeholder"));
+					await this.tag(p.id, "placeholder");
+				} else await this.tmux("kill-pane", "-t", p.id);
+			}
+			return;
+		}
+		if (this.opts.location) {
+			for (const p of controls.filter((p) => p.window !== this.opts.location!.window)) await this.tmux("kill-pane", "-t", p.id);
+			controls = controls.filter((p) => p.window === this.opts.location!.window);
+		}
+		if (!controls.length) {
+			const anchor = panes.find((p) => p.agent === "leader") ?? panes[0];
+			const horizontal = await this.prepareSplit(panes, anchor);
+			const pane = await this.tmux("split-window", "-d", horizontal ? "-h" : "-v", "-P", "-F", "#{pane_id}", "-t", anchor.id, ...this.command("dashboard"));
+			await this.tag(pane, "dashboard");
+		}
+		// Concurrent root tool calls may both request debug; converge on one pane.
+		panes = await this.panes();
+		controls = panes.filter((p) => p.agent === "dashboard").sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+		for (const p of controls.slice(1)) await this.tmux("kill-pane", "-t", p.id).catch(() => {});
+		for (const p of panes.filter((p) => p.agent === "placeholder")) if (panes.length > 1) await this.tmux("kill-pane", "-t", p.id).catch(() => {});
+		if (controls[0]?.dead) await this.tmux("respawn-pane", "-k", "-t", controls[0].id, ...this.command("dashboard"));
+	}
+
 	async close(): Promise<void> {
 		if (!await this.exists()) return;
 		await this.assertOwned();
@@ -141,7 +162,7 @@ export class TmuxWatch {
 
 	async focus(agent = "leader"): Promise<void> {
 		const all = await this.panes();
-		const pane = all.find((p) => p.agent === agent) ?? (agent === "leader" ? all.find((p) => p.agent === "dashboard") : undefined);
+		const pane = all.find((p) => p.agent === agent) ?? (agent === "leader" ? (all.find((p) => p.agent === "dashboard") ?? all[0]) : undefined);
 		if (!pane) throw new Error(`No monitor pane for ${agent}; wait for discovery or check /team tree`);
 		if (!this.opts.location) await this.tmux("select-window", "-t", pane.window);
 		await this.tmux("select-pane", "-t", pane.id);
@@ -161,18 +182,19 @@ export class TmuxWatch {
 		const root = parseLayout(raw);
 		const members = panes.filter((p) => p.window === dashboard.window && p.id !== dashboard.id);
 		const before = encodeLayout(root);
-		const layout = arrangeRegion(root, dashboard.id, members.map((p) => p.id));
+		const layout = arrangeRegion(root, dashboard.id, members.map((p) => p.id), !this.opts.location && dashboard.agent !== "dashboard" ? 1 / panes.length : 0.6);
 		if (before !== layout) await this.tmux("select-layout", "-t", dashboard.window, layout);
 	}
 	async sync(nodes: TreeNode[], interactive = false): Promise<void> {
+		await this.controls();
 		const panes = await this.panes();
-		const dashboard = panes.find((p) => p.agent === "leader") ?? panes.find((p) => p.agent === "dashboard");
+		const dashboard = panes.find((p) => p.agent === "leader") ?? panes.find((p) => p.agent === "dashboard") ?? panes[0];
 		if (!dashboard) throw new Error("Team dashboard pane is missing; close and reopen the watch session");
 		if (!this.opts.location) {
 			await this.tmux("set-option", "-w", "-t", dashboard.window, "pane-border-status", "top");
 			await this.tmux("set-option", "-w", "-t", dashboard.window, "pane-border-format", "#{pane_title}");
 		}
-		await this.tmux("select-pane", "-t", dashboard.id, "-T", dashboard.agent === "leader" ? "Team leader — Pi" : "Team manager");
+		if (dashboard.agent === "leader" || dashboard.agent === "dashboard") await this.tmux("select-pane", "-t", dashboard.id, "-T", dashboard.agent === "leader" ? "Team leader — Pi" : "Team control (debug)");
 		// Migrate panes created by older versions into the leader window, retaining processes.
 		for (const p of panes.filter((p) => p.window !== dashboard.window && p.agent)) {
 			const horizontal = await this.prepareSplit(panes, dashboard);
@@ -184,6 +206,7 @@ export class TmuxWatch {
 		for (const node of nodes) {
 			const existing = panes.find((p) => p.agent === node.agent_id);
 			if (existing) {
+				await this.namePane(existing.id, node.role);
 				if (existing.dead && !interactive) await this.tmux("respawn-pane", "-k", "-t", existing.id, ...this.command(node.agent_id));
 				continue;
 			}
@@ -200,13 +223,14 @@ export class TmuxWatch {
 	async launchAgent(agent: string, role: string, command: string[], cwd: string): Promise<string> {
 		await this.open();
 		const panes = await this.panes();
-		const dashboard = (panes.find((p) => p.agent === "leader") ?? panes.find((p) => p.agent === "dashboard"))!;
-		const existing = panes.find((p) => p.agent === agent);
+		const dashboard = (panes.find((p) => p.agent === "leader") ?? panes.find((p) => p.agent === "dashboard") ?? panes[0])!;
+		const existing = panes.find((p) => p.agent === agent) ?? panes.find((p) => p.agent === "placeholder");
 		let pane: string | undefined;
 		try {
 			if (existing) {
 				pane = existing.id;
 				await this.tmux("respawn-pane", "-k", "-t", pane, "-c", cwd, ...command);
+				existing.agent = agent; existing.dead = false;
 			} else {
 				const horizontal = await this.prepareSplit(panes, dashboard);
 				pane = await this.tmux("split-window", "-d", horizontal ? "-h" : "-v", "-P", "-F", "#{pane_id}", "-t", dashboard.id, "-c", cwd, ...command);
@@ -214,13 +238,30 @@ export class TmuxWatch {
 			}
 			await this.tag(pane, agent);
 			await this.tmux("set-option", "-p", "-t", pane, "@pi_team_harness", "1");
-			await this.tmux("select-pane", "-t", pane, "-T", `${clean(role).replace(/\n/g, " ").slice(0, 60)} [${agent}] — Pi`);
+			await this.namePane(pane, role);
 			await this.arrange(panes, dashboard);
 			return pane;
 		} catch (error) {
 			if (pane) await this.tmux("kill-pane", "-t", pane).catch(() => {});
 			throw error;
 		}
+	}
+
+	async namePane(pane: string, role: string): Promise<void> {
+		const name = clean(role).replace(/\n/g, " ").slice(0, 80);
+		await this.tmux("set-option", "-p", "-t", pane, "@pi_team_name", name);
+		await this.tmux("select-pane", "-t", pane, "-T", name);
+	}
+	async removeMember(agent: string): Promise<void> {
+		const pane = (await this.panes()).find((p) => p.agent === agent);
+		if (!pane || pane.agent === "leader") return;
+		const all = await this.panes();
+		if (all.length === 1) {
+			await this.tmux("respawn-pane", "-k", "-t", pane.id, ...this.command("placeholder"));
+			await this.tag(pane.id, "placeholder");
+			await this.tmux("set-option", "-p", "-u", "-t", pane.id, "@pi_team_harness");
+			await this.namePane(pane.id, "Team ready");
+		} else await this.tmux("kill-pane", "-t", pane.id);
 	}
 
 	private async prepareSplit(panes: Pane[], dashboard: Pane): Promise<boolean> {

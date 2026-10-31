@@ -1,9 +1,9 @@
-import type { TerminalLocation } from "../shared/protocol.ts";
+import type { TerminalOptions, TreeNode } from "../shared/protocol.ts";
 // Contract between controller (reconciler) and executor (process launcher).
 // Controller decides WHAT to run (inside SQL transactions); executor does the OS work (outside them).
 
 export interface LaunchSpec {
-	terminal?: { socket?: string; location?: TerminalLocation };
+	terminal?: TerminalOptions;
 	run_id: string;
 	agent_id: string;
 	session_id: string;
@@ -30,7 +30,10 @@ export interface ProcessIdentity {
 
 export type ProbeResult = "alive" | "dead";
 
+export interface TerminalMember extends TreeNode { process?: Pick<ProcessIdentity, "pid" | "process_started_at"> }
+
 export interface Executor {
+	syncTerminal?(stateDir: string, runId: string, terminal: TerminalOptions, members: TerminalMember[]): Promise<void>;
 	/** Start a detached worker that outlives controller and parent Pi. Must not block on worker completion. */
 	launch(spec: LaunchSpec): Promise<ProcessIdentity>;
 	/** Alive iff pid exists AND its start time matches (guards against pid reuse). */

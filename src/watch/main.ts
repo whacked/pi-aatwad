@@ -12,15 +12,18 @@ const [stateDir, runId, agent, socket, location] = process.argv.slice(2);
 if (!stateDir || !runId || !agent) throw new Error("watch requires state directory, run ID and pane role");
 const paths = statePaths(stateDir);
 const client = new TeamClient({ paths, noReconnect: true, token: () => readFileSync(paths.operatorToken, "utf8").trim() });
-const watch = new TmuxWatch({ stateDir, runId, socket: socket || undefined, location: location ? JSON.parse(location) as TerminalLocation : undefined });
+const watch = new TmuxWatch({ stateDir, runId, socket: socket || undefined, location: location ? JSON.parse(location) as TerminalLocation : undefined, debug: agent === "dashboard" });
 let eventCursor = 0;
 let recentEvents: EventView[] = [];
 while (true) {
 	let text: string;
 	try {
-		if (agent === "dashboard") {
+		if (agent === "placeholder") {
+			text = "Team terminals are ready.\nMembers appear here when recruited.\nContinue interacting with your leader Pi.";
+		} else if (agent === "dashboard") {
 			const tree = await client.tree(runId, { timeoutMs: 2000 });
-			const terminal = await client.get<{ enabled: boolean; socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(runId)}/terminal`, { timeoutMs: 2000 });
+			const terminal = await client.get<{ enabled: boolean; socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(runId)}/terminal`, { timeoutMs: 2000 });
+			if (terminal.enabled && !terminal.debug) process.exit(0);
 			if (terminal.enabled) {
 				if (terminal.socket) watch.opts.socket = terminal.socket;
 				watch.opts.location = terminal.location;

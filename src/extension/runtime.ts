@@ -188,6 +188,7 @@ export class TeamRuntime {
 		if (!ctx) return;
 		try {
 			const id = this.identity;
+			if (id?.role && ctx.mode === "tui") ctx.ui.setTitle?.((id.role === "root" ? "Team leader" : id.role).replace(/[\x00-\x1f\x7f-\x9f]/g, " "));
 			if (id) ctx.ui.setStatus(STATUS_KEY, `team ${id.role ?? "agent"} ${id.agent_id} · run ${id.run_id}${id.managed ? " · managed" : ""}`);
 			else if (this.fenced) ctx.ui.setStatus(STATUS_KEY, "team: fenced (run /team resume)");
 			else if (this.notice) ctx.ui.setStatus(STATUS_KEY, "team: not attached (/team resume)");
@@ -205,6 +206,7 @@ export class TeamRuntime {
 		this.ready = this.resolveIdentity().catch((e) => {
 			this.say(`team: could not restore organization identity: ${(e as Error).message}`, "warning");
 		});
+		void this.ready.then(() => { setTimeout(() => this.updateStatus(), 0).unref?.(); });
 		return this.ready;
 	}
 
@@ -503,6 +505,7 @@ export class TeamRuntime {
 				{ idempotencyKey: `hb:${this.identity.session_id}:${randomUUID()}`, timeoutMs: 5_000 },
 			);
 			if (this.identity !== identity) return;
+			this.updateStatus();
 			this.lastInboxPending = r.inbox_pending;
 			// Managed one-shot workers pick messages up at run start / before settling instead.
 			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: this.identity?.managed && this.ctx?.mode === "tui" });
