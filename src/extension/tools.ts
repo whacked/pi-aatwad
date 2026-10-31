@@ -46,6 +46,7 @@ function json(label: string, v: unknown) {
 
 export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	/** Stable per tool call, so Pi-level retries of the same call are deduplicated by the controller. */
+	const agent = (ref: string) => rt.client.resolveAgent(ref, rt.identity?.run_id);
 	const key = (tool: string, toolCallId: string) => `tool:${rt.identity?.agent_id ?? "?"}:${tool}:${toolCallId}`;
 
 	const reg = <P extends TSchema>(
@@ -76,7 +77,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			"The sender is always you (taken from your session credential). Use type 'question'/'answer' for conversation, 'task.progress' for updates. " +
 			"For new agents use team_request_expansion instead.",
 		Type.Object({
-			to: Type.String({ description: "Recipient agent_id (or 'controller')" }),
+			to: Type.String({ description: "Recipient name or agent_id (or 'controller')" }),
 			type: StringEnum(MESSAGE_TYPES, { description: "Message type" }),
 			text: Type.Optional(Type.String({ description: "Plain-text body (stored as payload.text)" })),
 			payload: Type.Optional(FreeObject("Structured payload; merged with text")),
@@ -88,7 +89,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const payload: Record<string, unknown> = { ...(p.payload ?? {}) };
 			if (p.text !== undefined) payload.text = p.text;
 			const r = await rt.client.sendMessage(
-				{ to: p.to, type: p.type as MessageType, payload, correlation_id: p.correlation_id, causation_id: p.causation_id, deadline: p.deadline },
+				{ to: await agent(p.to), type: p.type as MessageType, payload, correlation_id: p.correlation_id, causation_id: p.causation_id, deadline: p.deadline },
 				{ idempotencyKey: key("team_send_message", id) },
 			);
 			return text(`sent ${p.type} to ${p.to} (message ${r.message_id})`, r);
@@ -101,14 +102,14 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 		"Team: delegate task",
 		"Assign a task to one of your direct reports (or a subtask to yourself under your own task). The controller rejects owners outside your authority.",
 		Type.Object({
-			owner_id: Type.String({ description: "agent_id of the direct report who will own the task" }),
+			owner_id: Type.String({ description: "Name or agent_id of the direct report who will own the task" }),
 			title: Type.String(),
 			spec: Type.Optional(FreeObject("Task specification: goals, acceptance criteria, file paths")),
 			parent_task_id: Type.Optional(Type.String({ description: "Your task this one is a subtask of" })),
 		}),
 		async (p, id) => {
 			const r = await rt.client.delegateTask(
-				{ owner_id: p.owner_id, title: p.title, spec: p.spec, parent_task_id: p.parent_task_id },
+				{ owner_id: await agent(p.owner_id), title: p.title, spec: p.spec, parent_task_id: p.parent_task_id },
 				{ idempotencyKey: key("team_delegate_task", id) },
 			);
 			return text(`task ${r.task_id} assigned to ${p.owner_id} (message ${r.message_id})`, r);
@@ -277,7 +278,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 		"team_create_member", "Team: create member",
 		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. Bounded-mode defaults: $2 and 600 seconds. Under human operator unlimited policy, no numeric spend/runtime/recruitment caps are enforced and no finite allocations are needed. Subordinate managers use team_request_expansion instead.",
 		Type.Object({
-			name: Type.String(), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
+			name: Type.Optional(Type.String({ description: "Optional friendly member name; defaults to Alpha, Beta, etc." })), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
 			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),
 			max_cost_usd: Type.Optional(Type.Number({ minimum: 0 })), max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1 })),
 		}),
@@ -291,11 +292,12 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_close_member", "Team: close member",
-		"Actually terminate a member in your subtree when requested. Cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. Use agent_id from team_get_tree, not a role name. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
+		"Actually terminate a member in your subtree when requested. Cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. agent_id accepts an exact member name or ID; ambiguous names require an ID. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
 		Type.Object({ agent_id: Type.String(), reason: Type.Optional(Type.String()) }),
 		async (p, id) => {
-			const result = await rt.client.lifecycle(p.agent_id, { action: "cancel", reason: p.reason ?? "manager requested member close", children_policy: "cascade" }, { idempotencyKey: key("team_close_member", id) });
-			const ids = result.affected_agent_ids.length ? result.affected_agent_ids : [p.agent_id];
+			const target = await agent(p.agent_id);
+			const result = await rt.client.lifecycle(target, { action: "cancel", reason: p.reason ?? "manager requested member close", children_policy: "cascade" }, { idempotencyKey: key("team_close_member", id) });
+			const ids = result.affected_agent_ids.length ? result.affected_agent_ids : [target];
 			const sessions = (await Promise.all(ids.map((agentId: string) => rt.client.inspect(agentId)))).flatMap((r) => r.sessions.slice(-1)).filter((s) => s.pid);
 			const deadline = Date.now() + 8000;
 			let stopped = false;
@@ -314,7 +316,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_watch", "Team: tmux terminals",
 		"Root only: open, inspect, focus or close the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Requires tmux and Node on PATH.",
-		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug"] as const), agent_id: Type.Optional(Type.String({ description: "Required for focus" })) }),
+		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug"] as const), agent_id: Type.Optional(Type.String({ description: "Member name or agent ID; required for focus" })) }),
 		async (p) => {
 			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
 			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
@@ -329,7 +331,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (p.action === "focus" && !p.agent_id) throw new Error("agent_id is required for focus");
 			if (p.action === "open" || p.action === "focus" || p.action === "debug") {
 				view = await openTerminals(rt, rt.identity!.run_id, { debug: p.action === "debug" });
-				await view.focus(p.action === "focus" ? p.agent_id : undefined);
+				await view.focus(p.action === "focus" ? await agent(p.agent_id) : undefined);
 			}
 			const open = await view.exists();
 			return json("Tmux monitor", { open, session: view.opts.location ? undefined : view.name, window: view.opts.location?.window, panes: open ? await view.panes() : [], attach_command: view.opts.location ? undefined : `tmux attach-session -t ${view.name}` });
@@ -337,12 +339,28 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	);
 
 	reg(
+		"team_set_budget", "Team: change budget",
+		"Change a member's total own spend ceiling (including already consumed spend), by name or ID. This is an absolute USD total, not extra credits. Normal ancestor/global/grant limits apply; only the human can enable /team admin unlimited. Set resume=true to also resume a paused member; otherwise its state is unchanged. Unlimited runs continue ignoring numeric caps.",
+		Type.Object({ agent_id: Type.String(), max_cost_usd: Type.Number({ minimum: 0 }), resume: Type.Optional(Type.Boolean()) }),
+		async (p, id) => json("Budget updated", await rt.client.post(`/budgets/${encodeURIComponent(await agent(p.agent_id))}`, { max_cost_usd: p.max_cost_usd, resume: p.resume }, { idempotencyKey: key("team_set_budget", id) })),
+	);
+	reg(
+		"team_set_model", "Team: change model",
+		"Change an existing member's model by exact name or agent ID. Resolve model from authenticated Pi models, or supply preferred_model_id from the catalog. Root may register models; managers may choose existing eligible entries. Queues an in-process switch when idle; keeps the member ID, Pi process, tasks and transcript. PENDING is not confirmation of application. Direct /model selections in member panes are persisted without messaging the leader.",
+		Type.Object({ agent_id: Type.String(), model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()) }),
+		async (p, id, ctx) => {
+			if (!!p.model === !!p.preferred_model_id) throw new Error("Specify exactly one of model or preferred_model_id");
+			return json("Model change requested", await rt.client.post(`/agents/${encodeURIComponent(await agent(p.agent_id))}/model`, p.model ? { model: resolveAvailableModel(ctx, p.model) } : { model_id: p.preferred_model_id }, { idempotencyKey: key("team_set_model", id) }));
+		},
+	);
+
+	reg(
 		"team_get_budget",
 		"Team: budget",
 		"Show budget allocation, reservations and usage for yourself (default) or an agent in your subtree.",
-		Type.Object({ agent_id: Type.Optional(Type.String({ description: "Agent in your subtree; omit for yourself" })) }),
+		Type.Object({ agent_id: Type.Optional(Type.String({ description: "Name or ID in your subtree; omit for yourself" })) }),
 		async (p) => {
-			const target = p.agent_id ?? rt.identity!.agent_id;
+			const target = p.agent_id ? await agent(p.agent_id) : rt.identity!.agent_id;
 			const b = await rt.client.budget(target);
 			return text(formatBudget(b), b);
 		},

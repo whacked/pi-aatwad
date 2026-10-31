@@ -27,10 +27,10 @@ test("member tool discovers a Pi model and provisions through the real controlle
 	const { harness, newRun } = await import("../controller/helpers.ts");
 	const hs = await harness();
 	try {
-		const { token } = await newRun(hs, { models: [] });
+		const { token, run_id } = await newRun(hs, { models: [] });
 		const tools = new Map<string, any>();
 		const pi = { registerTool: (tool: any) => tools.set(tool.name, tool) };
-		const rt = { identity: { agent_id: "root" }, client: new TeamClient({ paths: statePaths(hs.dir), token: () => token, noReconnect: true }),
+		const rt = { identity: { agent_id: "root", run_id }, client: new TeamClient({ paths: statePaths(hs.dir), token: () => token, noReconnect: true }),
 			agentCall: (fn: () => unknown) => fn() };
 		registerTools(pi as any, rt as any);
 		const discovered = await tools.get("team_get_models").execute("discover", { source: "available" }, undefined, undefined, ctx);
@@ -39,6 +39,12 @@ test("member tool discovers a Pi model and provisions through the real controlle
 		assert.equal(created.details.spawned_agent_ids.length, 1);
 		const replay = await tools.get("team_create_member").execute("create", { name: "Adjudicator", responsibility: "Independently review the proposed patch", model: "openrouter/anthropic/claude-test" }, undefined, undefined, ctx);
 		assert.deepEqual(replay.details, created.details);
+		const invoke = (name: string, params: any) => tools.get(name).execute(name, params, undefined, undefined, ctx);
+		await invoke("team_set_budget", { agent_id: "Adjudicator", max_cost_usd: 3 });
+		assert.equal((await invoke("team_get_budget", { agent_id: "Adjudicator" })).details.own_budget_usd, 3);
+		await invoke("team_send_message", { to: "Adjudicator", type: "question", text: "Status?" });
+		await invoke("team_delegate_task", { owner_id: "Adjudicator", title: "Check names" });
+		assert.equal((await invoke("team_set_model", { agent_id: "Adjudicator", model: "anthropic/claude-test" })).details.status, "PENDING");
 		const catalog = await rt.client.models();
 		assert.ok(catalog.models.some((m) => m.id === "openrouter/anthropic/claude-test"));
 	} finally { await hs.cleanup(); }

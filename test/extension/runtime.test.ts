@@ -416,3 +416,44 @@ test("legacy cancellation errors leave the team without claiming another session
 	assert.ok(!ctx.notes.some((n: any) => /FENCED|newer session/.test(n.text)));
 	rt.stop();
 });
+
+test("model requests wait while busy; direct selections supersede stale heartbeat responses and retry persistence", async () => {
+	const { paths, cleanup } = makeState();
+	let busy = true;
+	const selected: string[] = [], reports: any[] = [];
+	const pi = { ...fakePi(), setModel: async (m: any) => { selected.push(m.id); return true; } };
+	const ctx = fakeCtx(pi, "model-session");
+	ctx.isIdle = () => !busy;
+	ctx.modelRegistry = { find: (provider: string, id: string) => ({ provider, id }) };
+	const rt = new TeamRuntime(pi as any, { paths, env: {} });
+	rt.ctx = ctx;
+	rt.identity = { run_id: "run1", agent_id: "ag-child", session_id: "ses2", token: "t", managed: false, pi_session_id: "model-session" };
+	const pending = { lease_until: "x", inbox_pending: 0, desired_state: "RUNNING" as const, model_change: { request_id: "request1", provider: "test", model: "leader-choice" } };
+	rt.client.heartbeat = async () => pending;
+	rt.client.post = async (_path: string, body: any) => { reports.push(body); return { applied: true } as any; };
+	try {
+		await rt.heartbeat();
+		assert.deepEqual(selected, []);
+		busy = false;
+		await rt.heartbeat();
+		assert.deepEqual(selected, ["leader-choice"]);
+		assert.equal(reports[0].request_id, "request1");
+
+		let reply!: (r: typeof pending) => void;
+		rt.client.heartbeat = () => new Promise((resolve) => { reply = resolve; });
+		const staleHeartbeat = rt.heartbeat();
+		await rt.reportModel("test", "human-choice");
+		reply(pending);
+		await staleHeartbeat;
+		assert.deepEqual(selected, ["leader-choice"], "stale request cannot undo a direct selection");
+
+		let offline = true;
+		rt.client.post = async (_path: string, body: any) => { if (offline) throw new Error("offline"); reports.push(body); return {} as any; };
+		await rt.reportModel("test", "offline-choice");
+		offline = false;
+		rt.client.heartbeat = async () => pending;
+		await rt.heartbeat();
+		assert.equal(reports.at(-1).model, "offline-choice");
+		assert.deepEqual(selected, ["leader-choice"]);
+	} finally { rt.stop(); cleanup(); }
+});

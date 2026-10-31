@@ -1,3 +1,4 @@
+import { updateBudget, updateModel, selectedModel } from "./agent-settings.ts";
 import { adminPolicy } from "./admin.ts";
 import { terminalMode } from "./terminal.ts";
 import { registerModel, createMember } from "./members.ts";
@@ -66,6 +67,9 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/agents/:id/reparent", "any", ({ p, scope, params, body }) => reparent(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/lifecycle", "any", ({ p, scope, params, body }) => lifecycle(ctx, p, scope, params[0], body)),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
+		R("POST", "/budgets/:id", "any", ({ p, scope, params, body }) => updateBudget(ctx, p, scope, params[0], body)),
+		R("POST", "/agents/:id/model", "any", ({ p, params, body }) => updateModel(ctx, p, params[0], body)),
+		R("POST", "/sessions/model", "agent", ({ p, body }) => selectedModel(ctx, p, body)),
 		R("GET", "/budgets/:id", "any", ({ p, params }) => budget(ctx, p, params[0])),
 		R("POST", "/models", "agent", ({ p, body }) => registerModel(ctx, p, body)),
 		R("POST", "/members", "agent", ({ p, body }) => createMember(ctx, p, body)),

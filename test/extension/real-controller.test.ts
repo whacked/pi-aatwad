@@ -74,8 +74,8 @@ test("real Pi + real controller: /team init auto-starts the controller; status/t
 		assert.match((await cmd("events", /run\.created/)).message, /agent\.created/);
 		assert.match((await cmd("proposals", /to review \(0\)/)).message, /mine \(0\)/);
 		assert.match((await cmd(`inspect ${agentId}`, /parent: \(root\)|\/team inspect:/)).message, /sessions \(\d+\)/);
-		assert.match((await cmd("inspect nobody", /\/team inspect: NOT_FOUND/)).message, /NOT_FOUND/);
-		assert.ok(!notes.some((n) => n.notifyType === "error" && !/NOT_FOUND/.test(n.message)), JSON.stringify(notes.filter((n) => n.notifyType === "error")));
+		assert.match((await cmd("inspect nobody", /\/team inspect: No agent named/)).message, /No agent named/);
+		assert.ok(!notes.some((n) => n.notifyType === "error" && !/No agent named/.test(n.message)), JSON.stringify(notes.filter((n) => n.notifyType === "error")));
 		assert.ok(existsSync(join(stateDir, "operator.token")));
 	} finally {
 		child.stdin.end();

@@ -117,3 +117,25 @@ refreshes it after startup and turns; reconciliation also restores member titles
 process exit using PID/start-time identity. Reconciliation removes ended panes only
 after their worker identity is dead. Active tree/children projections hide terminal
 agents by default in user/model tools, with explicit archival tree access preserved.
+
+
+## Named agents and live settings
+
+Name resolution is scoped to a run and maps exact case-insensitive role/name matches
+onto stable IDs before existing authorization checks. Active matches take priority
+over historical matches; ambiguity never silently selects a member. Creation without
+a name uses unused friendly names, including historical names to avoid accidental reuse.
+
+Budget mutations update active own-spend reservations at every ancestor, preserving
+consumed spend and separate descendant envelopes. The idempotent transaction checks
+grant authority, ancestor commitments and the global ceiling before committing; an
+optional lifecycle resume happens in the same transaction.
+
+Model requests persist launch settings and a revisioned pending selection in agent
+metadata. Heartbeats carry that selection to Pi, which calls setModel only when idle.
+Acknowledgments clear only the matching revision. Direct model_select events persist
+actual choices without leader inbox traffic, and retry persistence after outages.
+Heartbeat results predating a local selection cannot overwrite that selection. Tree
+projections distinguish the actual model from pending launch settings; successful
+selection also updates the current session model. No additional schema migration is
+needed. Pi owns transcript conversion, context management and automatic compaction.

@@ -19,7 +19,7 @@ for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "ded
 	const hs = await harness({ executor: new PiExecutor() as any });
 	const agentDir = join(hs.dir, "agent-config");
 	mkdirSync(agentDir);
-	writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fakeoai: { baseUrl: `http://127.0.0.1:${fake.port}/v1`, api: "openai-completions", apiKey: "dummy", models: [{ id: "fake-1" }] } } }));
+	writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fakeoai: { baseUrl: `http://127.0.0.1:${fake.port}/v1`, api: "openai-completions", apiKey: "dummy", models: [{ id: "fake-1" }, { id: "fake-2" }] } } }));
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.PI_OFFLINE = "1";
 	let view: TmuxWatch | undefined;
@@ -53,6 +53,21 @@ for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "ded
 		await view.tmux("send-keys", "-t", pane.id, "-l", "KEYBOARD-FOLLOWUP");
 		await view.tmux("send-keys", "-t", pane.id, "Enter");
 		await waitFor(() => fake.requests.slice(count).some((r) => r.messages.some((m) => m.text.includes("KEYBOARD-FOLLOWUP"))), "typed input reaches Pi", 15000);
+		if (inPlace) {
+			const requested = await hs.call("POST", `/agents/${id}/model`, { token, body: { model: { id: "fakeoai/fake-2", provider: "fakeoai", model: "fake-2", capability_tags: ["tools"] } } });
+			assert.equal(requested.status, 200, JSON.stringify(requested.body));
+			await waitFor(() => !JSON.parse(sql(hs, "SELECT metadata_json FROM agents WHERE id=?", id)[0].metadata_json).model_change, "leader model switch applied in Pi", 20000).catch(async (e) => { throw new Error(`${e.message}\n${await capture()}\n${JSON.stringify(sql(hs, "SELECT metadata_json, last_heartbeat_at FROM agents WHERE id=?", id))}`); });
+			await view.tmux("send-keys", "-t", pane.id, "-l", "SWITCHED-MODEL-FOLLOWUP");
+			await view.tmux("send-keys", "-t", pane.id, "Enter");
+			await waitFor(() => fake.requests.some((r) => r.model === "fake-2" && r.messages.some((m) => m.text.includes("SWITCHED-MODEL-FOLLOWUP")) && r.messages.some((m) => m.text.includes("KEYBOARD-FOLLOWUP"))), "new model retains transcript", 10000);
+			await waitFor(async () => /SWITCHED-MODEL-FOLLOWUP[\s\S]*INTERACTIVE-ANSWER/.test(await capture()), "new answer", 5000);
+			await view.tmux("send-keys", "-t", pane.id, "-l", "/model fakeoai/fake-1");
+			await waitFor(async () => (await capture()).includes("/model fakeoai/fake-1"), "model command rendered");
+			await view.tmux("send-keys", "-t", pane.id, "Escape");
+			await view.tmux("send-keys", "-t", pane.id, "Enter");
+			await waitFor(() => sql(hs, "SELECT model FROM agents WHERE id=?", id)[0].model === "fake-1", "pane /model persisted", 10000).catch(async (e) => { throw new Error(`${e.message}\n${await capture()}`); });
+			assert.equal(Number(await view.tmux("display-message", "-p", "-t", pane.id, "#{pane_pid}")), session.pid, "switches retain Pi process");
+		}
 		await hs.restart({ crash: true });
 		await hs.call("POST", "/messages", { token, body: { to: id, type: "question", payload: { text: "LEADER-FOLLOWUP" } } });
 		await waitFor(() => fake.requests.some((r) => r.messages.some((m) => m.text.includes("LEADER-FOLLOWUP"))), "leader message starts a new turn", 20000);

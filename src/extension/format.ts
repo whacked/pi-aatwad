@@ -16,6 +16,7 @@ export function formatBudget(b: BudgetView): string {
 	if (b.unlimited) return `budget for ${b.agent_id}:\n  policy: UNLIMITED (human operator); no spend, runtime, member-count or depth caps\n  consumed ${usd(b.consumed_usd)}, reserved ${usd(b.reserved_usd)}; ${b.subtree_live_agents} active descendants`;
 	return [
 		`budget for ${b.agent_id}:`,
+		...(b.own_budget_usd != null ? [`  own spend ceiling: ${usd(b.own_budget_usd)} (includes consumed spend)`] : []),
 		`  usd: consumed ${usd(b.consumed_usd)}, reserved ${usd(b.reserved_usd)}, available ${usd(b.available_usd)} (subtree ceiling ${usd(b.limits?.max_subtree_usd)})`,
 		`  slots: live descendants ${b.subtree_live_agents}, reserved ${b.reserved_slots}, available ${b.available_slots} (ceiling ${b.limits?.max_subtree_slots ?? "?"})`,
 		`  single-decision grant: ≤${b.limits?.max_grant_slots ?? "?"} slots, ≤${usd(b.limits?.max_grant_usd)}`,
@@ -24,7 +25,7 @@ export function formatBudget(b: BudgetView): string {
 
 function nodeLine(n: TreeNode, me?: string): string {
 	const mark = n.agent_id === me ? " ← you" : "";
-	return `${n.role} [${n.agent_id}] ${n.status}/${n.observed_state}${n.desired_state !== "RUNNING" ? ` (desired ${n.desired_state})` : ""}${n.model ? ` · ${n.model}` : ""}${mark}`;
+	return `${n.role} [${n.agent_id}] ${n.status}/${n.observed_state}${n.desired_state !== "RUNNING" ? ` (desired ${n.desired_state})` : ""}${n.model ? ` · ${n.model}` : ""}${n.pending_model ? ` → ${n.pending_model} (pending)` : ""}${mark}`;
 }
 
 export function formatTree(t: TreeResponse, me?: string, maxLines = 200): string {

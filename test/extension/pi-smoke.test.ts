@@ -125,7 +125,7 @@ describe("real Pi smoke", { skip }, () => {
 
 			run.send({ id: "help", type: "prompt", message: "/team help" });
 			const help = await run.waitFor(notify(/pi-recursive-team/), 10_000, "/team help notify");
-			assert.match(help.message, /tools \(14\/14\)/);
+			assert.match(help.message, /tools \(16\/16\)/);
 			for (const t of TOOL_NAMES) assert.ok(help.message.includes(t), `tool ${t} registered`);
 			assert.match(help.message, /identity: not enrolled/);
 			const disp = await run.waitFor(response("help"));
@@ -255,7 +255,7 @@ describe("real Pi smoke", { skip }, () => {
 				assert.ok(team, "team command from installed package");
 				assert.equal(team.sourceInfo.origin, "package");
 				run.send({ id: "help", type: "prompt", message: "/team help" });
-				const help = await run.waitFor(notify(/tools \(14\/14\)/), 10_000, "help");
+				const help = await run.waitFor(notify(/tools \(16\/16\)/), 10_000, "help");
 				assert.ok(help);
 				assertNoExtensionErrors(run);
 			} finally {
@@ -361,7 +361,7 @@ describe("real Pi smoke", { skip }, () => {
 			const cmds = await run.waitFor(response("cmds"), 20_000, "get_commands");
 			assert.equal(cmds.data.commands.filter((c: any) => c.name === "team").length, 1);
 			run.send({ id: "help", type: "prompt", message: "/team help" });
-			await run.waitFor(notify(/tools \(14\/14\)/), 10_000, "help");
+			await run.waitFor(notify(/tools \(16\/16\)/), 10_000, "help");
 		} finally {
 			await run.close();
 			cleanup();

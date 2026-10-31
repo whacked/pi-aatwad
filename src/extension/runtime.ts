@@ -47,8 +47,8 @@ export interface Identity {
 	socket_path?: string;
 }
 
-type PiLike = Pick<ExtensionAPI, "sendMessage" | "appendEntry">;
-type CtxLike = Pick<ExtensionContext, "ui" | "hasUI" | "mode" | "isIdle" | "hasPendingMessages" | "sessionManager" | "cwd">;
+type PiLike = Pick<ExtensionAPI, "sendMessage" | "appendEntry"> & Partial<Pick<ExtensionAPI, "setModel">>;
+type CtxLike = Pick<ExtensionContext, "ui" | "hasUI" | "mode" | "isIdle" | "hasPendingMessages" | "sessionManager" | "cwd"> & Partial<Pick<ExtensionContext, "modelRegistry" | "model">>;
 
 function g<T>(name: string, init: () => T): T {
 	const k = Symbol.for(`pi-recursive-team.${name}`);
@@ -365,6 +365,7 @@ export class TeamRuntime {
 			if (!id.socket_path) throw new Error(MANAGED_NO_STATE_DIR);
 			if (this._paths?.socket !== id.socket_path) this.useManagedSocket(id.socket_path);
 		}
+		if (this.identity?.agent_id !== id.agent_id) this.localModel = undefined;
 		this.identity = id;
 		this.fenced = false;
 		identityCache().set(id.pi_session_id, id);
@@ -495,10 +496,50 @@ export class TeamRuntime {
 		}
 	}
 
+	private applyingModel = false;
+
+	private localModel?: { provider: string; model: string };
+	private modelWarning?: string;
+	private modelSelectionVersion = 0;
+
+	async reportModel(provider: string, model: string): Promise<void> {
+		if (!this.identity || this.applyingModel) return;
+		this.modelSelectionVersion++;
+		this.localModel = { provider, model };
+		await this.flushLocalModel();
+	}
+
+	private async flushLocalModel(): Promise<void> {
+		const selected = this.localModel;
+		if (!selected || !this.identity) return;
+		try {
+			await this.client.post("/sessions/model", selected);
+			if (this.localModel === selected) this.localModel = undefined;
+		}
+		catch (e) { if (!this.handleAgentError(e)) this.say(`team: model switched locally, but controller persistence failed: ${(e as Error).message}`, "warning"); }
+	}
+
+	private async applyModel(change: import("../shared/protocol.ts").ModelChange): Promise<void> {
+		if (this.applyingModel || this.localModel) return;
+		if (this.ctx?.model?.provider === change.provider && this.ctx.model.id === change.model) {
+			await this.client.post("/sessions/model", { provider: change.provider, model: change.model, request_id: change.request_id });
+			return;
+		}
+		if (!this.idle()) return;
+		const model = this.ctx?.modelRegistry?.find(change.provider, change.model);
+		if (!model || !this.pi.setModel) throw new Error(`requested model ${change.provider}/${change.model} is unavailable in this Pi`);
+		this.applyingModel = true;
+		try {
+			if (!await this.pi.setModel(model)) throw new Error("Pi has no authentication for this model");
+			await this.client.post("/sessions/model", { provider: model.provider, model: model.id, request_id: change.request_id });
+		} finally { this.applyingModel = false; }
+	}
+
 	async heartbeat(): Promise<void> {
 		if (!this.identity || this.stopped) return;
 		const identity = this.identity;
 		const pis = this.piSession();
+		const selectionVersion = this.modelSelectionVersion;
 		try {
 			const r = await this.client.heartbeat(
 				{ busy: !this.idle(), pi_session_id: pis.id, pi_session_path: pis.path },
@@ -506,6 +547,12 @@ export class TeamRuntime {
 			);
 			if (this.identity !== identity) return;
 			this.updateStatus();
+			const hadLocalSelection = !!this.localModel;
+			await this.flushLocalModel();
+			if (r.model_change && !hadLocalSelection && selectionVersion === this.modelSelectionVersion) {
+				try { await this.applyModel(r.model_change); this.modelWarning = undefined; }
+				catch (e) { if (this.modelWarning !== r.model_change.request_id) this.say(`team: model switch remains pending: ${(e as Error).message}`, "warning"); this.modelWarning = r.model_change.request_id; }
+			}
 			this.lastInboxPending = r.inbox_pending;
 			// Managed one-shot workers pick messages up at run start / before settling instead.
 			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: this.identity?.managed && this.ctx?.mode === "tui" });

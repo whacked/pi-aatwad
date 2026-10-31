@@ -5,7 +5,7 @@ import { obj, str, onlyKeys } from "./validate.ts";
 import { fail, CommittedError } from "./errors.ts";
 import { requireAgent, createTask } from "./messaging.ts";
 import { getRun, runConfig } from "./queries.ts";
-import { run, emit } from "./db.ts";
+import { all, run, emit } from "./db.ts";
 import { createExpansion, decide } from "./governance.ts";
 
 function requireRoot(ctx: Ctx, p: Principal) {
@@ -18,6 +18,12 @@ function requireRoot(ctx: Ctx, p: Principal) {
 
 export function registerModel(ctx: Ctx, p: Principal, body: unknown) {
 	const a = requireRoot(ctx, p);
+	return registerRunModel(ctx, p, a.run_id, body);
+}
+
+export function registerRunModel(ctx: Ctx, p: Principal, runId: string, body: unknown) {
+	if (p.kind !== "operator") { const a = requireRoot(ctx, p); if (a.run_id !== runId) fail("FORBIDDEN", "other run"); }
+	const a = { run_id: runId, actor_id: p.actor_id };
 	const b = obj(body);
 	onlyKeys(b, ["id", "provider", "model", "capability_tags", "tool_support", "cost_per_m_input_usd", "cost_per_m_output_usd"]);
 	const id = str(b, "id"), provider = str(b, "provider"), model = str(b, "model");
@@ -53,7 +59,11 @@ export function createMember(ctx: Ctx, p: Principal, body: unknown) {
 	const a = requireRoot(ctx, p);
 	const b = obj(body);
 	onlyKeys(b, ["name", "responsibility", "preferred_model_id", "model", "max_cost_usd", "max_runtime_seconds"]);
-	const name = str(b, "name"), responsibility = str(b, "responsibility");
+	const existing = new Set(all(ctx.db, "SELECT role FROM agents WHERE run_id=?", a.run_id).map((r) => r.role.toLowerCase()));
+	const friendly = ["Alpha", "Beta", "Gamma", "Delta", "Echo", "Foxtrot", "Nova", "Orion"];
+	let fallback = friendly.find((n) => !existing.has(n.toLowerCase()));
+	if (!fallback) { let i = 1; while (existing.has(`member-${i}`)) i++; fallback = `Member-${i}`; }
+	const name = str(b, "name", { optional: true }) ?? fallback, responsibility = str(b, "responsibility");
 	const registered = b.model === undefined ? undefined : registerModel(ctx, p, b.model);
 	if (registered && b.preferred_model_id !== undefined) fail("INVALID", "specify model or preferred_model_id, not both");
 	const modelId = registered?.id ?? str(b, "preferred_model_id", { optional: true }) ?? "leader";

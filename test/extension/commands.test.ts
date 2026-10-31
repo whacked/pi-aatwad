@@ -123,3 +123,32 @@ test("human init --unlimited and admin policy commands remove and restore bounde
 		assert.equal(s.rt.fenced, false);
 	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
+
+test("commands accept quoted member names, suggest names, and change budget/model without config files", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "named-commands", "");
+	s.ctx.modelRegistry = { getAvailable: () => [{ provider: "openai", id: "test-model", name: "Test Model", cost: { input: 1, output: 2 } }] };
+	try {
+		await s.rt.start(s.ctx);
+		await s.command.handler("init", s.ctx);
+		const token = s.rt.identity!.token;
+		const made = await hs.call("POST", "/members", { token, body: { name: "Senior Reviewer", responsibility: "Review" } });
+		const id = made.body.spawned_agent_ids[0];
+		await s.command.handler('budget "Senior Reviewer" 4', s.ctx);
+		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 4);
+		await s.command.handler('inspect "senior reviewer"', s.ctx);
+		assert.ok(s.notes.some((n) => n.includes("Senior Reviewer")));
+		await s.command.handler('send "Senior Reviewer" Check carefully', s.ctx);
+		assert.ok(s.notes.some((n) => n.includes("sent to Senior Reviewer")));
+		const suggestions = await s.command.getArgumentCompletions("budget Senior");
+		assert.equal(suggestions[0].value, 'budget "Senior Reviewer"');
+		await s.command.handler('model "Senior Reviewer" openai/test-model', s.ctx);
+		const inspect = await s.rt.client.inspect(id);
+		assert.equal(inspect.agent.pending_model, "openai/test-model");
+		assert.ok(s.notes.some((n) => n.includes("PENDING")));
+		await s.command.handler('stop "Senior Reviewer"', s.ctx);
+		assert.equal((await s.rt.client.inspect(id)).agent.status, "CANCELLED");
+		assert.deepEqual(await s.command.getArgumentCompletions("budget Senior"), []);
+	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});

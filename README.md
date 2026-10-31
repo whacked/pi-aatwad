@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.4, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.5, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -70,7 +70,7 @@ Inside Pi:
 | `/team send <agent_id> <message>` | Send directions through durable team messaging. |
 | `/team stop [agent_id\|run_id]` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
 
-Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, plus root-only `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
+Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, `team_set_budget`, `team_set_model`, plus root-only `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
 
 ### What happens underneath
 
@@ -181,6 +181,50 @@ reports an unavailable Unix socket as `FailedToOpenSocket`, sometimes with the
 message “Was there a typo in the url or port?”. The client recognizes that code
 and uses a direct socket probe when only the misleading message is available,
 so absent or refused sockets trigger controller startup.
+
+### Names, budgets, and model changes
+
+Agent arguments accept exact names or IDs in commands and tools: budget, model,
+inspect, send, stop, watch focus, resume's member argument, and task delegation.
+Names are case insensitive and scoped to the attached team. Quote names containing
+spaces. Ambiguous names require an ID; an active member takes precedence over old
+closed members with the same name. IDs remain usable without an attached team.
+Omitting `name` in `team_create_member` assigns Alpha, Beta, Gamma, and other
+friendly unused names. Autocomplete suggests active member names.
+
+```text
+/team budget Alpha
+/team budget Alpha 5
+/team budget Alpha 5 --resume
+/team model Alpha openrouter/vendor/model-id
+/team send "Senior Reviewer" Review the latest patch
+/team watch focus Alpha
+/team stop Beta
+```
+
+You can instead ask the leader: “Give Alpha a $5 total budget” or “Switch Alpha to
+openrouter/vendor/model-id”. It uses `team_set_budget` or `team_set_model` with the
+name. Budget changes retain accounting, update ancestor reservations, and enforce
+grant, ancestor and global ceilings. They cannot lower the ceiling below consumed
+spend. `resume: true` also resumes the member; otherwise paused state is preserved.
+`/team admin unlimited` remains the human-only way to remove caps.
+
+A model change is queued, then applied through Pi's model API when the member is
+idle (normally on its next heartbeat, within about 10 seconds). The process, pane,
+agent ID, tasks and transcript stay intact. Busy members finish their current run
+first. Offline members launch with the new model. The tree marks pending switches;
+missing authentication or model availability leaves the request pending and shows
+a warning in that member's Pi. No config edits or manual member restart are needed.
+
+Using `/model` directly in a member pane works normally. The plugin persists the
+actual selection for future worker restarts and updates tree/inspect state without
+sending a leader inbox notification. A later leader request can change it again.
+Switches do not reset budgets or context; Pi handles any required context compaction.
+
+Pi 1.4.0 already enables automatic context compaction by default, including context
+overflow recovery. Each member uses Pi's own compaction settings; `/compact` remains
+available in its pane. The plugin does not add a separate compactor. See
+[Pi compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md).
 
 ### Interactive Pi teams in tmux
 

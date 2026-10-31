@@ -118,6 +118,7 @@ export function budgetView(db: DB, agentId: string): BudgetView {
 	}
 	return {
 		agent_id: agentId,
+		own_budget_usd: ownBudgetUsd(db, agentId),
 		unlimited,
 		limits: al.limits,
 		reserved_slots: al.reserved_slots,

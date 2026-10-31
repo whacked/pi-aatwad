@@ -1,3 +1,4 @@
+import { resolveAvailableModel } from "./models.ts";
 import { openTerminals } from "./terminals.ts";
 import { TmuxWatch } from "../watch/tmux.ts";
 // `/team` command with subcommands. Human-facing; uses the operator token unless this is a managed worker.
@@ -15,19 +16,20 @@ import { TOOL_NAMES } from "./names.ts";
 export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "help", args: "", help: "show this help" },
 	{ name: "init", args: "[--unlimited] [config-json-path]", help: "create a new organization with this session as root" },
-	{ name: "resume", args: "[run_id] [agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
+	{ name: "resume", args: "[run_id] [name|agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
 	{ name: "tree", args: "[run_id] [--all]", help: "live logical hierarchy" },
 	{ name: "status", args: "", help: "controller, run, agent and pending work" },
-	{ name: "budget", args: "[agent_id]", help: "limits, reservations and usage" },
+	{ name: "budget", args: "[name|agent_id] [total_usd] [--resume]", help: "show budget or change total own spend ceiling" },
 	{ name: "inbox", args: "", help: "deliver pending team messages into this session" },
 	{ name: "proposals", args: "", help: "expansion proposals to review / mine" },
 	{ name: "events", args: "[run_id]", help: "recent audit events" },
-	{ name: "inspect", args: "<agent_id>", help: "tasks, sessions, history, budget of an agent" },
+	{ name: "model", args: "<name|agent_id> <provider/model>", help: "switch an existing member model when idle" },
+	{ name: "inspect", args: "<name|agent_id>", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
 	{ name: "admin", args: "[status|unlimited|bounded] [run_id]", help: "human operator resource policy" },
-	{ name: "stop", args: "[agent_id|run_id]", help: "controlled cancellation (cascades to subtree)" },
-	{ name: "watch", args: "[open|status|close|debug|focus <agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
-	{ name: "send", args: "<agent_id> <message>", help: "send directions to a team member" },
+	{ name: "stop", args: "[name|agent_id|run_id]", help: "controlled cancellation (cascades to subtree)" },
+	{ name: "watch", args: "[open|status|close|debug|focus <name|agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
+	{ name: "send", args: "<name|agent_id> <message>", help: "send directions to a team member" },
 ];
 
 export function helpText(pi: Pick<ExtensionAPI, "getAllTools">, rt: TeamRuntime): string {
@@ -46,7 +48,7 @@ export function helpText(pi: Pick<ExtensionAPI, "getAllTools">, rt: TeamRuntime)
 }
 
 function splitArgs(args: string): string[] {
-	return args.trim().split(/\s+/).filter(Boolean);
+	return (args.match(/"(?:\\.|[^"\\])*"|'[^']*'|\S+/g) ?? []).map((part) => part.startsWith('"') ? JSON.parse(part) : part.startsWith("'") ? part.slice(1, -1) : part);
 }
 
 function errText(e: unknown): string {
@@ -76,6 +78,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		return r;
 	};
 
+	const agent = async (ref: string, run = rt.identity?.run_id) => rt.client.resolveAgent(ref, run, { token: await rt.commandToken() });
 	let initializedRunId: string | undefined;
 	const handlers: Record<string, (a: string[], ctx: ExtensionCommandContext) => Promise<void>> = {
 		help: async (_a, ctx) => out(ctx, helpText(pi, rt)),
@@ -84,8 +87,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			await rt.ready;
 			if (rt.managed) throw new Error("managed workers cannot manage tmux views; use the leader session");
 			const action = a[0] ?? "open";
-			if (!["open", "status", "close", "focus", "debug"].includes(action)) throw new Error("usage: /team watch [open|status|close|debug|focus <agent_id>] [run_id]");
-			if (action === "focus" && !a[1]) throw new Error("usage: /team watch focus <agent_id> [run_id]");
+			if (!["open", "status", "close", "focus", "debug"].includes(action)) throw new Error("usage: /team watch [open|status|close|debug|focus <name|agent_id>] [run_id]");
+			if (action === "focus" && !a[1]) throw new Error("usage: /team watch focus <name|agent_id> [run_id]");
 			const explicitRun = a[action === "focus" ? 2 : 1];
 			if (!explicitRun && !rt.identity && (action === "open" || action === "focus" || action === "debug")) {
 				await handlers.resume([], ctx);
@@ -109,15 +112,15 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			// Validate access and run existence before creating terminal resources.
 			await rt.client.tree(id, { token: await rt.commandToken() });
 			view = await openTerminals(rt, id, { debug: action === "debug" });
-			if (action === "focus") await view.focus(a[1]);
+			if (action === "focus") await view.focus(await agent(a[1], id));
 			else await view.focus();
 			out(ctx, view.opts.location ? `Team panes opened beside Pi in the current tmux window; interactive members appear automatically` : `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
 		},
 
 		send: async (a, ctx) => {
 			await rt.requireIdentity();
-			if (!a[0] || !a[1]) throw new Error("usage: /team send <agent_id> <message>");
-			const sent = await rt.agentCall(() => rt.client.sendMessage({ to: a[0], type: "question", payload: { text: a.slice(1).join(" ") } }));
+			if (!a[0] || !a[1]) throw new Error("usage: /team send <name|agent_id> <message>");
+			const sent = await rt.agentCall(async () => rt.client.sendMessage({ to: await agent(a[0]), type: "question", payload: { text: a.slice(1).join(" ") } }));
 			out(ctx, `message ${sent.message_id} sent to ${a[0]}`);
 		},
 
@@ -197,7 +200,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const run = runs.find((r) => r.run_id === target);
 			if (!run) throw new Error(`team ${target} not found; /team resume lists resumable teams`);
 			if (!a[1] && !resumable(run)) throw new Error(`team ${target} cannot be resumed (${run.root_status ?? run.status}); /team resume lists active teams`);
-			if (rt.identity?.run_id === target && (!a[1] || a[1] === rt.identity.agent_id)) {
+			const member = a[1] ? await rt.client.resolveAgent(a[1], target, { token: op }) : undefined;
+			if (rt.identity?.run_id === target && (!member || member === rt.identity.agent_id)) {
 				out(ctx, `Already attached to ${runLabel(run)}. Use /team watch to open its members.`);
 				return;
 			}
@@ -207,7 +211,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				if (me.is_root && runs.find((r) => r.run_id === initializedRunId)?.agents === 1 && !me.children.length && !me.tasks.length && !me.inbox_pending && !me.pending_proposals_to_review) emptyNewRoot = me.agent_id;
 			}
 			// Attach first: a failed resume must leave the current team intact.
-			await rt.attach(target, a[1]);
+			await rt.attach(target, member);
 			if (emptyNewRoot) {
 				try { await rt.client.lifecycle(emptyNewRoot, { action: "cancel", reason: "unused init replaced by resume", children_policy: "cascade" }, { token: op }); }
 				catch (e) { out(ctx, `Attached, but could not retire the unused empty team: ${errText(e)}`, "warning"); }
@@ -249,9 +253,19 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 		budget: async (a, ctx) => {
 			const target = a[0] ?? rt.identity?.agent_id;
-			if (!target) throw new Error("usage: /team budget <agent_id> (or enroll first)");
+			if (!target) throw new Error("usage: /team budget <name|agent_id> (or enroll first)");
 			const tok = rt.identity && !a[0] ? rt.identity.token : await rt.commandToken();
-			out(ctx, formatBudget(await rt.client.budget(target, { token: tok })));
+			const id = await rt.client.resolveAgent(target, rt.identity?.run_id, { token: tok });
+			const budget = a[1] === undefined ? await rt.client.budget(id, { token: tok }) : await rt.client.post<import("../shared/protocol.ts").BudgetView>(`/budgets/${encodeURIComponent(id)}`, { max_cost_usd: Number(a[1]), resume: a.includes("--resume") }, { token: tok });
+			out(ctx, formatBudget(budget));
+		},
+
+		model: async (a, ctx) => {
+			if (!a[0] || !a[1]) throw new Error("usage: /team model <name|agent_id> <provider/model>");
+			const token = await rt.commandToken();
+			const id = await rt.client.resolveAgent(a[0], rt.identity?.run_id, { token });
+			const result = await rt.client.post(`/agents/${encodeURIComponent(id)}/model`, { model: resolveAvailableModel(ctx, a.slice(1).join(" ")) }, { token });
+			out(ctx, JSON.stringify(result, null, 2));
 		},
 
 		inbox: async (_a, ctx) => {
@@ -275,8 +289,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		},
 
 		inspect: async (a, ctx) => {
-			if (!a[0]) throw new Error("usage: /team inspect <agent_id>");
-			out(ctx, formatInspect(await rt.client.inspect(a[0], { token: await rt.commandToken() })));
+			if (!a[0]) throw new Error("usage: /team inspect <name|agent_id>");
+			out(ctx, formatInspect(await rt.client.inspect(await agent(a[0]), { token: await rt.commandToken() })));
 		},
 
 		stop: async (a, ctx) => {
@@ -300,6 +314,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					/* fall back to treating the id as an agent */
 				}
 			}
+			if (!stoppedRun) agentId = await rt.client.resolveAgent(target, rt.identity?.run_id, { token: tok });
 			if (ctx.hasUI && !(await ctx.ui.confirm("Stop team members?", `Cancel ${what}? Workers are stopped by the controller.`))) {
 				out(ctx, "stop cancelled");
 				return;
@@ -327,8 +342,21 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		}
 	};
 
+	const agentCompletions = async (sub: string, partial: string, prefix = sub, run = rt.identity?.run_id) => {
+		if (!run) return [];
+		try {
+			const token = rt.managed ? rt.identity?.token : await rt.operatorToken(0);
+			const t = await rawRequest<import("../shared/protocol.ts").TreeResponse>(rt.paths.socket, "GET", `/runs/${encodeURIComponent(run)}/tree?active_only=1`, { token, timeoutMs: 500 });
+			const flat = (n: typeof t.root): typeof t.root[] => [n, ...n.children.flatMap(flat)];
+			const nodes = flat(t.root).slice(1);
+			return nodes.filter((n) => n.role.toLowerCase().startsWith(partial.toLowerCase()) || n.agent_id.startsWith(partial)).map((n) => ({
+				value: `${prefix} ${JSON.stringify(nodes.filter((x) => x.role.trim().toLowerCase() === n.role.trim().toLowerCase()).length > 1 ? n.agent_id : n.role)}`, label: n.role, description: `${n.agent_id} · ${n.status}`,
+			}));
+		} catch { return []; }
+	};
+
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, tree, status, budget, inbox, proposals, events, inspect, stop, watch, send (see /team help)",
+		description: "Recursive agent team: init, resume, tree, status, budget, model, inbox, proposals, events, inspect, stop, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
@@ -336,24 +364,30 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				return items.length ? items : null;
 			}
 			const [sub, partial = ""] = parts;
+			if (["budget", "model", "inspect", "send"].includes(sub) && parts.length === 2) return await agentCompletions(sub, partial);
+			if (sub === "watch" && partial === "focus" && parts.length === 3) return await agentCompletions(sub, parts[2], "watch focus");
+			if (sub === "resume" && parts.length === 3) return await agentCompletions(sub, parts[2], `resume ${partial}`, partial);
 			if (sub === "resume" || sub === "tree" || sub === "events" || (sub === "stop" && parts.length === 2)) {
 				if (parts.length > 2) return null;
 				const runs = await runCompletions();
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&
 					((sub !== "stop" && sub !== "resume") || resumable(r))).map((r) => ({ value: `${sub} ${r.run_id}`, label: r.run_id, description: `${r.status} · ${runLabel(r)}` }));
+				if (sub === "stop") items.push(...await agentCompletions(sub, partial));
 				return items.length ? items : null;
 			}
 			return null;
 		},
 		handler: async (args, ctx) => {
 			rt.ctx = rt.ctx ?? ctx;
-			const [sub = "help", ...rest] = splitArgs(args);
-			const h = handlers[sub];
-			if (!h) {
-				out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
-				return;
-			}
+			let sub = "help";
 			try {
+				const [command = "help", ...rest] = splitArgs(args);
+				sub = command;
+				const h = handlers[sub];
+				if (!h) {
+					out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
+					return;
+				}
 				await h(rest, ctx);
 			} catch (e) {
 				out(ctx, `/team ${sub}: ${errText(e)}`, "error");

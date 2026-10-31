@@ -14,5 +14,7 @@ export const TOOL_NAMES = [
 	"team_close_member",
 	"team_watch",
 	"team_get_budget",
+	"team_set_budget",
+	"team_set_model",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

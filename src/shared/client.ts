@@ -543,6 +543,22 @@ export class TeamClient {
 	tree(runId: string, o?: CallOptions, activeOnly = false): Promise<TreeResponse> {
 		return this.get(`/runs/${enc(runId)}/tree${activeOnly ? "?active_only=1" : ""}`, o);
 	}
+	/** Resolve exact names within one run; IDs remain usable without a run. */
+	async resolveAgent(ref: string, runId?: string, o?: CallOptions): Promise<string> {
+		if (/^agent-[0-9a-f]{16}$/i.test(ref) || ref === "controller") return ref;
+		if (!runId) throw new Error("Agent names require an attached team; use /team resume or an agent ID");
+		const t = await this.tree(runId, o);
+		const flat = (n: TreeResponse["root"]): TreeResponse["root"][] => [n, ...n.children.flatMap(flat)];
+		const nodes = flat(t.root);
+		if (nodes.some((n) => n.agent_id === ref)) return ref;
+		const matches = nodes.filter((n) => n.role.trim().toLowerCase() === ref.trim().toLowerCase());
+		const active = matches.filter((n) => !["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(n.status));
+		const candidates = active.length ? active : matches;
+		if (candidates.length === 1) return candidates[0].agent_id;
+		if (candidates.length > 1) throw new Error(`Ambiguous agent name '${ref}'; use an ID: ${candidates.map((n) => `${n.role} [${n.agent_id}]`).join(", ")}`);
+		throw new Error(`No agent named '${ref}' in this team. Use /team tree to see names and IDs.`);
+	}
+
 	sendMessage(req: SendMessageRequest, o?: CallOptions): Promise<SendMessageResponse> {
 		return this.post("/messages", req, o);
 	}

@@ -61,6 +61,10 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 		if (managedLaunch) return waitBounded(p, 15_000).then(() => undefined);
 	});
 
+	pi.on("model_select", (event) => {
+		if (event.source !== "restore") return rt.reportModel(event.model.provider, event.model.id);
+	});
+
 	pi.on("session_shutdown", () => {
 		rt.stop();
 		releaseLoad(self);
@@ -80,6 +84,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 				"Honor explicit member names and model choices. Resolve exact models through Pi; ask on ambiguity and never guess or silently substitute. " +
 				"Check team_get_budget. With operator unlimited policy, do not invent dollar allocations or runtime caps. Otherwise default member limits are $2 and 600 seconds. If the user requests unlimited mode when it is bounded, tell them to use /team admin unlimited; the human operator can remove those caps. " +
 				"To close members when requested, use team_close_member. Completing tasks or zeroing a budget does not terminate a Pi process. Never claim a member is closed without a successful lifecycle result. " +
+				"Use team_set_budget and team_set_model to change existing members; agent arguments accept exact names or IDs. Model changes wait until idle and preserve the process/transcript. " +
 				"Members get separate worktrees. Report their actual IDs and provisioning state, and integrate results explicitly. " +
 				"When the user requests tmux monitoring, use team_watch to open or manage the view; report its attach command when needed. " +
 				"Runtime model registrations persist in this run; existing members retain their selected models.";

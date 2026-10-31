@@ -227,7 +227,8 @@ export function heartbeat(ctx: Ctx, p: Principal, body: unknown): HeartbeatRespo
 		if (prev?.last_entry_id !== last) run(db, "INSERT INTO session_checkpoints(id, session_id, last_entry_id, created_at) VALUES (?,?,?,?)", newId("ckpt"), a.session_id, last, ts);
 	}
 	if (before.observed_state !== "LIVE") emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "agent.reconnected", entity_id: a.actor_id, payload: { from: before.observed_state, session_id: a.session_id } });
-	return { lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state };
+	const change = parseJson<{ model_change?: import("../shared/protocol.ts").ModelChange }>(before.metadata_json, {}).model_change;
+	return { lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state, ...(change ? { model_change: change } : {}) };
 }
 
 /** POST /sessions/usage (UsageReportRequest). */
@@ -254,7 +255,9 @@ export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportR
 // ---- read projections --------------------------------------------------------
 
 function nodeOf(db: DB, a: Row): Omit<TreeNode, "children"> {
-	return { agent_id: a.id, role: a.role, status: a.status, desired_state: a.desired_state, observed_state: a.observed_state, model: a.model ? `${a.provider}/${a.model}` : null, parent_id: getCurrentManager(db, a.id) };
+	const meta = parseJson<{ actual_model?: { provider: string; model: string }; model_change?: { provider: string; model: string } }>(a.metadata_json, {});
+	const current = meta.model_change && meta.actual_model ? meta.actual_model : a;
+	return { agent_id: a.id, role: a.role, status: a.status, desired_state: a.desired_state, observed_state: a.observed_state, model: current.model ? `${current.provider}/${current.model}` : null, ...(meta.model_change ? { pending_model: `${meta.model_change.provider}/${meta.model_change.model}` } : {}), parent_id: getCurrentManager(db, a.id) };
 }
 
 export function tree(ctx: Ctx, p: Principal, runId: string, activeOnly = false): TreeResponse {

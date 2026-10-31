@@ -344,7 +344,9 @@ export interface HeartbeatRequest {
 	pi_session_path?: string;
 	last_entry_id?: string;
 }
+export interface ModelChange { request_id: string; provider: string; model: string }
 export interface HeartbeatResponse {
+	model_change?: ModelChange;
 	lease_until: string;
 	inbox_pending: number;
 	desired_state: DesiredState;
@@ -371,6 +373,7 @@ export interface OrgContext {
 }
 
 export interface TreeNode {
+	pending_model?: string;
 	agent_id: string;
 	role: string;
 	status: AgentStatus;
@@ -529,6 +532,7 @@ export interface LifecycleResponse {
 
 /** GET /budgets/:agent_id (self or ancestor or operator) */
 export interface BudgetView {
+	own_budget_usd?: number | null;
 	unlimited?: boolean;
 	agent_id: string;
 	limits: Envelope_Limits;
