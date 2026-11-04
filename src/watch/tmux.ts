@@ -7,6 +7,7 @@ import { join, resolve, basename } from "node:path";
 import { packageRoot } from "../shared/paths.ts";
 import { clean } from "./render.ts";
 import type { TreeNode, TerminalLocation } from "../shared/protocol.ts";
+import { currentTmuxPane } from "../shared/environment.ts";
 const exec = promisify(execFile);
 
 export interface WatchOptions { stateDir: string; runId: string; socket?: string; node?: string; location?: TerminalLocation; debug?: boolean }
@@ -22,7 +23,10 @@ export class TmuxWatch {
 	}
 	async tmux(...args: string[]): Promise<string> {
 		try {
-			const result = await exec("tmux", [...(this.opts.socket ? ["-S", this.opts.socket] : []), ...args], { timeout: 5000, maxBuffer: 1024 * 1024 });
+			const env = { ...process.env };
+			// Herdr may itself be inside tmux. Never target that outer pane through inherited markers.
+			if (env.HERDR_ENV === "1") { delete env.TMUX; delete env.TMUX_PANE; }
+			const result = await exec("tmux", [...(this.opts.socket ? ["-S", this.opts.socket] : []), ...args], { env, timeout: 5000, maxBuffer: 1024 * 1024 });
 			return result.stdout.trim();
 		} catch (e) {
 			const err = e as NodeJS.ErrnoException & { stderr?: string };
@@ -85,7 +89,7 @@ export class TmuxWatch {
 			return;
 		}
 		let width = process.stdout.columns || process.stderr.columns || 120, height = process.stdout.rows || process.stderr.rows || 40;
-		if (process.env.TMUX && !this.opts.socket) {
+		if (currentTmuxPane() && !this.opts.socket) {
 			const size = await this.tmux("display-message", "-p", "#{window_width} #{window_height}");
 			[width, height] = size.split(" ").map(Number);
 		}
@@ -166,7 +170,7 @@ export class TmuxWatch {
 		if (!pane) throw new Error(`No monitor pane for ${agent}; wait for discovery or check /team tree`);
 		if (!this.opts.location) await this.tmux("select-window", "-t", pane.window);
 		await this.tmux("select-pane", "-t", pane.id);
-		if (!this.opts.location && process.env.TMUX && !this.opts.socket) await this.tmux("switch-client", "-t", this.name).catch((e) => { if (!/no current client/.test((e as Error).message)) throw e; });
+		if (!this.opts.location && currentTmuxPane() && !this.opts.socket) await this.tmux("switch-client", "-t", this.name).catch((e) => { if (!/no current client/.test((e as Error).message)) throw e; });
 	}
 	async dimensions(window: string): Promise<{ width: number; height: number }> {
 		const result = await this.tmux("display-message", "-p", "-t", window, "#{window_width} #{window_height}");

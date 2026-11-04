@@ -33,6 +33,8 @@ export type ProbeResult = "alive" | "dead";
 export interface TerminalMember extends TreeNode { process?: Pick<ProcessIdentity, "pid" | "process_started_at"> }
 
 export interface Executor {
+	/** Read-only terminal preflight. A problem selects detached execution before spending launch attempts. */
+	terminalProblem?(stateDir: string, runId: string, terminal: TerminalOptions): Promise<string | undefined>;
 	syncTerminal?(stateDir: string, runId: string, terminal: TerminalOptions, members: TerminalMember[]): Promise<void>;
 	/** Start a detached worker that outlives controller and parent Pi. Must not block on worker completion. */
 	launch(spec: LaunchSpec): Promise<ProcessIdentity>;

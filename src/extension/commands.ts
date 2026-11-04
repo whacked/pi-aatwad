@@ -30,7 +30,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
 	{ name: "admin", args: "[status|unlimited|bounded] [run_id]", help: "human operator resource policy" },
 	{ name: "stop", args: "[name|agent_id|run_id]", help: "controlled cancellation (cascades to subtree)" },
-	{ name: "watch", args: "[open|status|close|debug|focus <name|agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
+	{ name: "watch", args: "[open|status|close|off|debug|focus <name|agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
 	{ name: "send", args: "<name|agent_id> <message>", help: "send directions to a team member" },
 ];
 
@@ -112,7 +112,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			await rt.ready;
 			if (rt.managed) throw new Error("managed workers cannot manage tmux views; use the leader session");
 			const action = a[0] ?? "open";
-			if (!["open", "status", "close", "focus", "debug"].includes(action)) throw new Error("usage: /team watch [open|status|close|debug|focus <name|agent_id>] [run_id]");
+			if (!["open", "status", "close", "focus", "debug", "off"].includes(action)) throw new Error("usage: /team watch [open|status|close|off|debug|focus <name|agent_id>] [run_id]");
 			if (action === "focus" && !a[1]) throw new Error("usage: /team watch focus <name|agent_id> [run_id]");
 			const explicitRun = a[action === "focus" ? 2 : 1];
 			if (!explicitRun && !rt.identity && (action === "open" || action === "focus" || action === "debug")) {
@@ -120,7 +120,16 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				if (!rt.identity) return;
 			}
 			const id = runId(explicitRun);
-			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(id)}/terminal`, { token: await rt.commandToken() });
+			if (action === "off") {
+				await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { enabled: false }, { token: await rt.commandToken() });
+				out(ctx, "Detached worker mode selected. Existing workers restart on their saved transcripts; automatic panes stay off until /team watch open.");
+				return;
+			}
+			const terminal = await rt.client.get<{ enabled?: boolean; socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(id)}/terminal`, { token: await rt.commandToken() });
+			if (terminal.enabled === false && (action === "status" || action === "close")) {
+				out(ctx, "Detached workers; use /team watch open for interactive tmux panes.");
+				return;
+			}
 			const opening = action === "open" || action === "focus" || action === "debug";
 			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });

@@ -4,18 +4,36 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.6, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.7, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
 ```bash
-pi install ./path/to/pi-recursive-team     # local path (works today)
-pi                                          # ordinary Pi
+# Published/default branch:
+pi install git:github.com/whacked/pi-aatwad
+
+# This feature branch, after it has been pushed:
+pi install git:github.com/whacked/pi-aatwad@feat/team-reporting
+
+# Or a local checkout:
+pi install ./path/to/pi-aatwad
+pi
 ```
 
 > `pi install npm:…` is not usable yet. Node refuses type-stripping inside `node_modules`, so an npm release needs a JS build step first.
 
-Requires Node ≥ 22.13 (for built-in `node:sqlite` and type stripping). There are no runtime npm dependencies.
+Git installation clones the package outside `node_modules`, so it works with the
+current TypeScript controller. Pick one source above; if this package was already
+installed from a local path, remove that local source before switching to Git.
+Restart Pi or run `/reload` after installing. Git refs can select a branch, tag or
+commit; see [Pi package installation](https://pi.dev/docs/latest/packages).
+
+Requires Node ≥ 22.13 (for built-in `node:sqlite` and type stripping), Pi and `ps`
+on the controller's PATH. Git is needed for Git installation and repository
+worktrees. tmux is optional. There are no runtime npm dependencies. If the Pi
+executable has a custom location, set `PI_TEAM_PI_BIN=/absolute/path/to/pi` before
+starting the controller. A long-running controller keeps its original environment;
+restart it after changing PATH, credentials or that executable override.
 
 ## Use
 
@@ -41,7 +59,7 @@ Create alpha and beta. Have each declare readiness, then wait for assignments.
 /team watch
 ```
 
-In tmux, member creation through the leader's tool opens live Pi panes immediately.
+In a valid tmux pane, member creation through the leader's tool opens live Pi panes automatically unless `/team watch off` was selected.
 `watch` opens or reuses the view. A fresh `init` alone creates an **empty** team;
 `reports 0` and `live workers 0` mean there are no member processes to display.
 Use `/team list` to find other teams instead of repeatedly creating new ones.
@@ -67,7 +85,7 @@ Inside Pi:
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
 | `/team inspect <agent_id>` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
-| `/team watch [open\|status\|close\|debug] [run_id]` | Manage live member panes; show optional controls with `debug`. |
+| `/team watch [open\|status\|close\|off\|debug] [run_id]` | Manage live member panes; show optional controls with `debug`. |
 | `/team watch focus <agent_id> [run_id]` | Focus a member monitor pane. |
 | `/team send <agent_id> <message>` | Send directions through durable team messaging. |
 | `/team stop [agent_id\|run_id]` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
@@ -298,6 +316,45 @@ overflow recovery. Each member uses Pi's own compaction settings; `/compact` rem
 available in its pane. The plugin does not add a separate compactor. See
 [Pi compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md).
 
+### SSH, Herdr and execution without tmux
+
+Team recruitment and reporting do not require tmux. Execution depends on the
+hosting environment and the team's saved terminal setting:
+
+| Environment | Default behavior |
+|---|---|
+| Plain terminal or SSH, without tmux | Controller launches detached, one-shot Pi workers with durable inboxes and transcripts. |
+| Herdr | Pi stays in its Herdr pane; workers use detached execution. Inherited outer tmux markers are ignored when `HERDR_ENV=1`. |
+| Valid tmux pane containing this Pi | Member creation automatically opens team panes beside Pi unless explicitly disabled. |
+| Missing tmux or stale inherited pane markers | Automatic pane setup cannot block recruitment; detached workers remain available. |
+| Saved tmux session/pane becomes unavailable | Controller records a fallback notice and switches workers to detached execution, preserving identities, tasks and transcripts. |
+
+To force detached workers, including inside tmux:
+
+```text
+/team watch off
+```
+
+This persists for the team until `/team watch open`. Existing interactive workers
+are stopped and relaunched on their saved transcripts; an active turn is interrupted
+and instructed to continue. Old tmux panes may remain as exited panes and can be
+closed. `/team watch close` only hides/detaches the view and leaves interactive
+workers running. `/team watch status` works without tmux in detached mode.
+
+Without tmux there are no live member panes or direct keyboard input to workers.
+Use the leader's team tools, `/team send`, `/team inbox`, `/team inspect`, and
+`/team reporting`. Detached workers exit when their prompt settles and relaunch on
+the same transcript for new assignments. The controller and detached workers survive
+an ordinary root-session exit or SSH disconnect; host shutdown or session cleanup
+policies can still stop processes. Resume with `/team resume` later.
+
+There is no native Herdr pane backend. `/team watch open` explicitly requests tmux;
+outside tmux it opens a separate, detached tmux session and prints an attach command
+for another terminal. If tmux is missing, that explicit request gives an actionable
+error while team work continues detached. It never nests or attaches tmux inside
+Herdr automatically. Herdr documents the limitations of nested tmux in its
+[agent hosting guide](https://herdr.dev/tui/docs/agents/).
+
 ### Interactive Pi teams in tmux
 
 Both legacy tmux layout strings and tmux 3.8 JSON layouts are supported.
@@ -340,7 +397,8 @@ pane temporarily. `/team watch focus <agent_id>` selects a member and
 changing session/window selection. In a dedicated
 session, close detaches its clients without destroying live terminals. Use
 `/team stop <agent_id>` to cancel a member, or `/team stop <run_id>` to cancel the team. Killing a tmux pane or server terminates the harnesses it hosts;
-the controller may restart eligible members within its retry policy.
+the controller recovers eligible members within its retry policy, falling back to
+detached execution when the saved terminal location is unavailable.
 
 Normal use shows **only the leader and member Pi panes**. Layout coordination runs
 inside the existing background controller; there is no TEAM CONTROL pane or extra

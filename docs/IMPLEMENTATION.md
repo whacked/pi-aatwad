@@ -182,3 +182,36 @@ Wake-on-message is an explicit, persisted per-root option, defaulting off. Heart
 returns `reporting_wake`; the extension starts a turn only when idle and controller
 desired state is RUNNING. Paused roots only queue context. Root processes are never
 spawned by this feature. Closing a terminal preserves links and queues reports.
+
+
+## Terminal environment fallback (v0.1.7)
+
+Terminal hosting is selected independently of TTY presence. A normal shell, SSH or
+Herdr session uses detached Pi workers; a valid tmux host can automatically open
+panes during recruitment. `HERDR_ENV=1` takes precedence over inherited tmux markers.
+Automatic setup verifies that the pane's process is an ancestor of this Pi before
+mutating it. Failure is returned as `terminal_warning` on successful recruitment,
+not a failed member creation. Explicit `/team watch open` still reports tmux errors.
+
+`POST /runs/:id/terminal` now accepts `{enabled:false}`. It clears `terminal`, sets
+`terminal_disabled`, and prevents automatic pane creation until explicit reopening.
+The reconciler handles changes in both directions through process supervision:
+stop the old harness, fence its credential, and requeue on the same agent and Pi
+transcript. Tasks, worktrees and allocations stay intact; active turns are interrupted.
+Old pane cleanup is left to tmux rather than starting a competing pane supervisor.
+
+Before mode changes and launches, PiExecutor checks that a saved tmux location
+exists and remains owned. Missing tmux, dead sockets, vanished panes and lost
+ownership clear the saved terminal configuration in a fenced transaction, emit
+`run.terminal_fallback` and send a root notice. Existing interactive workers move
+to detached execution, and new workers start there without consuming failed launch
+attempts for a preflight-detected terminal outage. The ordinary launch retry policy
+still applies to failures after preflight and to missing Pi executables. A missing
+Pi executable gives an actionable PATH/PI_TEAM_PI_BIN diagnostic. Its path is
+resolved before changing to a member's worktree.
+
+Herdr is a host for the root Pi, not a worker-pane backend. tmux commands clear
+outer tmux markers in Herdr; explicit watch opens a separate tmux session and does
+not change the Herdr pane or switch its outer client. Environment tests cover
+missing tmux, plain SSH, inherited markers, Herdr, headless opt-out, live mode
+changes, saved-terminal fallback, process launch without tmux and missing Pi.

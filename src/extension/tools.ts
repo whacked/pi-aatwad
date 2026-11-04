@@ -1,5 +1,5 @@
 import { probeIdentity, processStartTime } from "../executor/proc.ts";
-import { openTerminals } from "./terminals.ts";
+import { openTerminals, autoOpenTerminals } from "./terminals.ts";
 import { TmuxWatch } from "../watch/tmux.ts";
 import { availableModels, resolveAvailableModel } from "./models.ts";
 // Organization tools. Identical set for every agent; the controller authorizes each action.
@@ -306,8 +306,9 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 		async (p, id, ctx) => {
 			if (p.model && p.preferred_model_id) throw new Error("Specify model or preferred_model_id, not both");
 			const body = { ...p, model: p.model ? resolveAvailableModel(ctx, p.model) : undefined };
-			if (process.env.TMUX_PANE && !rt.managed) await openTerminals(rt, rt.identity!.run_id);
-			return json("Member provisioned", await rt.client.post("/members", body, { idempotencyKey: key("team_create_member", id) }));
+			const terminalWarning = await autoOpenTerminals(rt, rt.identity!.run_id);
+			const result = await rt.client.post<Record<string, unknown>>("/members", body, { idempotencyKey: key("team_create_member", id) });
+			return json("Member provisioned", { ...result, ...(terminalWarning ? { terminal_warning: terminalWarning } : {}) });
 		},
 	);
 
@@ -336,11 +337,13 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_watch", "Team: tmux terminals",
-		"Root only: open, inspect, focus or close the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Requires tmux and Node on PATH.",
-		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug"] as const), agent_id: Type.Optional(Type.String({ description: "Member name or agent ID; required for focus" })) }),
+		"Root only: open, inspect, focus, close or disable the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Open/focus/debug require tmux and Node on PATH. Use action off for detached workers (no tmux required); live interactive workers restart on saved transcripts, interrupting any current turn. Closing only hides the view.",
+		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug", "off"] as const), agent_id: Type.Optional(Type.String({ description: "Member name or agent ID; required for focus" })) }),
 		async (p) => {
 			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
-			const terminal = await rt.client.get<{ socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
+			if (p.action === "off") return json("Detached worker mode selected; existing workers restart on their saved transcripts", await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { enabled: false }));
+			const terminal = await rt.client.get<{ enabled?: boolean; socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
+			if (terminal.enabled === false && (p.action === "status" || p.action === "close")) return json("Detached workers; use /team watch open for interactive tmux panes", { mode: "headless", open: false });
 			const opening = p.action === "open" || p.action === "focus" || p.action === "debug";
 			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });

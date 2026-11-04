@@ -11,7 +11,17 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 	if (body !== undefined) {
 		if (p.kind !== "operator" && p.actor_id !== row.root_agent_id) fail("FORBIDDEN", "only the root may enable interactive terminals");
 		const b = obj(body);
-		onlyKeys(b, ["socket", "location", "debug"]);
+		onlyKeys(b, ["enabled", "socket", "location", "debug"]);
+		if (b.enabled !== undefined && typeof b.enabled !== "boolean") fail("INVALID", "enabled must be boolean");
+		if (b.enabled === false) {
+			if (b.socket !== undefined || b.location !== undefined || b.debug !== undefined) fail("INVALID", "enabled=false cannot include tmux options");
+			delete cfg.terminal;
+			cfg.terminal_disabled = true;
+			run(ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), id);
+			emit(ctx.db, { run_id: id, actor_id: p.actor_id, type: "run.terminal_disabled", entity_id: id, payload: {} });
+			ctx.kick();
+			return { enabled: false, auto_open: false };
+		}
 		if (b.debug !== undefined && typeof b.debug !== "boolean") fail("INVALID", "debug must be boolean");
 		const socket = str(b, "socket", { optional: true });
 		let location: { window: string; leader: string } | undefined;
@@ -22,9 +32,10 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 			location = { window, leader };
 		}
 		cfg.terminal = { ...(socket ? { socket } : {}), ...(location ? { location } : {}), ...(b.debug ? { debug: true } : {}) };
+		delete cfg.terminal_disabled;
 		run(ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), id);
 		emit(ctx.db, { run_id: id, actor_id: p.actor_id, type: "run.terminal_enabled", entity_id: id, payload: {} });
 		ctx.kick();
 	}
-	return { enabled: cfg.terminal !== undefined, ...cfg.terminal };
+	return { enabled: cfg.terminal !== undefined, auto_open: !cfg.terminal_disabled, ...cfg.terminal };
 }

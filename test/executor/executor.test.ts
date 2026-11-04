@@ -165,6 +165,6 @@ test("launch log has a launch record but no env secrets or enrollment token", as
 
 test("launch rejects when the binary does not exist", async () => {
 	const spec = makeSpec(tmp());
-	await assert.rejects(new PiExecutor({ piBin: "/nonexistent/pi-binary" }).launch(spec), /ENOENT/);
+	await assert.rejects(new PiExecutor({ piBin: "/nonexistent/pi-binary" }).launch(spec), /Pi executable.*PI_TEAM_PI_BIN/);
 	assert.match(readFileSync(spec.log_path, "utf8"), /launch_failed/);
 });

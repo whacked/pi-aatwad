@@ -237,6 +237,8 @@ export interface TerminalLocation { window: string; leader: string }
 export interface TerminalOptions { socket?: string; location?: TerminalLocation; debug?: boolean }
 
 export interface RunConfig {
+	/** Human opt-out from automatic tmux panes; /team watch open enables them again. */
+	terminal_disabled?: boolean;
 	/** Human operator authorization to remove numeric spend, runtime and recruitment caps. */
 	operator_unlimited?: boolean;
 	/** Interactive Pi workers hosted by tmux; socket is primarily for isolated deployments/tests. */

@@ -104,6 +104,7 @@ export class Reconciler {
 		this.publishOutbox();
 		await this.recoverUncertain(false);
 		await this.enforceDeadlines();
+		await this.checkTerminals();
 		await this.promoteTerminals();
 		await this.observeExits();
 		this.expireLeases();
@@ -114,6 +115,26 @@ export class Reconciler {
 			await this.launch(r.id);
 		}
 		await this.syncTerminals();
+	}
+
+	/** Saved terminal locations may disappear between root sessions or after a tmux/server outage. */
+	private async checkTerminals(): Promise<void> {
+		if (!this.executor.terminalProblem) return;
+		for (const r of all(this.ctx.db, "SELECT id, root_agent_id FROM runs WHERE status IN ('RUNNING','PAUSED')")) {
+			const cfg = runConfig(this.ctx.db, r.id);
+			if (!cfg.terminal) continue;
+			const reason = await this.executor.terminalProblem(this.ctx.paths.dir, r.id, cfg.terminal);
+			if (!reason) continue;
+			this.wtx(() => {
+				const current = runConfig(this.ctx.db, r.id);
+				if (JSON.stringify(current.terminal) !== JSON.stringify(cfg.terminal)) return;
+				delete current.terminal;
+				run(this.ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(current), r.id);
+				emit(this.ctx.db, { run_id: r.id, actor_id: "controller", type: "run.terminal_fallback", payload: { reason, mode: "headless" } });
+				postMessage(this.ctx.db, { run_id: r.id, from: r.root_agent_id, to: r.root_agent_id, type: "system.notice", payload: {
+					kind: "terminal_fallback", reason, text: "Team workers are switching to detached execution because tmux is unavailable. Identities, transcripts and tasks are preserved. Use /team watch open after restoring tmux, or /team watch off to keep detached workers." } });
+			});
+		}
 	}
 
 	/** The existing controller coordinates layout; normal usage needs no control pane/process. */
@@ -145,7 +166,7 @@ export class Reconciler {
 		});
 	}
 
-	/** Switch existing headless sessions once, preserving transcripts, tasks and logical IDs. */
+	/** Change worker terminal mode once, preserving transcripts, tasks and logical IDs. */
 	async promoteTerminals(): Promise<void> {
 		const db = this.ctx.db;
 		const rows = all(db, `SELECT a.*, s.pid, s.process_started_at, s.process_marker, i.id AS intent_id FROM agents a
@@ -154,7 +175,8 @@ export class Reconciler {
 		for (const a of rows) {
 			const terminal = runConfig(db, a.run_id).terminal;
 			const marker = parseJson<{ terminal?: boolean; terminal_socket?: string | null; terminal_location?: string }>(a.process_marker, {});
-			if (!terminal || (marker.terminal && (marker.terminal_socket ?? null) === (terminal.socket ?? null) && (marker.terminal_location ?? "null") === JSON.stringify(terminal.location ?? null))) continue;
+			if (!terminal && !marker.terminal) continue;
+			if (terminal && marker.terminal && (marker.terminal_socket ?? null) === (terminal.socket ?? null) && (marker.terminal_location ?? "null") === JSON.stringify(terminal.location ?? null)) continue;
 			if (a.pid != null) {
 				await this.executor.stop({ pid: a.pid, process_started_at: a.process_started_at ?? "" });
 				if (await this.executor.probe({ pid: a.pid, process_started_at: a.process_started_at ?? "" }) === "alive") continue;
@@ -164,9 +186,9 @@ export class Reconciler {
 				if (current.current_session_id !== a.current_session_id || current.desired_state !== 'RUNNING' || isTerminal(current.status)) return;
 				run(db, "UPDATE agents SET observed_state = 'STOPPED', lease_until = NULL WHERE id = ?", a.id);
 				run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE id = ?", nowIso(), a.current_session_id);
-				run(db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'interactive terminal promotion' WHERE session_id = ?", nowIso(), a.current_session_id);
+				run(db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'worker terminal mode changed' WHERE session_id = ?", nowIso(), a.current_session_id);
 				run(db, "UPDATE spawn_intents SET status = 'PENDING', updated_at = ? WHERE id = ?", nowIso(), a.intent_id);
-				emit(db, { run_id: a.run_id, actor_id: "controller", type: "agent.terminal_promoted", entity_id: a.id, payload: {} });
+				emit(db, { run_id: a.run_id, actor_id: "controller", type: terminal ? "agent.terminal_promoted" : "agent.terminal_disabled", entity_id: a.id, payload: {} });
 			});
 		}
 	}

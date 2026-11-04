@@ -191,3 +191,25 @@ test("reporting commands connect, disconnect, transfer, show history and dismiss
   await hs.cleanup(); __resetProcessStateForTests();
  }
 });
+
+test("watch off and status work without tmux and persist the automatic-pane opt-out", async () => {
+ __resetProcessStateForTests();
+ const hs = await harness();
+ const session = commandSession(hs, "headless-commands", "");
+ const previousPath = process.env.PATH;
+ try {
+  await session.rt.start(session.ctx);
+  await session.command.handler("init", session.ctx);
+  process.env.PATH = hs.dir; // no tmux (or any other executable) is discoverable here
+  await session.command.handler("watch off", session.ctx);
+  await session.command.handler("watch status", session.ctx);
+  const cfg = await session.rt.client.get<{ enabled: boolean; auto_open: boolean }>(`/runs/${session.rt.identity!.run_id}/terminal`);
+  assert.equal(cfg.enabled, false);
+  assert.equal(cfg.auto_open, false);
+  assert.ok(session.notes.some((n) => n.includes("Detached workers")));
+  assert.ok(!session.notes.some((n) => n.includes("/team watch:")), session.notes.join("\n"));
+ } finally {
+  if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+  session.rt.stop(); await hs.cleanup(); __resetProcessStateForTests();
+ }
+});

@@ -20,6 +20,12 @@ function logLine(logPath: string, record: Record<string, unknown>): void {
 	}
 }
 
+/** Include preflight failures in the same log as OS spawn failures. */
+export function logLaunchFailure(spec: LaunchSpec, error: string): void {
+	try { mkdirSync(dirname(spec.log_path), { recursive: true, mode: 0o700 }); } catch { return; }
+	logLine(spec.log_path, { event: "launch_failed", agent_id: spec.agent_id, error });
+}
+
 export interface DetachedLaunch {
 	spec: LaunchSpec;
 	executor: string; // "pi" | "script"
@@ -67,7 +73,7 @@ export async function launchDetached(l: DetachedLaunch): Promise<ProcessIdentity
 			c.once("error", (err: Error) => reject(err));
 		});
 	} catch (err) {
-		logLine(spec.log_path, { event: "launch_failed", agent_id: spec.agent_id, error: String((err as Error).message ?? err) });
+		logLaunchFailure(spec, String((err as Error).message ?? err));
 		throw err;
 	} finally {
 		closeSync(fd);

@@ -1,5 +1,6 @@
 import { TmuxWatch } from "../watch/tmux.ts";
 import type { TerminalOptions } from "../shared/protocol.ts";
+import { findExecutable } from "../shared/environment.ts";
 import { launchTerminal } from "./terminal.ts";
 // PiExecutor: interactive Pi in tmux for terminal-enabled runs; detached one-shot Pi otherwise.
 //
@@ -28,7 +29,7 @@ import { launchTerminal } from "./terminal.ts";
 import { join } from "node:path";
 import { packageRoot } from "../shared/paths.ts";
 import { buildWorkerEnv } from "./env.ts";
-import { launchDetached, newLaunchToken } from "./launch.ts";
+import { launchDetached, newLaunchToken, logLaunchFailure } from "./launch.ts";
 import { probeIdentity, stopIdentity } from "./proc.ts";
 import type { Executor, LaunchSpec, ProbeResult, ProcessIdentity, TerminalMember } from "./types.ts";
 
@@ -72,16 +73,31 @@ export class PiExecutor implements Executor {
 	}
 
 	async launch(spec: LaunchSpec): Promise<ProcessIdentity> {
-		if (spec.terminal) return launchTerminal(spec, this.piBin, buildPiArgs(spec, this.extensionPath, true));
+		const piBin = findExecutable(this.piBin);
+		if (!piBin) {
+			const error = `Pi executable '${this.piBin}' is unavailable to the controller. Install Pi on PATH or set PI_TEAM_PI_BIN to its absolute executable path before starting the controller. GUI/SSH environments may have a different PATH; restart the controller after changing it.`;
+			logLaunchFailure(spec, error);
+			throw new Error(error);
+		}
+		if (spec.terminal) return launchTerminal(spec, piBin, buildPiArgs(spec, this.extensionPath, true));
 		const launchToken = newLaunchToken();
 		return launchDetached({
 			spec,
 			executor: "pi",
-			command: this.piBin,
+			command: piBin,
 			args: buildPiArgs(spec, this.extensionPath),
 			env: buildWorkerEnv(spec, launchToken),
 			launchToken,
 		});
+	}
+
+	async terminalProblem(stateDir: string, runId: string, terminal: TerminalOptions): Promise<string | undefined> {
+		const view = new TmuxWatch({ stateDir, runId, ...terminal });
+		try {
+			if (!await view.exists()) return "the saved tmux session or leader pane is no longer available";
+			await view.assertOwned();
+			return undefined;
+		} catch (e) { return (e as Error).message; }
 	}
 
 	async syncTerminal(stateDir: string, runId: string, terminal: TerminalOptions, members: TerminalMember[]): Promise<void> {
