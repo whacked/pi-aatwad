@@ -152,3 +152,42 @@ test("commands accept quoted member names, suggest names, and change budget/mode
 		assert.deepEqual(await s.command.getArgumentCompletions("budget Senior"), []);
 	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
+
+test("reporting commands connect, disconnect, transfer, show history and dismiss without taking over project sessions", async () => {
+ __resetProcessStateForTests();
+ const hs = await harness();
+ const parent = commandSession(hs, "parent-session", "");
+ const project = commandSession(hs, "project-session", "");
+ const replacement = commandSession(hs, "replacement-session", "");
+ try {
+  for (const session of [parent, project, replacement]) {
+   await session.rt.start(session.ctx);
+   await session.command.handler("init", session.ctx);
+   assert.ok(session.rt.identity, session.notes.join("\n"));
+  }
+  const sId = parent.rt.identity!.run_id, pId = project.rt.identity!.run_id, rId = replacement.rt.identity!.run_id;
+  const original = { ...project.rt.identity! };
+  await project.command.handler(`report-to ${sId}`, project.ctx);
+  await project.command.handler("reporting", project.ctx);
+  assert.ok(project.notes.some((n) => n.includes(sId) && n.includes("parent_agent_id")));
+  assert.deepEqual(project.rt.identity, original);
+  await parent.command.handler("reporting wake on", parent.ctx);
+  assert.equal((await parent.rt.client.reporting(sId)).wake_on_message, true);
+  await project.command.handler("reporting wake on", project.ctx);
+  assert.equal((await project.rt.client.reporting(pId)).wake_on_message, true);
+  await project.command.handler("report-to none", project.ctx);
+  await project.command.handler(`report-to ${sId}`, project.ctx);
+  await parent.command.handler(`reporting transfer ${rId}`, parent.ctx);
+  assert.equal((await project.rt.client.reporting(pId)).links[0].parent_run_id, rId);
+  await project.command.handler("reporting --all", project.ctx);
+  assert.equal((await project.rt.client.reporting(pId, true)).links.length, 3);
+  await replacement.command.handler("reporting dismiss", replacement.ctx);
+  assert.equal(replacement.rt.identity!.run_id, rId);
+  assert.equal((await project.rt.client.reporting(pId)).links.length, 0);
+  assert.equal((await project.rt.client.me()).agent_id, original.agent_id);
+  assert.ok(![...parent.notes, ...project.notes, ...replacement.notes].some((n) => /FORBIDDEN|CONFLICT|FENCED/.test(n)));
+ } finally {
+  for (const session of [parent, project, replacement]) session.rt.stop();
+  await hs.cleanup(); __resetProcessStateForTests();
+ }
+});

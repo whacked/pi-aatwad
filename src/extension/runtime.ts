@@ -555,7 +555,7 @@ export class TeamRuntime {
 			}
 			this.lastInboxPending = r.inbox_pending;
 			// Managed one-shot workers pick messages up at run start / before settling instead.
-			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: this.identity?.managed && this.ctx?.mode === "tui" });
+			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: r.desired_state === "RUNNING" && (r.reporting_wake || (this.identity?.managed && this.ctx?.mode === "tui")) });
 		} catch (e) {
 			if (this.identity !== identity) return;
 			if (this.handleAgentError(e)) return;

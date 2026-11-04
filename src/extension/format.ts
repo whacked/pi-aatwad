@@ -81,6 +81,14 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 	const lines: string[] = [];
 	lines.push(`You are agent ${c.agent_id} (role: ${c.role}) in team run ${c.run_id}${c.is_root ? " — you are the ROOT of this organization" : ""}.`);
 	lines.push(c.parent ? `Manager: ${c.parent.role} [${c.parent.agent_id}]` : "Manager: none (root; you report to the human operator)");
+	if (c.reporting) {
+		const r = c.reporting;
+		lines.push(`Cross-team reporting relationships. Automatic inbox turns: ${r.wake_on_message ? "on" : "off"}.`);
+		for (const link of r.links.slice(0, MAX_LIST)) lines.push(link.child_run_id === c.run_id
+			? `Report to team leader ${link.parent_agent_id} (run ${link.parent_run_id}); send initial status and meaningful progress with team_send_message.`
+			: `Reporting team ${link.child_run_id}: leader ${link.child_agent_id}; request reports with team_send_message.`);
+		if (r.links.length) lines.push("Reporting links permit coordination messages (question, answer, task.progress). Each team retains its own delegation, approvals, budgets and control. Use exact linked leader IDs. Maintain consolidated status for teams reporting to you, follow up on blockers and decisions, and avoid acknowledgement loops. team_reporting manages relationships and history.");
+	}
 	if (c.children.length) {
 		const shown = c.children.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}] ${k.status}/${k.observed_state}`);
 		lines.push(`Direct reports (${c.children.length}): ${shown.join("; ")}${c.children.length > MAX_LIST ? "; …" : ""}`);

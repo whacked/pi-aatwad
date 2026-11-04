@@ -1,3 +1,4 @@
+import { reportingStatus } from "./reporting.ts";
 // Runs, sessions (attach/enroll/heartbeat/usage) and read projections (tree, me, inspect, budgets, models, events).
 import { isAbsolute } from "node:path";
 import { type DB, type Row, all, get, run, newId, nowIso, isoPlus, emit, parseJson } from "./db.ts";
@@ -122,7 +123,10 @@ export function listRuns(ctx: Ctx, p: Principal): RunListResponse {
 		(SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id AND a.id <> r.root_agent_id AND a.status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED')) AS active_members,
 		(SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id AND a.id <> r.root_agent_id AND a.status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') AND a.observed_state = 'LIVE' AND a.desired_state = 'RUNNING') AS live_members
 		FROM runs r LEFT JOIN agents root ON root.id = r.root_agent_id ORDER BY r.created_at`);
-	return { runs: rows.map((r) => ({ run_id: r.id, status: r.root_status === "CANCELLED" ? "CANCELLED" : r.status, root_status: r.root_status, active_members: Number(r.active_members), live_members: Number(r.live_members), root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
+	return { runs: rows.map((r) => ({
+		reports_to_run_id: get(ctx.db, "SELECT parent_run_id FROM team_reporting_links WHERE child_run_id = ? AND closed_at IS NULL", r.id)?.parent_run_id ?? null,
+		reporting_teams: Number(get(ctx.db, "SELECT COUNT(*) AS n FROM team_reporting_links WHERE parent_run_id = ? AND closed_at IS NULL", r.id)!.n),
+		run_id: r.id, status: r.root_status === "CANCELLED" ? "CANCELLED" : r.status, root_status: r.root_status, active_members: Number(r.active_members), live_members: Number(r.live_members), root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
 }
 
 export function attach(ctx: Ctx, p: Principal, runId: string, body: unknown): AttachResponse {
@@ -228,7 +232,7 @@ export function heartbeat(ctx: Ctx, p: Principal, body: unknown): HeartbeatRespo
 	}
 	if (before.observed_state !== "LIVE") emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "agent.reconnected", entity_id: a.actor_id, payload: { from: before.observed_state, session_id: a.session_id } });
 	const change = parseJson<{ model_change?: import("../shared/protocol.ts").ModelChange }>(before.metadata_json, {}).model_change;
-	return { lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state, ...(change ? { model_change: change } : {}) };
+	return { reporting_wake: getRun(db, a.run_id).root_agent_id === a.actor_id && reportingStatus(db, a.run_id).wake_on_message, lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state, ...(change ? { model_change: change } : {}) };
 }
 
 /** POST /sessions/usage (UsageReportRequest). */
@@ -281,6 +285,7 @@ export function me(ctx: Ctx, p: Principal): OrgContext {
 		session_id: a.session_id,
 		role: ag.role,
 		is_root: parentId === null,
+		...(parentId === null ? { reporting: reportingStatus(db, a.run_id) } : {}),
 		parent: parent ? { agent_id: parent.id, role: parent.role } : null,
 		children: getChildren(db, a.actor_id).filter((id) => !isTerminal(getAgent(db, id).status)).map((c) => {
 			const x = getAgent(db, c);

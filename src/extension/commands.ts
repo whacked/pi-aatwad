@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { RunConfig, TerminalLocation } from "../shared/protocol.ts";
+import type { ReportingRequest, RunConfig, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
 import { formatBudget, formatEvents, formatInspect, formatProposal, formatTree } from "./format.ts";
@@ -14,6 +14,8 @@ import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 
 export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
+	{ name: "report-to", args: "<run_id|none>", help: "make this leader report to another team leader, or disconnect it" },
+	{ name: "reporting", args: "[--all|dismiss|transfer <run_id>|wake on|off]", help: "inspect, dismiss or transfer reporting links; configure automatic inbox turns" },
 	{ name: "help", args: "", help: "show this help" },
 	{ name: "init", args: "[--unlimited] [config-json-path]", help: "create a new organization with this session as root" },
 	{ name: "resume", args: "[run_id] [name|agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
@@ -62,7 +64,7 @@ function resumable(run: RunSummary): boolean {
 	return !TERMINAL_STATUSES.has(run.status) && !TERMINAL_STATUSES.has(run.root_status ?? "");
 }
 function runLabel(run: RunSummary): string {
-	return `${run.run_id} · ${run.active_members ?? Math.max(0, run.agents - 1)} active members · ${run.live_members ?? "?"} running · ${run.created_at}`;
+	return `${run.run_id} · ${run.active_members ?? Math.max(0, run.agents - 1)} active members · ${run.live_members ?? "?"} running${run.reporting_teams ? ` · ${run.reporting_teams} reporting teams` : ""}${run.reports_to_run_id ? ` · reports to ${run.reports_to_run_id}` : ""} · ${run.created_at}`;
 }
 
 export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
@@ -82,6 +84,29 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	let initializedRunId: string | undefined;
 	const handlers: Record<string, (a: string[], ctx: ExtensionCommandContext) => Promise<void>> = {
 		help: async (_a, ctx) => out(ctx, helpText(pi, rt)),
+
+		reporting: async (a, ctx) => {
+			await rt.requireIdentity();
+			const id = runId();
+			const token = await rt.commandToken();
+			if (!a.length || (a.length === 1 && a[0] === "--all")) {
+				out(ctx, JSON.stringify(await rt.client.reporting(id, a[0] === "--all", { token }), null, 2));
+				return;
+			}
+			let request: ReportingRequest;
+			if (a.length === 1 && a[0] === "dismiss") request = { action: "dismiss" };
+			else if (a.length === 2 && a[0] === "transfer") request = { action: "transfer", parent_run_id: a[1] };
+			else if (a.length === 2 && a[0] === "wake" && ["on", "off"].includes(a[1])) request = { action: "wake", wake_on_message: a[1] === "on" };
+			else throw new Error("usage: /team reporting [--all|dismiss|transfer <run_id>|wake on|off]");
+			out(ctx, JSON.stringify(await rt.client.setReporting(id, request, { token }), null, 2));
+		},
+
+		"report-to": async (a, ctx) => {
+			await rt.requireIdentity();
+			if (a.length !== 1) throw new Error("usage: /team report-to <run_id|none>");
+			const result = await rt.client.setReporting(runId(), a[0] === "none" ? { action: "disconnect" } : { action: "connect", parent_run_id: a[0] }, { token: await rt.commandToken() });
+			out(ctx, JSON.stringify(result, null, 2));
+		},
 
 		watch: async (a, ctx) => {
 			await rt.ready;
@@ -356,7 +381,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, tree, status, budget, model, inbox, proposals, events, inspect, stop, watch, send (see /team help)",
+		description: "Recursive agent team: init, resume, report-to, reporting, tree, status, budget, model, inbox, proposals, events, inspect, stop, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
@@ -367,7 +392,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (["budget", "model", "inspect", "send"].includes(sub) && parts.length === 2) return await agentCompletions(sub, partial);
 			if (sub === "watch" && partial === "focus" && parts.length === 3) return await agentCompletions(sub, parts[2], "watch focus");
 			if (sub === "resume" && parts.length === 3) return await agentCompletions(sub, parts[2], `resume ${partial}`, partial);
-			if (sub === "resume" || sub === "tree" || sub === "events" || (sub === "stop" && parts.length === 2)) {
+			if (sub === "report-to" || sub === "resume" || sub === "tree" || sub === "events" || (sub === "stop" && parts.length === 2)) {
 				if (parts.length > 2) return null;
 				const runs = await runCompletions();
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&

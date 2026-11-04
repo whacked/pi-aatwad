@@ -71,11 +71,32 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	reg(
+		"team_reporting",
+		"Team: reporting relationships",
+		"Root only: manage generic reporting relationships between existing team leaders. Any active leader can receive reports; no role designation or setup is required. status lists linked root IDs (history optionally includes closed links). connect makes your leader report to another leader by parent_run_id. disconnect ends your own reporting-parent link. transfer moves all leaders reporting to you to another leader, with reference history, while retaining your own parent link. dismiss ends all reporting links attached to you; every team and session keeps running. Use team_close_member or the human /team stop command to stop team members. wake sets automatic inbox turns for your root; enable only when the human requests it. Closing a session keeps links and queues reports. Use team_send_message with linked root IDs for initial reports, meaningful progress and follow-up questions. Avoid acknowledgement loops. Cross-team budget, approval and delegation authority remains scoped to each team's own hierarchy.",
+		Type.Object({
+			action: StringEnum(["status", "connect", "disconnect", "dismiss", "transfer", "wake"] as const),
+			parent_run_id: Type.Optional(Type.String()),
+			wake_on_message: Type.Optional(Type.Boolean()),
+			reason: Type.Optional(Type.String()),
+			history: Type.Optional(Type.Boolean()),
+		}),
+		async (p, id) => {
+			const runId = rt.identity!.run_id;
+			const { history, ...request } = p;
+
+			const result = p.action === "status" ? await rt.client.reporting(runId, history) : await rt.client.setReporting(runId, request, { idempotencyKey: key("team_reporting", id) });
+
+			return json("Team reporting", result);
+		},
+	);
+
+	reg(
 		"team_send_message",
 		"Team: send message",
 		"Send a typed, durable message to another agent in your team organization : your manager, a teammate (same manager), or anyone in your own subtree. " +
 			"The sender is always you (taken from your session credential). Use type 'question'/'answer' for conversation, 'task.progress' for updates. " +
-			"For new agents use team_request_expansion instead.",
+			"Leaders joined by a reporting relationship can also exchange question, answer and task.progress messages across teams using exact agent IDs from team_reporting. For new agents use team_request_expansion instead.",
 		Type.Object({
 			to: Type.String({ description: "Recipient name or agent_id (or 'controller')" }),
 			type: StringEnum(MESSAGE_TYPES, { description: "Message type" }),

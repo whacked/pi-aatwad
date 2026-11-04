@@ -16,6 +16,7 @@ import { lifecycle, reparent } from "./topology.ts";
 import { attach, budget, createRun, enroll, events, heartbeat, inspect, listRuns, me, models, reportUsage, tree } from "./runs.ts";
 import { getRecoveryStatus, isTerminal } from "./queries.ts";
 import { assertLeaseHeld } from "./fence.ts";
+import { changeReporting, readReporting } from "./reporting.ts";
 
 type Auth = "none" | "any" | "operator" | "agent";
 type Handler = (a: { p: Principal; scope: ReqScope; params: string[]; body: unknown; q: URLSearchParams }) => unknown;
@@ -44,6 +45,8 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("GET", "/health", "none", () => deps.health()),
 		R("POST", "/runs", "operator", ({ p, body }) => createRun(ctx, p, body)),
 		R("GET", "/runs", "operator", ({ p }) => listRuns(ctx, p)),
+		R("GET", "/runs/:id/reporting", "any", ({ p, params, q }) => readReporting(ctx, p, params[0], q.get("history") === "1")),
+		R("POST", "/runs/:id/reporting", "any", ({ p, params, body }) => changeReporting(ctx, p, params[0], body)),
 		R("POST", "/runs/:id/attach", "operator", ({ p, params, body }) => attach(ctx, p, params[0], body)),
 		R("GET", "/runs/:id/admin", "any", ({ p, params }) => adminPolicy(ctx, p, params[0])),
 		R("POST", "/runs/:id/admin", "operator", ({ p, params, body }) => adminPolicy(ctx, p, params[0], body ?? {})),

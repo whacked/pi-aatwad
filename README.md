@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.5, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.6, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -60,7 +60,9 @@ Inside Pi:
 |---|---|
 | `/team init [--unlimited] [config.json]` | Makes this session the **root** of a new organization. This is the only way an org is created; installing the package creates nothing. |
 | `/team resume [run_id] [agent_id]` | Pick a resumable team or attach directly. Works in a fresh Pi session without init. |
-| `/team list [all]` | List active teams with member counts; `all` includes history. |
+| `/team list [all]` | List active teams, reporting relationships and member counts; `all` includes history. |
+| `/team report-to <run_id\|none>` | Make this leader report to another team leader, or disconnect it. |
+| `/team reporting [--all\|dismiss\|transfer <run_id>\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
 | `/team admin [status\|unlimited\|bounded] [run_id]` | Human operator: inspect, remove or restore resource caps. |
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
@@ -70,7 +72,77 @@ Inside Pi:
 | `/team send <agent_id> <message>` | Send directions through durable team messaging. |
 | `/team stop [agent_id\|run_id]` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
 
-Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, `team_set_budget`, `team_set_model`, plus root-only `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
+Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, `team_set_budget`, `team_set_model`, plus root-only `team_reporting`, `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
+
+### Reporting relationships between existing team leaders
+
+Any active team leader can report to another active team leader. There is no
+special role to enable and no reserved name. All teams must use the same local
+controller/state directory. Each leader can receive reports while also reporting
+to another leader; cycles are rejected.
+
+For example, five projects are already running. Open a fresh Pi session and run:
+
+```text
+/team init
+```
+
+This creates an ordinary team leader. Note its `run_id`. Use `/team list` to discover
+existing teams. In each old leader's session, run:
+
+```text
+/team report-to <new_leader_run_id>
+```
+
+Or tell that leader: “Report to the team leader for run `<new_leader_run_id>`.”
+It uses `team_reporting` with action `connect` and `parent_run_id`. The receiving
+leader needs no setup. Leaders keep their identities, sessions, members, worktrees,
+budgets and approvals. `resume` takes over an identity; connecting leaders does
+not require it. Each leader can have one active reporting parent at a time.
+
+Both leaders receive an introduction with a bounded snapshot of open tasks, active
+members, and recent task progress. The reporting leader is asked for its goal,
+progress, blockers, pending decisions and next action. The receiving leader can
+maintain consolidated status and ask follow-up questions. `/team reporting` lists
+linked root agent IDs; use `/team send <agent_id> <message>` or `team_send_message`
+to communicate. Cross-team messages permit `question`, `answer`, and `task.progress`.
+Each team retains its own task delegation, recruitment, approvals, budget authority
+and transcripts. Ordinary workers and sibling teams do not gain cross-team access.
+Use `causation_id` or `correlation_id` to link an answer to its question.
+
+Human leader inboxes are delivered for their next turn by default. To enable
+automatic inbox turns, run this separately in each participating leader session:
+
+```text
+/team reporting wake on
+```
+
+`/team reporting wake off` disables automatic turns. Open, idle, running leaders
+check their inbox on heartbeat (normally within 10 seconds); busy leaders wait
+until idle. Automatic turns can spend model credits. Closing a session preserves
+links and queues reports; no replacement root process is launched. Leaders should
+report meaningful changes and decisions and avoid acknowledgement loops.
+
+| Where | Command | Effect |
+|---|---|---|
+| Reporting leader | `/team report-to none` | End its link to its reporting parent. Its own reports stay attached. |
+| Receiving leader | `/team reporting transfer <run_id>` | Transfer all leaders reporting to it to another ordinary leader, with handoff history. Its own parent link stays attached. |
+| Any leader | `/team reporting dismiss` | End all reporting links attached to this leader. Every team and session continues running. |
+| Any leader | `/team reporting --all` | Inspect active and closed links. |
+| Human operator | `/team stop [run_id]` | Stop that team's own hierarchy. Separately linked teams continue running. |
+
+To remove the temporary reporting parent from the example, run `/team reporting
+dismiss` in its session. If you also want to stop its own team, follow with
+`/team stop`. To replace it, create another ordinary team and transfer its reports
+to that team's run ID before dismissing or stopping the old one.
+
+Transfer sends current team snapshots and up to 30 recent coordination messages
+per link as reference history; it does not copy full Pi conversations. The receiving
+leader should confirm current facts. Disconnect, dismissal, transfer, or an ordinary
+root stop/failure withdraw undelivered coordination messages and questions without
+a linked answer. Both sides receive notice; already delivered directions remain
+in context. Message and link history remain in the audit record. An offline leader
+keeps its links; a terminal leader ends them.
 
 ### What happens underneath
 

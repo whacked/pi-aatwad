@@ -139,3 +139,46 @@ Heartbeat results predating a local selection cannot overwrite that selection. T
 projections distinguish the actual model from pending launch settings; successful
 selection also updates the current session model. No additional schema migration is
 needed. Pi owns transcript conversion, context management and automatic compaction.
+
+
+## Reporting relationships between team leaders (v0.1.6)
+
+Migration 004 adds `team_reporting_settings`, temporal `team_reporting_links`, and
+`team_reporting_messages`. Links use generic `child_run_id` and `parent_run_id`
+fields. Any active root can be a child, parent, or both; there is no role flag or
+mode to enable. Links are separate from `reporting_edges`: each run keeps its own
+root, reservations, grants and execution hierarchy. A partial unique index permits
+one active reporting parent per team. Cycle and nonterminal-root checks run inside
+the same transaction. Connecting leaders does not attach or replace sessions.
+
+`GET /runs/:id/reporting?history=1` and `POST /runs/:id/reporting` are available to
+the run root or operator. Mutations accept `action` (`connect`, `disconnect`,
+`dismiss`, `transfer`, `wake`), optional `parent_run_id`, `wake_on_message`, and
+`reason`. Existing idempotency and generation fencing apply. Disconnect closes
+only the caller's parent link; dismiss closes all incident reporting links without
+cancelling agents, processes or tasks. Transfer atomically moves all incoming
+reporting links to another ordinary root and preserves the caller's parent link.
+Stopping a team continues to use the existing lifecycle operation.
+
+Cross-run `POST /messages` requires an active link between the exact source and
+destination roots and permits only `question`, `answer`, and `task.progress`.
+Message `run_id` is the recipient's run; payload routing metadata is assigned by
+the controller. The sender's run gets `message.sent`, and the recipient's run gets
+`reporting.message_received`. Links and transitions emit events to both runs.
+Closing a link marks unacknowledged deliveries and unanswered questions withdrawn;
+answers identify questions through `causation_id` or `correlation_id`. Withdrawal
+notices refer to message IDs so already injected requests can be reconciled. No
+transcript entries are deleted. Terminal-root cleanup also closes links on
+cancellation, retirement or failure through other controller paths.
+
+`/me` includes current reporting state for roots. Its bounded prompt section lists
+linked leader IDs and reporting responsibilities. Connection notices carry up to
+30 open tasks, 30 active members, and five recent task progress/completion events;
+they ask for an initial narrative report. Transfer copies up to 30 recent messages
+per link as reference history plus a fresh team snapshot. Consolidated narratives
+live in ordinary Pi conversations; reports and links persist independently in SQLite.
+
+Wake-on-message is an explicit, persisted per-root option, defaulting off. Heartbeat
+returns `reporting_wake`; the extension starts a turn only when idle and controller
+desired state is RUNNING. Paused roots only queue context. Root processes are never
+spawned by this feature. Closing a terminal preserves links and queues reports.

@@ -16,7 +16,7 @@ import { createApiServer } from "./server.ts";
 import { Reconciler } from "./reconciler.ts";
 import { liveWorkerCount, pendingSpawnCount } from "./queries.ts";
 
-/** Number of migrations this controller applies (db/001..003) = protocol SCHEMA_VERSION. */
+/** Number of migrations this controller applies (db/001..004) = protocol SCHEMA_VERSION. */
 export const CONTROLLER_SCHEMA_VERSION = SCHEMA_VERSION;
 const CONTROLLER_LEASE_MS = 30_000;
 

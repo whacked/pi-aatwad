@@ -9,6 +9,7 @@ import { assertWithinEnvelopes, rebuildReservations, recomputeAllocations, relea
 import { postMessage } from "./messaging.ts";
 import { revokeAgentCredentials } from "./auth.ts";
 import { defaultReviewer, liveManager } from "./governance.ts";
+import { closeReportingForRun } from "./reporting.ts";
 
 function senderFor(db: DB, p: Principal, runId: string): string {
 	return p.kind === "agent" ? p.actor_id : (getRun(db, runId).root_agent_id as string);
@@ -189,6 +190,7 @@ export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string
 	const ts = nowIso();
 	run(db, "UPDATE agents SET status = ?, desired_state = 'RETIRED', observed_state = CASE WHEN ? = 'FAILED' THEN 'FAILED' ELSE 'STOPPED' END, lease_until = NULL WHERE id = ?", status, status, agentId);
 	if (status === "CANCELLED") run(db, "UPDATE runs SET status = 'CANCELLED' WHERE root_agent_id = ?", agentId);
+	if (getRun(db, a.run_id).root_agent_id === agentId) closeReportingForRun(db, a.run_id, actor, reason);
 	revokeAgentCredentials(db, agentId, status.toLowerCase());
 	const procs = all(db, "SELECT pid, process_started_at FROM sessions WHERE agent_id = ? AND status IN ('REQUESTED','STARTING','LIVE','LOST') AND pid IS NOT NULL", agentId);
 	run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE agent_id = ? AND status IN ('REQUESTED','STARTING','LIVE','LOST')", ts, agentId);

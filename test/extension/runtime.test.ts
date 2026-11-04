@@ -457,3 +457,26 @@ test("model requests wait while busy; direct selections supersede stale heartbea
 		assert.deepEqual(selected, ["leader-choice"]);
 	} finally { rt.stop(); cleanup(); }
 });
+
+test("root inbox turns require explicit wake setting and a RUNNING desired state", async () => {
+ for (const desired of ["RUNNING", "PAUSED"]) {
+  __resetProcessStateForTests();
+  const { paths, cleanup } = makeState();
+  const m = await startMock(paths, { operatorToken: "op" });
+  m.route("POST", "/runs/run1/attach", () => ({ body: { run_id: "run1", agent_id: "ag-r", session_id: "s", token: "rt" } }));
+  m.route("GET", "/me", () => ({ body: me({ agent_id: "ag-r", role: "root" }) }));
+  m.route("POST", "/sessions/heartbeat", () => ({ body: { lease_until: "x", inbox_pending: 1, desired_state: desired, reporting_wake: true } }));
+  m.route("GET", "/inbox", () => ({ body: { messages: [env1(`wake-${desired}`)] } }));
+  m.route("POST", /ack$/, () => ({ body: { acked: true } }));
+  const pi = fakePi();
+  pi.appendEntry(IDENTITY_ENTRY, { version: 1, run_id: "run1", agent_id: "ag-r", pi_session_id: "pis-wake", managed: false });
+  const rt = new TeamRuntime(pi as any, { paths, env: {}, heartbeatMs: 60_000 });
+  try {
+   await rt.start(fakeCtx(pi, "pis-wake"));
+   await waitFor(() => pi.sent.length === 1, 3_000, "root inbox delivery");
+   assert.deepEqual(pi.sent[0].options, desired === "RUNNING" ? { triggerTurn: true } : { deliverAs: "nextTurn" });
+   await rt.heartbeat();
+   assert.equal(pi.sent.length, 1, "message dedupe survives subsequent heartbeats");
+  } finally { rt.stop(); await m.close(); cleanup(); }
+ }
+});

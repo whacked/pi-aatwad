@@ -15,6 +15,8 @@ import {
 	SCHEMA_VERSION,
 } from "./protocol.ts";
 import type {
+	ReportingRequest,
+	ReportingStatus,
 	ApiError,
 	AttachRequest,
 	AttachResponse,
@@ -528,6 +530,12 @@ export class TeamClient {
 	}
 	shutdown(force: boolean, o: CallOptions): Promise<{ stopping: true }> {
 		return this.post("/controller/shutdown", { force }, o);
+	}
+	reporting(runId: string, history = false, o?: CallOptions): Promise<ReportingStatus> {
+		return this.get(`/runs/${enc(runId)}/reporting${history ? "?history=1" : ""}`, o);
+	}
+	setReporting(runId: string, req: ReportingRequest, o?: CallOptions): Promise<ReportingStatus> {
+		return this.post(`/runs/${enc(runId)}/reporting`, req, o);
 	}
 	// enrollment (no bearer)
 	enroll(req: EnrollRequest, o: CallOptions = {}): Promise<EnrollResponse> {

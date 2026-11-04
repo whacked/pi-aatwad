@@ -7,6 +7,7 @@ import type { Ctx, Principal } from "./context.ts";
 import type { AckResponse, Envelope, MessageType, SendMessageResponse, InboxResponse, DelegateTaskResponse, TaskCompleteResponse, TaskProgressResponse } from "../shared/protocol.ts";
 import { assertSchema, obj, str, oneOf, onlyKeys } from "./validate.ts";
 import { getAgent, getCurrentManager, getSubtree, isTerminal, runConfig } from "./queries.ts";
+import { coordinationLink } from "./reporting.ts";
 
 export interface PostMessage {
 	run_id: string;
@@ -54,23 +55,30 @@ export function sendMessage(ctx: Ctx, p: Principal, body: unknown): SendMessageR
 	const env: Record<string, unknown> = { ...rest, version: 1, message_id: newId("msg"), run_id: a.run_id, from: a.actor_id };
 	assertSchema("envelope", env);
 	const to = getAgent(ctx.db, env.to as string);
-	if (to.run_id !== a.run_id) fail("FORBIDDEN", "recipient is in a different run");
+	const crossRun = to.run_id !== a.run_id;
+	const link = crossRun ? coordinationLink(ctx.db, a.actor_id, to.id) : undefined;
+	if (crossRun && !link) fail("FORBIDDEN", "recipient is in a different run without an active reporting link between roots");
+	if (crossRun && !["question", "answer", "task.progress"].includes(env.type as string)) fail("FORBIDDEN", "cross-team coordination permits question, answer and task.progress only");
 	const mgr = getCurrentManager(ctx.db, a.actor_id);
 	const isPeer = mgr !== null && to.id !== a.actor_id && getCurrentManager(ctx.db, to.id) === mgr;
 	const allowed = to.id === a.actor_id || mgr === to.id || isPeer || getSubtree(ctx.db, a.actor_id).includes(to.id);
-	if (!allowed) fail("FORBIDDEN", "recipient must be your manager, a peer (same manager), or within your subtree");
+	if (!crossRun && !allowed) fail("FORBIDDEN", "recipient must be your manager, a peer (same manager), or within your subtree");
 	if (isTerminal(to.status)) fail("CONFLICT", `recipient is ${to.status}`);
 	const id = postMessage(ctx.db, {
-		run_id: a.run_id,
+		run_id: to.run_id,
 		from: a.actor_id,
 		to: to.id,
 		type: env.type as MessageType,
-		payload: env.payload as Record<string, unknown>,
+		payload: link ? { ...(env.payload as Record<string, unknown>), reporting_link_id: link.id, sender_run_id: a.run_id } : env.payload as Record<string, unknown>,
 		correlation_id: env.correlation_id as string | undefined,
 		causation_id: env.causation_id as string | undefined,
 		deadline: env.deadline as string | undefined,
 		message_id: env.message_id as string,
 	});
+	if (link) {
+		run(ctx.db, "INSERT INTO team_reporting_messages(message_id, link_id) VALUES (?,?)", id, link.id);
+		emit(ctx.db, { run_id: to.run_id, actor_id: a.actor_id, type: "reporting.message_received", entity_id: id, payload: { from: a.actor_id, link_id: link.id } });
+	}
 	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "message.sent", entity_id: id, payload: { to: to.id, type: env.type } });
 	return { message_id: id };
 }

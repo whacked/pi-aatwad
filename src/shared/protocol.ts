@@ -4,7 +4,7 @@
 
 export const PROTOCOL_VERSION = 1;
 /** Number of applied SQL migrations (db/001, db/002, ...). */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 // ---------------------------------------------------------------------------
 // Transport
@@ -290,6 +290,8 @@ export interface RunListResponse {
 	runs: RunSummary[];
 }
 export interface RunSummary {
+	reports_to_run_id?: string | null;
+	reporting_teams?: number;
 	root_status?: AgentStatus;
 	active_members?: number;
 	live_members?: number;
@@ -346,6 +348,7 @@ export interface HeartbeatRequest {
 }
 export interface ModelChange { request_id: string; provider: string; model: string }
 export interface HeartbeatResponse {
+	reporting_wake?: boolean;
 	model_change?: ModelChange;
 	lease_until: string;
 	inbox_pending: number;
@@ -354,6 +357,7 @@ export interface HeartbeatResponse {
 
 /** GET /me (agent) - who am I + effective org context (bounded, fresh from SQLite). */
 export interface OrgContext {
+	reporting?: ReportingStatus;
 	run_id: string;
 	agent_id: string;
 	session_id: string;
@@ -370,6 +374,29 @@ export interface OrgContext {
 	inbox_pending: number;
 	desired_state: DesiredState;
 	topology_version: number;
+}
+
+export interface ReportingLink {
+	id: string;
+	child_run_id: string;
+	child_agent_id: string;
+	parent_run_id: string;
+	parent_agent_id: string;
+	created_at: string;
+	closed_at: string | null;
+	close_reason: string | null;
+}
+export interface ReportingStatus {
+	run_id: string;
+	wake_on_message: boolean;
+	links: ReportingLink[];
+}
+export interface ReportingRequest {
+	action: "connect" | "disconnect" | "dismiss" | "transfer" | "wake";
+	/** Receiving leader's run ID for connect/transfer. */
+	parent_run_id?: string;
+	wake_on_message?: boolean;
+	reason?: string;
 }
 
 export interface TreeNode {
