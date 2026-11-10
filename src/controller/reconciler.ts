@@ -11,7 +11,7 @@ import { getAgent, getAncestry, getSubtree, isTerminal, runConfig, TERMINAL_SQL 
 import { tree, newSessionAttempt } from "./runs.ts";
 import { prepareWorkspace } from "../executor/workspace.ts";
 import { assertLeaseHeld, FencedError } from "./fence.ts";
-import { terminateAgent } from "./topology.ts";
+import { reconcileRootRunStatus, terminateAgent } from "./topology.ts";
 import { postMessage, releaseExpiredClaims } from "./messaging.ts";
 
 export class Reconciler {
@@ -525,6 +525,11 @@ export class Reconciler {
 	}
 
 	async recoverOnStartup(): Promise<void> {
+		this.wtx(() => {
+			for (const r of all(this.ctx.db, "SELECT root_agent_id FROM runs WHERE root_agent_id IS NOT NULL")) {
+				reconcileRootRunStatus(this.ctx.db, r.root_agent_id, "controller", "startup reconciliation");
+			}
+		});
 		await this.recoverUncertain(true);
 		await this.recoverLiveSessions();
 	}

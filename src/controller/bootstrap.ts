@@ -262,7 +262,10 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 		epoch: () => epoch,
 		t,
 		kick: () => setImmediate(() => reconciler?.kick()),
-		stopProcess: (pid, st) => opts.executor.stop({ pid, process_started_at: st }),
+		stopProcess: async (pid, st) => {
+			const identity = { pid, process_started_at: st };
+			if (await opts.executor.probe(identity) === "alive") await opts.executor.stop(identity);
+		},
 	};
 	reconciler = new Reconciler(ctx, opts.executor);
 	reconciler.isLeader = () => {

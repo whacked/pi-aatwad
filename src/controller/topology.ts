@@ -182,18 +182,29 @@ function adoptLiveChildren(ctx: Ctx, dead: Row, actor: string, reason: string): 
 	emit(db, { run_id: dead.run_id, actor_id: actor, type: "agent.children_adopted", entity_id: dead.id, payload: { adopter, children, topology_version: v } });
 }
 
+/** Synchronize persisted run history with a terminal root, without rewriting history on retries. */
+export function reconcileRootRunStatus(db: DB, agentId: string, actor: string, reason: string): void {
+	const a = getAgent(db, agentId);
+	if (!isTerminal(a.status)) return;
+	const status = a.status === "RETIRED" ? "COMPLETED" : a.status;
+	if (run(db, "UPDATE runs SET status = ? WHERE root_agent_id = ? AND status <> ?", status, agentId, status)) {
+		emit(db, { run_id: a.run_id, actor_id: actor, type: "run.status_changed", entity_id: a.run_id, payload: { status, root_agent_id: agentId, reason } });
+	}
+}
+
 /** Terminal transition for one agent: revoke credentials, stop processes (after commit), release reservations, keep consumed_usd. */
 export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string, status: "RETIRED" | "CANCELLED" | "FAILED", actor: string, reason: string): void {
 	const db = ctx.db;
 	const a = getAgent(db, agentId);
-	if (isTerminal(a.status)) return;
+	const wasTerminal = isTerminal(a.status);
+	if (wasTerminal) status = a.status;
 	const ts = nowIso();
 	run(db, "UPDATE agents SET status = ?, desired_state = 'RETIRED', observed_state = CASE WHEN ? = 'FAILED' THEN 'FAILED' ELSE 'STOPPED' END, lease_until = NULL WHERE id = ?", status, status, agentId);
-	if (status === "CANCELLED") run(db, "UPDATE runs SET status = 'CANCELLED' WHERE root_agent_id = ?", agentId);
+	reconcileRootRunStatus(db, agentId, actor, reason);
 	if (getRun(db, a.run_id).root_agent_id === agentId) closeReportingForRun(db, a.run_id, actor, reason);
 	revokeAgentCredentials(db, agentId, status.toLowerCase());
-	const procs = all(db, "SELECT pid, process_started_at FROM sessions WHERE agent_id = ? AND status IN ('REQUESTED','STARTING','LIVE','LOST') AND pid IS NOT NULL", agentId);
-	run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE agent_id = ? AND status IN ('REQUESTED','STARTING','LIVE','LOST')", ts, agentId);
+	const procs = all(db, "SELECT pid, process_started_at FROM sessions WHERE agent_id = ? AND pid IS NOT NULL", agentId);
+	run(db, "UPDATE sessions SET status = CASE WHEN status IN ('REQUESTED','STARTING','LIVE','LOST') THEN 'STOPPED' ELSE status END, ended_at = COALESCE(ended_at, ?) WHERE agent_id = ? AND (status IN ('REQUESTED','STARTING','LIVE','LOST') OR ended_at IS NULL)", ts, agentId);
 	run(db, "UPDATE spawn_intents SET status = 'CANCELLED', updated_at = ? WHERE agent_id = ? AND status NOT IN ('CANCELLED','FAILED')", ts, agentId);
 	releaseReservations(db, agentId);
 	run(db, "UPDATE tasks SET status = 'CANCELLED', updated_at = ? WHERE owner_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS','BLOCKED')", ts, agentId);
@@ -218,7 +229,7 @@ export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string
 		emit(db, { run_id: a.run_id, actor_id: actor, type: "proposal.rerouted", entity_id: pr.id, payload: { stale_reviewer: agentId, new_reviewer: fresh, status: escalated ? "ESCALATED" : "PENDING", reason: `reviewer ${status.toLowerCase()}` } });
 		if (fresh && fresh !== pr.requester_id) postMessage(db, { run_id: a.run_id, from: pr.requester_id, to: fresh, type: "team.expand.request", payload: { proposal_id: pr.id, rerouted: true }, correlation_id: pr.id });
 	}
-	emit(db, { run_id: a.run_id, actor_id: actor, type: "agent.terminated", entity_id: agentId, payload: { status, reason, consumed_usd: get(db, "SELECT consumed_usd FROM allocations WHERE agent_id = ?", agentId)?.consumed_usd ?? 0 } });
+	if (!wasTerminal) emit(db, { run_id: a.run_id, actor_id: actor, type: "agent.terminated", entity_id: agentId, payload: { status, reason, consumed_usd: get(db, "SELECT consumed_usd FROM allocations WHERE agent_id = ?", agentId)?.consumed_usd ?? 0 } });
 	for (const pr of procs) {
 		const stop = () => ctx.stopProcess(pr.pid, pr.process_started_at ?? "").catch((e) => ctx.log("warn", "stop failed", { agent_id: agentId, pid: pr.pid, err: String(e) }));
 		if (scope) scope.after(stop);
@@ -236,15 +247,11 @@ export function lifecycle(ctx: Ctx, p: Principal, scope: ReqScope, agentId: stri
 	const cpol = oneOf(b, "children_policy", ["cascade", "transfer_children_to", "pause_subtree"] as const, { optional: true });
 	const subject = getAgent(db, agentId);
 	assertManages(db, p, subject);
-	if (action === "cancel" && subject.status === "CANCELLED") {
-		return { agent_id: agentId, status: subject.status, desired_state: subject.desired_state, affected_agent_ids: [] };
-	}
-	if (isTerminal(subject.status)) fail("CONFLICT", `agent is already ${subject.status}`);
+	if (isTerminal(subject.status) && !(action === "cancel" && subject.status === "CANCELLED")) fail("CONFLICT", `agent is already ${subject.status}`);
 	const runId = subject.run_id as string;
 	const from = senderFor(db, p, runId);
-	const liveDescendants = getSubtree(db, agentId)
-		.slice(1)
-		.filter((id) => !isTerminal(getAgent(db, id).status));
+	const descendants = getSubtree(db, agentId).slice(1);
+	const liveDescendants = descendants.filter((id) => !isTerminal(getAgent(db, id).status));
 	const affected: string[] = [];
 	const notify = (to: string, extra: Record<string, unknown> = {}) => postMessage(db, { run_id: runId, from, to, type: "agent.lifecycle", payload: { action, agent_id: to, reason, ...extra } });
 
@@ -312,12 +319,16 @@ export function lifecycle(ctx: Ctx, p: Principal, scope: ReqScope, agentId: stri
 				for (const c of children) postMessage(db, { run_id: runId, from, to: c, type: "system.notice", payload: { kind: "reparented", old_parent_id: agentId, new_parent_id: x.id, reason } });
 			}
 		}
+		// Include terminal descendants: interrupted shutdowns may leave sessions, spawns or reservations.
+		if (cpol === "cascade") targets = [...descendants.reverse(), agentId];
 		for (const t of targets) {
-			notify(t);
+			const terminal = isTerminal(getAgent(db, t).status);
+			if (!terminal) notify(t);
 			terminateAgent(ctx, scope, t, final as "RETIRED" | "CANCELLED", p.actor_id, reason);
-			affected.push(t);
+			if (!terminal) affected.push(t);
 		}
 	}
+	if (!affected.length) return { agent_id: agentId, status: subject.status, desired_state: "RETIRED", affected_agent_ids: [] };
 	const mgr = getCurrentManager(db, agentId);
 	if (mgr && mgr !== from) postMessage(db, { run_id: runId, from, to: mgr, type: "agent.lifecycle", payload: { action, agent_id: agentId, reason } });
 	emit(db, { run_id: runId, actor_id: p.actor_id, type: "agent.lifecycle", entity_id: agentId, payload: { action, reason, children_policy: cpol ?? null, affected_agent_ids: affected } });

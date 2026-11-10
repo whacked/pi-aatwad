@@ -215,3 +215,18 @@ outer tmux markers in Herdr; explicit watch opens a separate tmux session and do
 not change the Herdr pane or switch its outer client. Environment tests cover
 missing tmux, plain SSH, inherited markers, Herdr, headless opt-out, live mode
 changes, saved-terminal fallback, process launch without tmux and missing Pi.
+
+## Cancellation recovery (v0.1.8)
+
+Root termination persists the corresponding terminal run status and emits a
+`run.status_changed` event in the same transaction. Startup reconciles historical
+run rows with terminal roots, preserving agent history (`RETIRED` roots map to
+`COMPLETED` runs).
+
+Repeated cancellation remains authorized and returns an empty affected-agent list
+when no agent changes status. Cascade cancellation also revisits terminal agents
+to release leftover reservations, cancel pending work, revoke credentials and end
+active sessions. After commit, recorded process identities are probed and any
+surviving managed processes are stopped, including those in already-stopped
+sessions. Retries preserve session end times and avoid duplicate termination
+events or budget settlement. Attach and resume still reject terminal agents.
