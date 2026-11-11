@@ -13,7 +13,15 @@ import { TmuxWatch } from "../../src/watch/tmux.ts";
 
 const available = spawnSync("tmux", ["-V"]).status === 0 && spawnSync("pi", ["--version"]).status === 0;
 for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "dedicated"} panes support names, input, close and replacement`, { skip: !available, timeout: 60000 }, async () => {
-	const fake = await startFakeOpenAI(() => ({ text: "INTERACTIVE-ANSWER" }));
+	const completed = new Set<string>();
+	const fake = await startFakeOpenAI((req) => {
+		const task = req.messages.map((m) => m.text).join("\n").match(/Your assigned task id: ([^.\s]+)\./)?.[1];
+		if (task && !completed.has(task)) {
+			completed.add(task);
+			return { tool_calls: [{ name: "team_complete_task", arguments: { task_id: task, summary: "Work finished; waiting for another assignment" } }] };
+		}
+		return { text: "INTERACTIVE-ANSWER" };
+	});
 	const oldDir = process.env.PI_CODING_AGENT_DIR;
 	const oldOffline = process.env.PI_OFFLINE;
 	const hs = await harness({ executor: new PiExecutor() as any });
@@ -32,7 +40,7 @@ for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "ded
 		} else await view.open();
 		const enabled = await hs.call("POST", `/runs/${run_id}/terminal`, { token, body: { socket: view.opts.socket, location: view.opts.location } });
 		assert.equal(enabled.status, 200);
-		const created = await hs.call("POST", "/members", { token, body: { name: "Adjudicator", responsibility: "Review the proposed changes and remain available", preferred_model_id: "interactive", max_runtime_seconds: 120 } });
+		const created = await hs.call("POST", "/members", { token, body: { name: "Adjudicator", responsibility: "Review the proposed changes and remain available", preferred_model_id: "interactive" } });
 		assert.equal(created.status, 200, JSON.stringify(created.body));
 		const id = created.body.spawned_agent_ids[0];
 		await waitFor(() => sql(hs, "SELECT observed_state FROM agents WHERE id = ?", id)[0]?.observed_state === "LIVE", "interactive enrollment", 15000);
@@ -45,6 +53,11 @@ for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "ded
 		assert.equal((await view.tmux("list-sessions", "-F", "#{session_name}")).trim(), inPlace ? "existing-session" : view.name);
 		const capture = () => view!.tmux("capture-pane", "-p", "-t", pane.id);
 		await waitFor(async () => (await capture()).includes("INTERACTIVE-ANSWER"), "visible Pi answer", 15000);
+		await waitFor(() => sql(hs, "SELECT status FROM tasks WHERE owner_id=?", id)[0]?.status === "DONE", "worker really completes its assigned task");
+		// Simulate more idle time than the removed 600/3600s defaults without waiting an hour.
+		hs.h.db.prepare("UPDATE sessions SET started_at=? WHERE id=?").run(new Date(Date.now() - 7200_000).toISOString(), session.id);
+		await hs.h.reconciler.enforceDeadlines();
+		assert.equal((await view.panes()).find((p) => p.agent === id)?.dead, false, "completion leaves a live Pi prompt");
 		assert.equal(Number(await view.tmux("display-message", "-p", "-t", pane.id, "#{pane_pid}")), session.pid);
 		assert.equal(execFileSync("ps", ["-o", "pgid=", "-p", String(session.pid)], { encoding: "utf8" }).trim(), String(session.pid));
 		await waitFor(async () => (await view!.tmux("display-message", "-p", "-t", pane.id, "#{pane_title}")).includes("Adjudicator"), "member pane uses assigned name", 5000);
@@ -74,8 +87,15 @@ for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "ded
 		assert.equal(sql(hs, "SELECT COUNT(*) n FROM sessions WHERE agent_id=?", id)[0].n, 1);
 		assert.equal(await hs.ex.probe({ pid: session.pid, process_started_at: session.process_started_at }), "alive");
 		assert.equal(existsSync(join(hs.dir, "enroll", `${session.spawn_intent_id}.1.json.terminal.sh`)), false);
+		// Unexpected death must be noticed and repaired, not left as a dead pane.
+		process.kill(session.pid, "SIGTERM");
+		await waitFor(() => sql(hs, "SELECT id FROM messages WHERE json_extract(payload_json,\'$.kind\')=\'worker_exited\' AND json_extract(payload_json,\'$.agent_id\')=?", id).length > 0, "leader receives worker death notice", 15000);
+		await waitFor(() => sql(hs, "SELECT s.pid FROM sessions s JOIN agents a ON a.current_session_id=s.id WHERE a.id=? AND a.observed_state=\'LIVE\'", id)[0]?.pid !== undefined && sql(hs, "SELECT s.pid FROM sessions s JOIN agents a ON a.current_session_id=s.id WHERE a.id=?", id)[0].pid !== session.pid, "worker respawned on saved transcript", 15000);
+		await hs.call("POST", "/messages", { token, body: { to: id, type: "question", payload: { text: "AFTER-CRASH-FOLLOWUP" } } });
+		await waitFor(() => fake.requests.some((r) => r.messages.some((m) => m.text.includes("AFTER-CRASH-FOLLOWUP")) && r.messages.some((m) => m.text.includes("LEADER-FOLLOWUP"))), "restarted worker is communicable and retains transcript", 20000);
+		const liveSession = sql(hs, "SELECT s.* FROM sessions s JOIN agents a ON a.current_session_id=s.id WHERE a.id=?", id)[0];
 		await view.close();
-		assert.equal(await hs.ex.probe({ pid: session.pid, process_started_at: session.process_started_at }), "alive", "detach keeps Pi alive");
+		assert.equal(await hs.ex.probe({ pid: liveSession.pid, process_started_at: liveSession.process_started_at }), "alive", "detach keeps Pi alive");
 		const tools = new Map<string, any>();
 		const rootClient = new TeamClient({ paths: statePaths(hs.dir), token: () => token, noReconnect: true });
 		const runtime = { identity: { agent_id: "root", run_id }, client: rootClient, agentCall: (fn: () => unknown) => fn() };

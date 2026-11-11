@@ -297,7 +297,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_create_member", "Team: create member",
-		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. Bounded-mode defaults: $2 and 600 seconds. Under human operator unlimited policy, no numeric spend/runtime/recruitment caps are enforced and no finite allocations are needed. Subordinate managers use team_request_expansion instead.",
+		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. Bounded-mode defaults: $2 with no implicit per-agent time limit. Under human operator unlimited policy, no numeric spend/runtime/recruitment caps are enforced and no finite allocations are needed. Subordinate managers use team_request_expansion instead.",
 		Type.Object({
 			name: Type.Optional(Type.String({ description: "Optional friendly member name; defaults to Alpha, Beta, etc." })), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
 			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),

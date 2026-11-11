@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.8, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.9, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -207,7 +207,7 @@ Implement the feature described below. Create whatever team you need.
 
 The leader decides useful roles and creates members using its initial model.
 It may briefly offer alternatives discovered from Pi without requiring model
-selection before work starts. In bounded mode, default member limits are $2 and 600 seconds. In operator
+selection before work starts. In bounded mode, default member limits are $2 with no implicit per-agent time limit. In operator
 unlimited mode, no finite allocations or runtime caps are needed.
 
 To specify a member and model directly:

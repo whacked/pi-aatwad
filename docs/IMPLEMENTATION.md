@@ -230,3 +230,37 @@ active sessions. After commit, recorded process identities are probed and any
 surviving managed processes are stopped, including those in already-stopped
 sessions. Retries preserve session end times and avoid duplicate termination
 events or budget settlement. Attach and resume still reject terminal agents.
+
+## Worker lifetime and process-loss notices (v0.1.9)
+
+Task completion is not worker termination. Interactive members keep their Pi
+prompt and remain reachable until their manager or the human closes them.
+Bootstrap, resume and per-turn org context explicitly tell members not to exit,
+kill their pane or retire themselves after completing work. The lifecycle API
+already requires a strict ancestor (or operator), so workers cannot retire themselves.
+
+New runs default `limits.max_agent_seconds` to 0 (disabled), and direct recruitment
+no longer supplies an implicit 600-second runtime. Positive, explicitly configured
+role/proposal runtime and global per-agent session limits still apply; when both
+are set, the child envelope uses the smallest positive cap. No clock resetting or
+idle grace weakens an explicit deadline. The run-wide deadline and spend caps are
+unchanged. Persisted runs and allocations keep their existing configuration;
+these new defaults do not silently erase an old or explicitly requested limit.
+
+Terminal process exits, missed heartbeat leases and missing processes discovered
+at controller startup send durable `system.notice` messages to the manager.
+Restart scheduling sends `worker_restart_scheduled` (not a claim that launch has
+succeeded); launch failure and exhausted retries retain their failure notices.
+Budget exhaustion also notifies the manager, but does not kill the Pi process.
+Deadline notices identify the controller stop, configured limit and resulting
+PAUSED/FAILED state. Leaders are instructed to refresh their tree and understanding
+when receiving lifecycle notices. Normal inbox turn/wake policy is unchanged;
+notices persist even when the leader is busy or not auto-waking.
+
+Tmux uses `remain-on-exit` to retain process output, so a dead pane is a process
+exit, not evidence that its task was completed. The controller owns recovery of
+unexpected terminal exits, using the saved transcript and agent identity. Normal
+detached one-shot exits remain quiet (they settle after each prompt by design).
+Regression tests use both stub processes and real Pi in dedicated/in-place tmux:
+complete the actual task, age its session past the former default limits, send
+more work, deliberately kill it, observe a notice, and verify resumed communication.

@@ -10,7 +10,8 @@ export const DEFAULT_LIMITS: GlobalLimits = {
 	emergency_max_depth: 12,
 	max_run_usd: 25,
 	max_run_seconds: 14400,
-	max_agent_seconds: 3600,
+	// No implicit worker lifetime limit. Positive values are explicit opt-in caps.
+	max_agent_seconds: 0,
 	allow_providers: ["anthropic", "openrouter", "local"],
 };
 
@@ -91,10 +92,11 @@ function normalizeModel(m: Partial<ModelCatalogEntry>): ModelCatalogEntry {
 
 /** Envelope for a newly approved child. It holds no subtree capacity until a later approval grants it. */
 export function childEnvelope(role: ExpansionRole, parent: Envelope_Limits, limits: GlobalLimits): Envelope_Limits {
+	const timeCaps = [role.max_runtime_seconds, limits.max_agent_seconds].filter((n): n is number => typeof n === "number" && n > 0);
 	return {
 		max_subtree_slots: 0,
 		max_subtree_usd: 0,
-		max_session_seconds: Math.min(role.max_runtime_seconds ?? limits.max_agent_seconds, limits.max_agent_seconds),
+		max_session_seconds: timeCaps.length ? Math.min(...timeCaps) : 0,
 		max_grant_slots: 2,
 		max_grant_usd: role.max_cost_usd,
 		allowed_providers: [...parent.allowed_providers],

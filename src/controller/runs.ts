@@ -252,6 +252,10 @@ export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportR
 		run(db, "UPDATE agents SET desired_state = 'PAUSED', status = CASE WHEN status = 'RUNNING' THEN 'PAUSED' ELSE status END WHERE id = ?", a.actor_id);
 		emit(db, { run_id: a.run_id, actor_id: "controller", type: "budget.exhausted", entity_id: a.actor_id, payload: { consumed_usd: consumed, budget_usd: own } });
 		postMessage(db, { run_id: a.run_id, from: getCurrentManager(db, a.actor_id) ?? a.actor_id, to: a.actor_id, type: "agent.lifecycle", payload: { action: "pause", agent_id: a.actor_id, reason: "budget exhausted" } });
+		const mgr = getCurrentManager(db, a.actor_id);
+		if (mgr) {
+			postMessage(db, { run_id: a.run_id, from: a.actor_id, to: mgr, type: "system.notice", payload: { kind: "budget_paused", agent_id: a.actor_id, consumed_usd: consumed, budget_usd: own, text: `worker paused: budget exhausted ($${consumed} of $${own}). Its process stays up (tmux pane, if any, is unaffected); resume it with team_set_budget (resume: true) or a lifecycle resume.` } });
+		}
 	}
 	return { consumed_usd: consumed, budget_exhausted: exhausted };
 }

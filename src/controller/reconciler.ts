@@ -371,6 +371,10 @@ export class Reconciler {
 				if (!n) return;
 				run(db, "UPDATE sessions SET status = 'LOST' WHERE id = ? AND status = 'LIVE'", a.current_session_id);
 				emit(db, { run_id: a.run_id, actor_id: "controller", type: "agent.lost", entity_id: a.id, payload: { session_id: a.current_session_id, lease_until: a.lease_until } });
+				// The manager must know a worker went silent (its tmux pane, if any, now
+				// shows a stalled worker); the restart decision follows in the same tick.
+				const mgr = getAncestry(db, a.id)[0];
+				if (mgr) postMessage(db, { run_id: a.run_id, from: a.id, to: mgr, type: "system.notice", payload: { kind: "worker_lost", agent_id: a.id, session_id: a.current_session_id, lease_until: a.lease_until, text: "worker missed heartbeats beyond the lease window and is marked LOST. Restart eligibility depends on desired state and remaining retries; check team_get_tree. Paused workers require manager intervention." } });
 				if (a.id === a.root_agent_id && runConfig(db, a.run_id).root_failure_policy === "pause_subtree") {
 					const sub = getSubtree(db, a.id).slice(1);
 					for (const d of sub) run(db, "UPDATE agents SET desired_state = 'PAUSED', status = CASE WHEN status = 'RUNNING' THEN 'PAUSED' ELSE status END WHERE id = ? AND status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED')", d);
@@ -415,6 +419,12 @@ export class Reconciler {
 				run(db, "UPDATE sessions SET status = 'FAILED', ended_at = ? WHERE id = ? AND status IN ('LOST','LIVE')", nowIso(), a.current_session_id);
 				run(db, "UPDATE spawn_intents SET status = 'PENDING', attempts = 0, updated_at = ? WHERE id = ? AND status = 'LIVE'", nowIso(), a.intent_id);
 				emit(db, { run_id: a.run_id, actor_id: "controller", type: "agent.restart_scheduled", entity_id: a.id, payload: { previous_session_id: a.current_session_id, restart_attempt: cur.restart_attempts + 1 } });
+				// In terminal mode the leader can see the pane die, so it should hear
+				// about the respawn too (the pane comes back on the saved transcript).
+				if (runConfig(db, a.run_id).terminal) {
+					const mgr = getAncestry(db, a.id)[0];
+					if (mgr) postMessage(db, { run_id: a.run_id, from: a.id, to: mgr, type: "system.notice", payload: { kind: "worker_restart_scheduled", agent_id: a.id, restart_attempt: cur.restart_attempts + 1, max_restarts: this.ctx.t.maxRestarts, text: `worker restart scheduled (attempt ${cur.restart_attempts + 1} of ${this.ctx.t.maxRestarts}); its tmux pane is respawning on the saved transcript.` } });
+				}
 			});
 		}
 	}
@@ -474,7 +484,7 @@ export class Reconciler {
 				}
 				emit(db, { run_id: r.run_id, actor_id: "controller", type: "agent.deadline_exceeded", entity_id: r.id, payload: { kind, limit_seconds: limit, elapsed_seconds: Math.round(elapsed), policy, tasks, session_id: r.current_session_id } });
 				const mgr = getAncestry(db, r.id)[0];
-				if (mgr) postMessage(db, { run_id: r.run_id, from: r.id, to: mgr, type: "system.notice", payload: { kind: "deadline_exceeded", agent_id: r.id, deadline: kind, limit_seconds: limit, policy, tasks } });
+				if (mgr) postMessage(db, { run_id: r.run_id, from: r.id, to: mgr, type: "system.notice", payload: { kind: "deadline_exceeded", agent_id: r.id, deadline: kind, limit_seconds: limit, policy, tasks, text: `Controller stopped this worker because its configured ${kind} deadline (${limit}s) expired. State: ${policy === "FAILED" ? "FAILED (closed)" : "PAUSED (resume required)"}; its tmux pane, if any, will no longer be live. Task completion alone does not close workers.` } });
 				if (policy === "FAILED") {
 					terminateAgent(this.ctx, null, r.id, "FAILED", "controller", reason); // revokes, stops (async), releases reservations
 					return false;
@@ -495,7 +505,7 @@ export class Reconciler {
 	 */
 	async observeExits(): Promise<void> {
 		const db = this.ctx.db;
-		const rows = all(db, `SELECT a.id, a.run_id, a.current_session_id, s.pid, s.process_started_at FROM agents a JOIN sessions s ON s.id = a.current_session_id WHERE a.observed_state = 'LIVE' AND s.pid IS NOT NULL AND a.status NOT IN ${TERMINAL_SQL}`);
+		const rows = all(db, `SELECT a.id, a.run_id, a.desired_state, a.current_session_id, s.pid, s.process_started_at FROM agents a JOIN sessions s ON s.id = a.current_session_id WHERE a.observed_state = 'LIVE' AND s.pid IS NOT NULL AND a.status NOT IN ${TERMINAL_SQL}`);
 		for (const r of rows) {
 			if ((await this.executor.probe({ pid: r.pid, process_started_at: r.process_started_at ?? "" })) === "alive") continue;
 			this.wtx(() => {
@@ -504,6 +514,14 @@ export class Reconciler {
 				run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = ? WHERE id = ? AND status IN ('LIVE','LOST')", nowIso(), r.current_session_id);
 				run(db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'process exited' WHERE session_id = ? AND revoked_at IS NULL", nowIso(), r.current_session_id);
 				emit(db, { run_id: r.run_id, actor_id: "controller", type: "agent.exited", entity_id: r.id, payload: { session_id: r.current_session_id, pid: r.pid } });
+				// In terminal mode the interactive TUI never exits on its own when idle, so
+				// any process death is a real event the leader must hear about (its tmux
+				// pane is dead). One-shot (non-terminal) workers exit after every turn by
+				// design — notifying on those would be noise.
+				if (runConfig(db, r.run_id).terminal) {
+					const mgr = getAncestry(db, r.id)[0];
+					if (mgr) postMessage(db, { run_id: r.run_id, from: r.id, to: mgr, type: "system.notice", payload: { kind: "worker_exited", agent_id: r.id, desired_state: r.desired_state, session_id: r.current_session_id, pid: r.pid, text: r.desired_state === "RUNNING" ? "worker's process exited — its tmux pane is dead. The controller will evaluate restart eligibility; a subsequent notice reports scheduling or exhausted retries." : "worker's process exited — its tmux pane is dead and the worker is not set to run, so the pane stays closed (check team_get_tree; resume or close the worker)." } });
+				}
 			});
 		}
 	}
@@ -520,6 +538,8 @@ export class Reconciler {
 				if (!n) return;
 				run(db, "UPDATE sessions SET status = 'LOST' WHERE id = ?", r.current_session_id);
 				emit(db, { run_id: r.run_id, actor_id: "controller", type: "agent.lost", entity_id: r.id, payload: { session_id: r.current_session_id, reason: "process not found at controller startup" } });
+				const mgr = getAncestry(db, r.id)[0];
+				if (mgr) postMessage(db, { run_id: r.run_id, from: r.id, to: mgr, type: "system.notice", payload: { kind: "worker_lost", agent_id: r.id, session_id: r.current_session_id, reason: "process not found at controller startup", text: "Worker process was missing when the controller restarted. Check team_get_tree; only RUNNING workers with remaining retries can be restarted." } });
 			});
 		}
 	}
@@ -555,6 +575,7 @@ function resumePrompt(a: Row, spec: { task_id?: string }): string {
 	return [
 		`You are agent ${a.id} ("${a.role}") resuming in a new session; your identity, manager and tasks are unchanged.`,
 		"Refresh your org context, process your inbox (team_get_inbox, ack after handling) and continue your open tasks.",
+		"Completing a task does not end your membership. Remain available for new messages and assignments; do not exit Pi, kill your pane, or retire yourself. Your manager or the human decides when to close you.",
 		spec.task_id ? `Original task id: ${spec.task_id}.` : "",
 	]
 		.filter(Boolean)
@@ -568,6 +589,7 @@ function bootstrapPrompt(a: Row, parentId: string | null, spec: { task_id?: stri
 		spec.responsibility ? `Responsibility: ${spec.responsibility}` : "",
 		spec.task_id ? `Your assigned task id: ${spec.task_id}. Read your inbox (team_get_inbox) for details, report progress, and complete the task with team_complete_task.` : "",
 		"Use the team_* tools for all coordination. Requests for more agents are proposals and may be rejected.",
+		"Completing a task does not end your membership. Remain available for new messages and assignments; do not exit Pi, kill your pane, or retire yourself. Your manager or the human decides when to close you.",
 	]
 		.filter(Boolean)
 		.join("\n");
