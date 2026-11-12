@@ -17,6 +17,7 @@ import { attach, budget, createRun, enroll, events, heartbeat, inspect, listRuns
 import { getRecoveryStatus, isTerminal } from "./queries.ts";
 import { assertLeaseHeld } from "./fence.ts";
 import { changeReporting, readReporting } from "./reporting.ts";
+import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
 
 type Auth = "none" | "any" | "operator" | "agent";
 type Handler = (a: { p: Principal; scope: ReqScope; params: string[]; body: unknown; q: URLSearchParams }) => unknown;
@@ -48,6 +49,10 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("GET", "/runs/:id/reporting", "any", ({ p, params, q }) => readReporting(ctx, p, params[0], q.get("history") === "1")),
 		R("POST", "/runs/:id/reporting", "any", ({ p, params, body }) => changeReporting(ctx, p, params[0], body)),
 		R("POST", "/runs/:id/attach", "operator", ({ p, params, body }) => attach(ctx, p, params[0], body)),
+		R("POST", "/runs/:id/stop", "operator", ({ p, scope, params }) => stopTeam(ctx, p, scope, params[0])),
+		R("POST", "/runs/:id/resume", "operator", ({ p, scope, params }) => resumeTeam(ctx, p, scope, params[0])),
+		R("POST", "/runs/:id/remove", "operator", ({ p, scope, params, body }) => removeTeam(ctx, p, scope, params[0], body)),
+		R("GET", "/runs/:id/lifecycle", "operator", ({ p, params }) => teamLifecycle(ctx, p, params[0])),
 		R("GET", "/runs/:id/admin", "any", ({ p, params }) => adminPolicy(ctx, p, params[0])),
 		R("POST", "/runs/:id/admin", "operator", ({ p, params, body }) => adminPolicy(ctx, p, params[0], body ?? {})),
 		R("GET", "/runs/:id/terminal", "any", ({ p, params }) => terminalMode(ctx, p, params[0])),

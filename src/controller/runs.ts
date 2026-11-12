@@ -26,6 +26,7 @@ import { hashToken, issueSessionToken, revokeAgentCredentials } from "./auth.ts"
 import { getAgent, getAllocation, getAncestry, getChildren, getCurrentManager, getReportingHistory, getRun, getSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
 import { budgetPool, budgetView, ownBudgetUsd } from "./budgets.ts";
 import { inboxPending, postMessage, requireAgent } from "./messaging.ts";
+import { assertAttachable, isRemoved } from "./team-lifecycle.ts";
 
 function requireOperator(p: Principal): void {
 	if (p.kind !== "operator") fail("FORBIDDEN", "operator token required");
@@ -123,7 +124,8 @@ export function listRuns(ctx: Ctx, p: Principal): RunListResponse {
 		(SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id AND a.id <> r.root_agent_id AND a.status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED')) AS active_members,
 		(SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id AND a.id <> r.root_agent_id AND a.status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') AND a.observed_state = 'LIVE' AND a.desired_state = 'RUNNING') AS live_members
 		FROM runs r LEFT JOIN agents root ON root.id = r.root_agent_id ORDER BY r.created_at`);
-	return { runs: rows.map((r) => ({
+	return { runs: rows.filter((r) => !isRemoved(parseJson<RunConfig>(r.config_json, {} as RunConfig))).map((r) => ({
+		...(["STOPPED", "CLEANING"].includes(parseJson<RunConfig>(r.config_json, {} as RunConfig).team_lifecycle?.state ?? "") ? { stopped: true } : {}),
 		reports_to_run_id: get(ctx.db, "SELECT parent_run_id FROM team_reporting_links WHERE child_run_id = ? AND closed_at IS NULL", r.id)?.parent_run_id ?? null,
 		reporting_teams: Number(get(ctx.db, "SELECT COUNT(*) AS n FROM team_reporting_links WHERE parent_run_id = ? AND closed_at IS NULL", r.id)!.n),
 		run_id: r.id, status: r.root_status === "CANCELLED" ? "CANCELLED" : r.status, root_status: r.root_status, active_members: Number(r.active_members), live_members: Number(r.live_members), root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
@@ -136,6 +138,7 @@ export function attach(ctx: Ctx, p: Principal, runId: string, body: unknown): At
 	onlyKeys(b, ["agent_id", "pi_session_id", "pi_session_path", "mode"]);
 	if (b.mode !== undefined && b.mode !== "attach") fail("FORBIDDEN", "only mode=attach is supported in v1 (fork requires approval)");
 	const runRow = getRun(db, runId);
+	assertAttachable(db, runId);
 	const agentId = str(b, "agent_id", { optional: true }) ?? runRow.root_agent_id;
 	const a = getAgent(db, agentId);
 	if (a.run_id !== runId) fail("NOT_FOUND", "agent not in run");

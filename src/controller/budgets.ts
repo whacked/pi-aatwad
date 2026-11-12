@@ -104,11 +104,34 @@ export function raiseEnvelopeFor(db: DB, runId: string, actor: string, agentId: 
 
 /** Effective pool ceiling; explicit legacy budgets use reservation rows at each ancestor. */
 export function ownBudgetUsd(db: DB, agentId: string): number | null {
-	const meta = JSON.parse(get(db, "SELECT metadata_json FROM agents WHERE id=?", agentId)!.metadata_json);
-	if (meta.budget_inherited && meta.budget_pool_id && meta.budget_pool_id !== agentId) return ownBudgetUsd(db, meta.budget_pool_id) ?? meta.own_budget_usd;
-	if (meta.own_budget_usd === null || meta.budget_inherited) return meta.own_budget_usd;
-	const r = get(db, "SELECT usd FROM reservations WHERE beneficiary_id = ? AND state = 'ACTIVE' LIMIT 1", agentId);
-	return r ? Number(r.usd) : meta.own_budget_usd ?? null;
+	const source = get(db, "SELECT run_id FROM agents WHERE id=?", agentId);
+	if (!source) fail("INTERNAL", "budget source agent is missing");
+	const seen = new Set<string>();
+	let id = agentId;
+	for (;;) {
+		if (seen.has(id)) fail("INTERNAL", "cycle detected in budget pools");
+		seen.add(id);
+		const a = get(db, "SELECT metadata_json FROM agents WHERE id=? AND run_id=?", id, source.run_id);
+		if (!a) fail("INTERNAL", "budget pool is missing or belongs to another run");
+		let meta;
+		try { meta = JSON.parse(a.metadata_json); } catch { fail("INTERNAL", "invalid budget pool metadata"); }
+		if (!meta || typeof meta !== "object" || Array.isArray(meta)) fail("INTERNAL", "invalid budget pool metadata");
+		if (meta.budget_inherited && meta.budget_pool_id !== undefined) {
+			if (typeof meta.budget_pool_id !== "string" || !meta.budget_pool_id) fail("INTERNAL", "invalid budget pool reference");
+			id = meta.budget_pool_id;
+			continue;
+		}
+		const usd = meta.own_budget_usd;
+		if (usd !== undefined && usd !== null && (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0)) fail("INTERNAL", "invalid budget pool ceiling");
+		// An explicit null is authoritative, never a reason to revive a child's cached ceiling.
+		if (usd === null) return null;
+		// Roots have no own-budget field: recruitment inherits their current subtree envelope.
+		if (id !== agentId && usd === undefined && meta.root === true) return runConfig(db, source.run_id).operator_unlimited ? null : getAllocation(db, id).limits.max_subtree_usd;
+		if (meta.budget_inherited) return usd ?? null;
+		const r = get(db, "SELECT usd FROM reservations WHERE beneficiary_id = ? AND state = 'ACTIVE' LIMIT 1", id);
+		if (id !== agentId && usd === undefined && !r) fail("INTERNAL", "budget pool ceiling is missing");
+		return r ? Number(r.usd) : usd ?? null;
+	}
 }
 
 /** Pool membership survives topology moves and terminal settlements. Explicit budgets start a new pool. */

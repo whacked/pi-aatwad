@@ -255,6 +255,20 @@ export interface RunConfig {
 	 * agent PAUSED (resumable). "FAILED": process stopped, open tasks FAILED, agent FAILED, reservations released.
 	 */
 	deadline_policy?: DeadlinePolicy;
+	/** Latest whole-team operator operation (stop/resume/remove). Absent: never stopped. */
+	team_lifecycle?: TeamLifecycleState;
+}
+/** Persisted with the run; `suspended` and `pending` are controller-internal. */
+export interface TeamLifecycleState {
+	operation_id: string;
+	kind: "stop" | "remove";
+	state: "CLEANING" | "STOPPED" | "REMOVED" | "RESUMED";
+	at: string;
+	error?: string;
+	/** Members whose desired state was RUNNING when the team was stopped. */
+	suspended?: string[];
+	/** Owned worker processes still to be stopped. */
+	pending?: { pid: number; process_started_at: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +313,8 @@ export interface RunSummary {
 	root_status?: AgentStatus;
 	active_members?: number;
 	live_members?: number;
+	/** Suspended by /team stop; identities and transcripts are kept for /team resume. */
+	stopped?: boolean;
 	run_id: string;
 	status: RunStatus;
 	root_agent_id: string;
@@ -543,6 +559,18 @@ export interface ReparentResponse {
 	old_parent_id: string;
 	new_parent_id: string;
 	topology_version: number;
+}
+
+/** Operator-only whole-team stop/resume/remove and GET /runs/:id/lifecycle. */
+export interface TeamLifecycleResponse {
+	operation_id: string;
+	run_id: string;
+	kind: "stop" | "remove";
+	state: "CLEANING" | "STOPPED" | "REMOVED" | "RESUMED";
+	error?: string;
+}
+export interface RemoveTeamRequest {
+	confirm_run_id: string;
 }
 
 /** POST /agents/:id/lifecycle (manager-in-scope or operator) */

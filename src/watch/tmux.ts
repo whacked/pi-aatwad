@@ -1,4 +1,5 @@
 import { planLayout, encodeLayout, parseLayout, teamRegion, arrangeRegion } from "./layout.ts";
+import { TerminalAllocationError } from "./terminal-error.ts";
 // Pane-scoped groups inside tmux; owned dedicated sessions when launched outside it.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -233,12 +234,12 @@ export class TmuxWatch {
 	}
 	/** Launch a real harness in the same terminal window, replacing a legacy log viewer. */
 	async launchAgent(agent: string, role: string, command: string[], cwd: string): Promise<string> {
-		await this.open();
-		const panes = await this.panes();
-		const dashboard = (panes.find((p) => p.agent === "leader") ?? panes.find((p) => p.agent === "dashboard") ?? panes[0])!;
-		const existing = panes.find((p) => p.agent === agent) ?? panes.find((p) => p.agent === "placeholder");
 		let pane: string | undefined;
 		try {
+			await this.open();
+			const panes = await this.panes();
+			const dashboard = (panes.find((p) => p.agent === "leader") ?? panes.find((p) => p.agent === "dashboard") ?? panes[0])!;
+			const existing = panes.find((p) => p.agent === agent) ?? panes.find((p) => p.agent === "placeholder");
 			if (existing) {
 				pane = existing.id;
 				await this.tmux("respawn-pane", "-k", "-t", pane, "-c", cwd, ...command);
@@ -255,7 +256,7 @@ export class TmuxWatch {
 			return pane;
 		} catch (error) {
 			if (pane) await this.tmux("kill-pane", "-t", pane).catch(() => {});
-			throw error;
+			throw new TerminalAllocationError((error as Error).message, { cause: error });
 		}
 	}
 

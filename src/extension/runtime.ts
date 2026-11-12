@@ -23,6 +23,7 @@ export const NOT_ENROLLED = "not enrolled: run /team init (new organization) or 
 
 /** Persisted via pi.appendEntry. Never contains a token. */
 export interface IdentityEntry {
+	suspended?: boolean;
 	ended?: string;
 	version: 1;
 	run_id: string;
@@ -249,6 +250,11 @@ export class TeamRuntime {
 		// (b) persisted mapping in this Pi session.
 		const entry = this.latestIdentityEntry();
 		if (entry) {
+			if (entry.suspended) {
+				this.notice = `Team ${entry.run_id} is stopped; run /team resume ${entry.run_id} ${entry.agent_id} to continue with fresh credentials.`;
+				this.updateStatus();
+				return;
+			}
 			if (entry.ended) {
 				this.notice = `Previous team agent ${entry.agent_id} is ${entry.ended}; start a new team or resume a different active run.`;
 				this.updateStatus();
@@ -331,7 +337,7 @@ export class TeamRuntime {
 	}
 
 	/** Operator attach: POST /runs/:id/attach (used by /team resume and same-session restart). */
-	async attach(runId: string, agentId?: string, o: { quiet?: boolean } = {}): Promise<Identity> {
+	async attach(runId: string, agentId?: string, o: { quiet?: boolean; resume?: boolean } = {}): Promise<Identity> {
 		if (this.managed) throw new Error("managed workers cannot attach to another identity");
 		const epoch = this.attachEpoch;
 		const previous = this.attachQueue;
@@ -350,6 +356,11 @@ export class TeamRuntime {
 			const op = await this.operatorToken();
 			checkCurrent();
 			const pis = this.piSession();
+			if (o.resume) {
+				const lifecycle = await this.client.resumeTeam(runId, { token: op });
+				checkCurrent();
+				if (lifecycle.error || lifecycle.state !== "RESUMED") throw new Error(lifecycle.error ?? `Team ${runId} is ${lifecycle.state}; cleanup is still pending. Retry /team resume ${runId}.`);
+			}
 			const r = await this.client.attach(
 				runId,
 				{ agent_id: agentId, pi_session_id: pis.id, pi_session_path: pis.path, mode: "attach" },
@@ -441,6 +452,34 @@ export class TeamRuntime {
 	}
 
 	// ------------------------------------------------------------------ errors
+	/** Discard revoked credentials, but retain the logical identity/transcript for resume. */
+	suspendTeamIdentity(runId: string): void {
+		const id = this.identity;
+		if (!id || id.run_id !== runId) return;
+		this.attachEpoch++;
+		identityCache().delete(id.pi_session_id);
+		this.identity = undefined;
+		this.fenced = false;
+		if (this.timer) clearInterval(this.timer);
+		this.timer = undefined;
+		this.notice = `Team ${runId} is stopped, not removed. Run /team resume ${runId} ${id.agent_id} to continue.`;
+		this.pi.appendEntry(IDENTITY_ENTRY, { version: 1, run_id: runId, agent_id: id.agent_id, pi_session_id: id.pi_session_id, managed: id.managed, role: id.role, suspended: true } satisfies IdentityEntry);
+		this.updateStatus();
+	}
+
+	removeTeamIdentity(runId: string): void {
+		if (this.identity?.run_id === runId) {
+			this.releaseStoppedIdentity("REMOVED");
+		} else if (!this.identity) {
+			const entry = this.latestIdentityEntry();
+			if (entry?.run_id !== runId) return;
+			this.attachEpoch++;
+			this.pi.appendEntry(IDENTITY_ENTRY, { ...entry, suspended: false, ended: "REMOVED" } satisfies IdentityEntry);
+			this.notice = `Team ${runId} was permanently removed. Your Pi session and worktrees are unchanged.`;
+			this.updateStatus();
+		}
+	}
+
 	/** End the local association without disabling operator commands for other runs. */
 	releaseStoppedIdentity(status: string): void {
 		this.attachEpoch++;
@@ -462,6 +501,11 @@ export class TeamRuntime {
 		if (e instanceof TeamApiError && (e.code === "STALE_SESSION" || e.code === "UNAUTHENTICATED") && this.identity) {
 			const id = this.identity;
 			const details = e.details as { reason?: string; agent_status?: string } | undefined;
+			if (details?.reason === "team_stopped") {
+				this.suspendTeamIdentity(id.run_id);
+				this.say(this.notice!, "info");
+				return true;
+			}
 			// Older controllers only supplied the revocation reason in the message.
 			const ended = details?.reason === "agent_terminal" ? details.agent_status : /agent is (CANCELLED|COMPLETED|FAILED|RETIRED)|session token revoked \((cancelled|completed|failed|retired)\)/i.exec(e.message)?.slice(1).find(Boolean)?.toUpperCase();
 			if (ended) {

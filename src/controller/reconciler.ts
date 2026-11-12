@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { type Row, all, get, run, tx, nowIso, isoPlus, emit, parseJson } from "./db.ts";
 import type { Ctx } from "./context.ts";
 import type { Executor, LaunchSpec, ProcessIdentity } from "../executor/types.ts";
-import type { EnrollmentFile } from "../shared/protocol.ts";
+import type { EnrollmentFile, TerminalOptions } from "../shared/protocol.ts";
+import { TerminalAllocationError } from "../watch/terminal-error.ts";
 import { mintSecret, hashToken } from "./auth.ts";
 import { getAgent, getAncestry, getSubtree, isTerminal, runConfig, TERMINAL_SQL } from "./queries.ts";
 import { tree, newSessionAttempt } from "./runs.ts";
@@ -125,16 +126,23 @@ export class Reconciler {
 			if (!cfg.terminal) continue;
 			const reason = await this.executor.terminalProblem(this.ctx.paths.dir, r.id, cfg.terminal);
 			if (!reason) continue;
-			this.wtx(() => {
-				const current = runConfig(this.ctx.db, r.id);
-				if (JSON.stringify(current.terminal) !== JSON.stringify(cfg.terminal)) return;
-				delete current.terminal;
-				run(this.ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(current), r.id);
-				emit(this.ctx.db, { run_id: r.id, actor_id: "controller", type: "run.terminal_fallback", payload: { reason, mode: "headless" } });
-				postMessage(this.ctx.db, { run_id: r.id, from: r.root_agent_id, to: r.root_agent_id, type: "system.notice", payload: {
-					kind: "terminal_fallback", reason, text: "Team workers are switching to detached execution because tmux is unavailable. Identities, transcripts and tasks are preserved. Use /team watch open after restoring tmux, or /team watch off to keep detached workers." } });
-			});
+			this.terminalFallback(r.id, cfg.terminal, reason);
 		}
+	}
+
+	/** Sticky until an explicit watch request; never overwrite a newer terminal request. */
+	private terminalFallback(runId: string, terminal: TerminalOptions, reason: string): void {
+		this.wtx(() => {
+			const current = runConfig(this.ctx.db, runId);
+			if (JSON.stringify(current.terminal) !== JSON.stringify(terminal)) return;
+			delete current.terminal;
+			current.terminal_disabled = true;
+			run(this.ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(current), runId);
+			emit(this.ctx.db, { run_id: runId, actor_id: "controller", type: "run.terminal_fallback", payload: { reason, mode: "headless" } });
+			const root = get(this.ctx.db, "SELECT root_agent_id FROM runs WHERE id = ?", runId)!.root_agent_id;
+			postMessage(this.ctx.db, { run_id: runId, from: root, to: root, type: "system.notice", payload: {
+				kind: "terminal_fallback", reason, text: "Team workers are switching to detached execution because tmux could not allocate their terminals. Identities, transcripts and tasks are preserved. Use /team watch open to request interactive workers again." } });
+		});
 	}
 
 	/** The existing controller coordinates layout; normal usage needs no control pane/process. */
@@ -259,7 +267,16 @@ export class Reconciler {
 			writeFileSync(launchSpec.enroll_file, JSON.stringify(file), { mode: 0o600, flag: "w" });
 			let ident: ProcessIdentity;
 			try {
-				ident = await this.executor.launch(launchSpec);
+				try {
+					ident = await this.executor.launch(launchSpec);
+				} catch (e) {
+					if (!(e instanceof TerminalAllocationError) || !launchSpec.terminal) throw e;
+					// The terminal executor guarantees its startup gate never opened.
+					// Reuse this enrollment/session/attempt: presentation costs no retries.
+					this.terminalFallback(runId, launchSpec.terminal, e.message);
+					delete launchSpec.terminal;
+					ident = await this.executor.launch(launchSpec);
+				}
 			} catch (e) {
 				this.onLaunchFailure(intentId, sessionId, runId, launchSpec.enroll_file, String((e as Error)?.message ?? e));
 				return;

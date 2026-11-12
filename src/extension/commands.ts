@@ -31,7 +31,8 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "inspect", args: "[name|agent_id]", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
 	{ name: "admin", args: "[status|unlimited|bounded|clear-deadlines] [run_id]", help: "human operator resource policy" },
-	{ name: "stop", args: "[name|agent_id|run_id]", help: "controlled cancellation (cascades to subtree)" },
+	{ name: "stop", args: "[run_id]", help: "stop a whole team resumably; preserve identities and transcripts" },
+	{ name: "remove", args: "[run_id] [--yes]", help: "permanently remove a whole team; preserve Pi and worktrees" },
 	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi team terminals in tmux" },
 	{ name: "send", args: "[name|agent_id] <message>", help: "send directions to a team member" },
 ];
@@ -238,7 +239,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		list: async (a, ctx) => {
 			if (rt.managed) throw new Error("managed workers can inspect their own team with /team tree");
 			const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs.filter((r) => a[0] === "all" || resumable(r));
-			out(ctx, runs.length ? runs.map((r) => `${runLabel(r)} · ${r.status}${r.run_id === rt.identity?.run_id ? " · current" : ""}`).join("\n") : "No active teams. /team init creates one; /team list all shows history.");
+			out(ctx, runs.length ? runs.map((r) => `${runLabel(r)} · ${r.stopped ? "STOPPED (resumable)" : r.status}${r.run_id === rt.identity?.run_id ? " · current" : ""}`).join("\n") : "No active teams. /team init creates one; /team list all shows history.");
 		},
 
 		admin: async (a, ctx, yes) => {
@@ -256,6 +257,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		resume: async (a, ctx, yes) => {
 			await rt.ready;
 			if (rt.managed) throw new Error("managed workers cannot resume a different team; use the leader Pi");
+			if (a.length > 2) throw new Error("usage: /team resume [run_id] [name|agent_id] [--yes]");
 			if (!a[0] && !rt.identity) {
 				try { await rt.operatorToken(0); }
 				catch { out(ctx, "No resumable teams. Use /team init to create a new team, then ask the leader to add members."); return; }
@@ -283,18 +285,19 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (!run) throw new Error(`team ${target} not found; /team resume lists resumable teams`);
 			if (!a[1] && !resumable(run)) throw new Error(`team ${target} cannot be resumed (${run.root_status ?? run.status}); /team resume lists active teams`);
 			const member = a[1] ? await rt.client.resolveAgent(a[1], target, { token: op }) : undefined;
-			if (rt.identity?.run_id === target && (!member || member === rt.identity.agent_id)) {
+			// A healthy attached team needs no takeover; a team stopped elsewhere still resumes.
+			if (rt.identity?.run_id === target && !run.stopped && (!member || member === rt.identity.agent_id)) {
 				out(ctx, `Already attached to ${runLabel(run)}. Use /team watch to open its members.`);
 				return;
 			}
 			let emptyNewRoot: string | undefined;
-			if (rt.identity && rt.identity.run_id === initializedRunId) {
+			if (rt.identity && rt.identity.run_id === initializedRunId && rt.identity.run_id !== target) {
 				const me = await rt.client.me();
 				if (me.is_root && runs.find((r) => r.run_id === initializedRunId)?.agents === 1 && !me.children.length && !me.tasks.length && !me.inbox_pending && !me.pending_proposals_to_review) emptyNewRoot = me.agent_id;
 			}
 			if (!(await confirm(ctx, yes, `Attach to ${target} as ${member ?? "its root"}, replacing its existing session${emptyNewRoot ? ` and cancel unused empty team ${initializedRunId}` : ""}?`))) return;
-			// Attach first: a failed resume must leave the current team intact.
-			await rt.attach(target, member);
+			// Resume and fresh attach share the runtime identity-transition queue.
+			await rt.attach(target, member, { resume: true });
 			if (emptyNewRoot) {
 				try { await rt.client.lifecycle(emptyNewRoot, { action: "cancel", reason: "unused init replaced by resume", children_policy: "cascade" }, { token: op }); }
 				catch (e) { out(ctx, `Attached, but could not retire the unused empty team: ${errText(e)}`, "warning"); }
@@ -390,34 +393,31 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		},
 
 		stop: async (a, ctx, yes) => {
-			const target = a[0] ?? await runId(ctx);
-			const tok = await rt.commandToken();
-			let agentId = target;
-			let stoppedRun: RunSummary | undefined;
-			let what = `agent ${target}`;
-			// Protocol has no run-level stop: a run is stopped by cancelling its root with cascade.
-			if (!rt.managed) {
-				const runs = await rt.client.listRuns({ token: tok });
-				stoppedRun = runs.runs.find((r) => r.run_id === target || r.root_agent_id === target);
-				if (stoppedRun) {
-					agentId = stoppedRun.root_agent_id;
-					what = `run ${stoppedRun.run_id} (root ${stoppedRun.root_agent_id} + whole subtree)`;
-				}
-			}
-			if (!stoppedRun) agentId = await rt.client.resolveAgent(target, rt.identity?.run_id, { token: tok });
-			if (!(await confirm(ctx, yes, `Cancel ${what}? Workers are stopped by the controller.`))) {
-				out(ctx, "stop cancelled");
-				return;
-			}
-			const r = await rt.client.lifecycle(agentId, { action: "cancel", reason: "operator /team stop", children_policy: "cascade" }, { token: tok });
-			if (rt.identity && (r.affected_agent_ids.includes(rt.identity.agent_id) || (rt.identity.agent_id === r.agent_id && r.status === "CANCELLED"))) rt.releaseStoppedIdentity("CANCELLED");
-			if (stoppedRun && r.status === "CANCELLED") {
-				try {
-					const cfg = await rt.client.get<{ enabled?: boolean; socket?: string; location?: TerminalLocation }>(`/runs/${stoppedRun.run_id}/terminal`, { token: tok });
-					if (cfg.enabled) await new TmuxWatch({ stateDir: rt.paths.dir, runId: stoppedRun.run_id, ...cfg }).releaseLayout();
-				} catch (e) { out(ctx, `Team stopped; pane cleanup could not finish: ${errText(e)}`, "warning"); }
-			}
-			out(ctx, `${r.affected_agent_ids.length ? "stopped" : "already stopped"} ${what}: ${r.status}; affected ${r.affected_agent_ids.length} agent(s)`);
+			await rt.ready;
+			if (rt.managed) throw new Error("managed workers cannot stop whole teams; use the operator Pi");
+			if (a.length > 1) throw new Error("usage: /team stop [run_id] [--yes]");
+			const token = await rt.commandToken();
+			const runs = (await rt.client.listRuns({ token })).runs;
+			const target = a[0] ?? rt.identity?.run_id ?? await choose(ctx, "Stop a whole team", runs.filter((r) => resumable(r) && !r.stopped), (r) => r.run_id, runLabel);
+			// Invalid explicit references must never reach a confirmation prompt.
+			if (!runs.some((r) => r.run_id === target)) throw new Error(`team ${target} not found; /team list shows active teams`);
+			if (!(await confirm(ctx, yes, `Stop whole team ${target}? Identities, tasks and transcripts are preserved for /team resume.`))) return;
+			const result = await rt.client.stopTeam(target, { token });
+			rt.suspendTeamIdentity(target);
+			out(ctx, `Team ${target}: ${result.state} (operation ${result.operation_id}).${result.error ? ` Cleanup error: ${result.error}` : ""} Resume with /team resume ${target}.`, result.error ? "warning" : "info");
+		},
+		remove: async (a, ctx, yes) => {
+			await rt.ready;
+			if (rt.managed) throw new Error("managed workers cannot remove teams; use the operator Pi");
+			if (a.length > 1) throw new Error("usage: /team remove [run_id] [--yes]");
+			const token = await rt.commandToken();
+			const runs = (await rt.client.listRuns({ token })).runs;
+			const target = a[0] ?? await choose(ctx, "Permanently remove a whole team", runs, (r) => r.run_id, runLabel);
+			if (!runs.some((r) => r.run_id === target)) throw new Error(`team ${target} not found; /team list all shows every team`);
+			if (!(await confirm(ctx, yes, `Permanently remove whole team ${target}? This cannot be undone. Your root Pi session and worktrees will not be killed or deleted.`))) return;
+			const result = await rt.client.removeTeam(target, { confirm_run_id: target }, { token });
+			rt.removeTeamIdentity(target);
+			out(ctx, `Team ${target}: ${result.state} (operation ${result.operation_id}).${result.error ? ` Cleanup error: ${result.error}` : ""} Pi and worktrees are preserved.`, result.error ? "warning" : "info");
 		},
 	};
 
@@ -446,7 +446,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, report-to, reporting, tree, status, budget, model, inbox, proposals, events, inspect, stop, watch, send (see /team help)",
+		description: "Recursive agent team: init, resume, report-to, reporting, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
@@ -457,12 +457,11 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (["budget", "model", "inspect", "send"].includes(sub) && parts.length === 2) return await agentCompletions(sub, partial);
 			if (sub === "watch" && partial === "focus" && parts.length === 3) return await agentCompletions(sub, parts[2], "watch focus");
 			if (sub === "resume" && parts.length === 3) return await agentCompletions(sub, parts[2], `resume ${partial}`, partial);
-			if (sub === "report-to" || sub === "resume" || sub === "tree" || sub === "events" || (sub === "stop" && parts.length === 2)) {
+			if (sub === "report-to" || sub === "resume" || sub === "tree" || sub === "events" || (["stop", "remove"].includes(sub) && parts.length === 2)) {
 				if (parts.length > 2) return null;
 				const runs = await runCompletions();
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&
-					((sub !== "stop" && sub !== "resume") || resumable(r))).map((r) => ({ value: `${sub} ${r.run_id}`, label: r.run_id, description: `${r.status} · ${runLabel(r)}` }));
-				if (sub === "stop") items.push(...await agentCompletions(sub, partial));
+					((sub !== "stop" && sub !== "resume") || resumable(r)) && (sub !== "stop" || !r.stopped)).map((r) => ({ value: `${sub} ${r.run_id}`, label: r.run_id, description: `${r.status} · ${runLabel(r)}` }));
 				return items.length ? items : null;
 			}
 			return null;
@@ -478,7 +477,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
 					return;
 				}
-				const supportsYes = ["stop", "admin", "budget", "report-to", "reporting", "watch", "resume"].includes(command);
+				const supportsYes = ["stop", "remove", "admin", "budget", "report-to", "reporting", "watch", "resume"].includes(command);
 				const yes = supportsYes && rest.includes("--yes");
 				await h(yes ? rest.filter((arg) => arg !== "--yes") : rest, ctx, yes);
 			} catch (e) {

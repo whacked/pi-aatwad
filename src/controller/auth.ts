@@ -59,6 +59,7 @@ export function resolvePrincipal(db: DB, operatorToken: string, authorization: s
 		fail("STALE_SESSION", `agent is ${row.agent_status}`, { reason: "agent_terminal", agent_status: row.agent_status });
 	if (row.current_session_id !== row.session_id || row.revoke_reason === "superseded")
 		fail("STALE_SESSION", "session attempt has been superseded", { reason: "superseded" });
+	if (row.revoke_reason === "team_stopped") fail("STALE_SESSION", "team is stopped; resume it to continue", { reason: "team_stopped" });
 	if (row.revoked_at) fail("STALE_SESSION", `session token revoked (${row.revoke_reason ?? "revoked"})`, { reason: "credential_revoked", revoke_reason: row.revoke_reason });
 	return { kind: "agent", actor_id: row.agent_id, run_id: row.run_id, session_id: row.session_id, generation: row.generation };
 }

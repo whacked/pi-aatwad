@@ -34,21 +34,29 @@ test("stop own run, stop another, repeat stop, and refresh completion without fa
 		await command.handler("stop", ctx);
 		assert.equal(rt.identity, undefined);
 		assert.equal(rt.fenced, false);
-		assert.match(rt.notice!, /CANCELLED/);
+		assert.match(rt.notice!, /stopped, not removed/);
 		await rt.heartbeat();
+		assert.equal((await hs.call("GET", `/agents/${own.root}`, { token: hs.op })).body.agent.status, "PAUSED", "stop suspends; it never cancels");
 		assert.deepEqual(await suggestions("stop"), [other.run_id]);
-		assert.ok(!(await suggestions("resume")).includes(own.run_id));
+		assert.ok((await suggestions("resume")).includes(own.run_id), "stopped teams stay resumable");
 		assert.ok((await suggestions("events")).includes(own.run_id), "history remains accessible");
 		await command.handler(`stop ${other.run_id}`, ctx);
 		await command.handler(`stop ${other.run_id}`, ctx);
 		assert.deepEqual(await suggestions("stop"), []);
-		assert.ok(notes.some((n) => n.includes("already stopped")));
+		assert.equal(notes.filter((n) => n.includes(`Team ${other.run_id}: STOPPED`)).length, 2, "repeat stop is idempotent");
 		assert.ok(!notes.some((n) => /FENCED|CONFLICT/.test(n)), notes.join("\n"));
 		const rtReload = new TeamRuntime(pi as any, { paths: statePaths(hs.dir), env: {} });
 		await rtReload.start(ctx);
 		assert.equal(rtReload.identity, undefined);
-		assert.match(rtReload.notice!, /CANCELLED/);
+		assert.match(rtReload.notice!, new RegExp(`resume ${own.run_id}`));
 		rtReload.stop();
+		await command.handler(`resume ${own.run_id}`, ctx);
+		assert.equal((rt as TeamRuntime).identity?.run_id, own.run_id, notes.join("\n"));
+		assert.equal((await hs.call("GET", `/agents/${own.root}`, { token: hs.op })).body.agent.status, "RUNNING");
+		await command.handler(`remove ${own.run_id}`, ctx);
+		assert.equal(rt.identity, undefined);
+		assert.ok(!(await suggestions("resume")).includes(own.run_id), "removed teams cannot be resumed");
+		assert.ok(!(await suggestions("events")).includes(own.run_id));
 	} finally { rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
 
@@ -281,7 +289,9 @@ test("commands accept quoted member names, suggest names, and change budget/mode
 		assert.equal(inspect.agent.pending_model, "openai/test-model");
 		assert.ok(s.notes.some((n) => n.includes("PENDING")));
 		await s.command.handler('stop "Senior Reviewer"', s.ctx);
-		assert.equal((await s.rt.client.inspect(id)).agent.status, "CANCELLED");
+		assert.ok(s.notes.some((n) => n.startsWith("/team stop:")), "stop targets whole teams, never a member name");
+		assert.notEqual((await s.rt.client.inspect(id)).agent.status, "CANCELLED");
+		await s.rt.client.lifecycle(id, { action: "cancel", reason: "closed", children_policy: "cascade" });
 		assert.deepEqual(await s.command.getArgumentCompletions("budget Senior"), []);
 	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
@@ -360,15 +370,15 @@ test("unattached commands infer the sole viable team and stopped teams never bec
 		await s.command.handler("stop", s.ctx);
 		assert.equal(s.confirmations.length, 1);
 		assert.ok(s.confirmations[0].includes(r.run_id));
-		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "CANCELLED");
-		hs.h.db.prepare("UPDATE runs SET status='RUNNING' WHERE id=?").run(r.run_id);
+		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "PAUSED");
+		await s.command.handler(`stop ${r.run_id}`, s.ctx);
+		assert.equal(s.notes.filter((n) => n.includes(`Team ${r.run_id}: STOPPED`)).length, 2);
+		assert.ok(!s.notes.some((n) => /FENCED|CONFLICT/.test(n)), s.notes.join("\n"));
+		await s.command.handler(`remove ${r.run_id}`, s.ctx);
 		await s.command.handler("resume", s.ctx);
 		assert.ok(s.notes.some((n) => n.includes("No resumable teams")));
 		assert.equal(s.choices.length, 0);
 		assert.equal(await s.command.getArgumentCompletions("resume "), null);
-		await s.command.handler(`stop ${r.run_id}`, s.ctx);
-		assert.ok(s.notes.some((n) => n.includes("already stopped")));
-		assert.ok(!s.notes.some((n) => /FENCED|CONFLICT/.test(n)), s.notes.join("\n"));
 	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
 
@@ -441,7 +451,8 @@ test("headless destructive actions require explicit --yes even for a sole target
 		assert.ok(output.some((n) => n.includes("Confirmation required")));
 		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "RUNNING");
 		await s.command.handler("stop --yes", s.ctx);
-		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "CANCELLED");
+		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "PAUSED");
+		assert.equal((await hs.call("GET", `/runs/${r.run_id}/lifecycle`, { token: hs.op })).body.state, "STOPPED");
 		write.mock.restore();
 	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });

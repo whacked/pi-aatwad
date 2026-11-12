@@ -17,6 +17,8 @@ import {
 } from "./protocol.ts";
 import type {
 	ReportingRequest,
+	TeamLifecycleResponse,
+	RemoveTeamRequest,
 	ReportingStatus,
 	ApiError,
 	AttachRequest,
@@ -527,6 +529,18 @@ export class TeamClient {
 	}
 	attach(runId: string, req: AttachRequest, o: CallOptions): Promise<AttachResponse> {
 		return this.post(`/runs/${enc(runId)}/attach`, req, o);
+	}
+	stopTeam(runId: string, o: CallOptions): Promise<TeamLifecycleResponse> {
+		return this.post(`/runs/${enc(runId)}/stop`, {}, o);
+	}
+	resumeTeam(runId: string, o: CallOptions): Promise<TeamLifecycleResponse> {
+		return this.post(`/runs/${enc(runId)}/resume`, {}, o);
+	}
+	teamLifecycle(runId: string, o: CallOptions): Promise<TeamLifecycleResponse | null> {
+		return this.get(`/runs/${enc(runId)}/lifecycle`, o);
+	}
+	removeTeam(runId: string, req: RemoveTeamRequest, o: CallOptions): Promise<TeamLifecycleResponse> {
+		return this.post(`/runs/${enc(runId)}/remove`, req, o);
 	}
 	recovery(runId: string, o: CallOptions): Promise<RecoveryStatus> {
 		return this.get(`/runs/${enc(runId)}/recovery`, o);

@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.17, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.18, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -46,7 +46,7 @@ To return to an existing team in a fresh Pi session:
 
 `resume` automatically attaches when exactly one valid team is available; with multiple
 teams, it shows a picker with active member/running process counts. Without an interactive
-UI, multiple candidates are listed so you can pass a run ID explicitly. No `init` is required. Cancelled and terminal teams are excluded from the picker and resume/stop
+UI, multiple candidates are listed so you can pass a run ID explicitly. No `init` is required. Stopped teams stay resumable; cancelled, terminal and removed teams are excluded from the picker and resume/stop
 autocomplete, while `/team list all` and history commands retain the audit record.
 `/team watch` from an unattached session uses the same automatic selection/picker behavior. If you
 already ran `init`, resuming a different team cancels only that unused new team
@@ -84,12 +84,22 @@ Examples with an omitted member target: `/team inspect`, `/team budget 5`,
 `/team send -- Please review this change`. The `--` separator also supports
 multiword model names when the target is omitted. Other command arguments remain required.
 
-`/team stop` stops the current team, or selects a viable team when unattached.
-An explicit run or agent ID stops another
-team/member. Repeated stops of cancelled targets succeed harmlessly. Stopping your
-own team ends the local association without claiming a newer session took over,
-and you can still issue operator commands for other teams. Stopped team panes and
-ownership tags are released without killing the human's Pi pane. A leftover pane
+`/team stop` suspends the current team, or selects a viable team when unattached;
+an explicit run ID stops another team. Stop is resumable, never a cancellation:
+the controller stops the worker processes it owns and revokes credentials, while
+identities, tasks, budgets and transcripts are kept. `/team resume <run_id>`
+restores exactly the members that were running (deliberately paused members stay
+paused) and relaunches them on their saved transcripts when work is waiting.
+Repeated stops succeed harmlessly, and a stop whose process cleanup failed stays
+`CLEANING` until `/team stop` is retried. Stopping your own team suspends the local
+association without claiming a newer session took over, and you can still issue
+operator commands for other teams.
+
+`/team remove [run_id]` is the destructive counterpart: it cancels every member,
+stops owned processes, revokes all credentials and takes the team out of every
+listing; a removed team can never be resumed. It always asks for confirmation
+(`--yes` without a UI). Neither command kills your Pi, deletes worktrees or touches
+project files. To close one member, ask the leader (`team_close_member`). A leftover pane
 tag with no active members is recovered automatically; active foreign teams are
 protected with instructions to resume or stop them first.
 
@@ -110,7 +120,8 @@ Inside Pi:
 | `/team watch [open\|status\|close\|off\|debug] [run_id]` | Manage live member panes; show optional controls with `debug`. |
 | `/team watch focus [agent_id] [run_id]` | Focus a member monitor pane. |
 | `/team send [agent_id] <message>` | Send directions through durable team messaging. |
-| `/team stop [agent_id\|run_id]` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
+| `/team stop [run_id]` | Suspend a whole team resumably: stops owned workers, keeps identities, tasks and transcripts for `/team resume`. |
+| `/team remove [run_id] [--yes]` | Permanently remove a whole team. Cannot be resumed; Pi, worktrees and project files are preserved. |
 
 Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, `team_set_budget`, `team_set_model`, plus root-only `team_reporting`, `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
 
@@ -169,7 +180,7 @@ report meaningful changes and decisions and avoid acknowledgement loops.
 | Receiving leader | `/team reporting transfer <run_id>` | Transfer all leaders reporting to it to another ordinary leader, with handoff history. Its own parent link stays attached. |
 | Any leader | `/team reporting dismiss` | End all reporting links attached to this leader. Every team and session continues running. |
 | Any leader | `/team reporting --all` | Inspect active and closed links. |
-| Human operator | `/team stop [run_id]` | Stop that team's own hierarchy. Separately linked teams continue running. |
+| Human operator | `/team stop [run_id]` | Suspend that team's own hierarchy (resumable). Separately linked teams continue running. |
 
 To remove the temporary reporting parent from the example, run `/team reporting
 dismiss` in its session. If you also want to stop its own team, follow with
@@ -350,7 +361,6 @@ friendly unused names. Autocomplete suggests active member names.
 /team model Alpha openrouter/vendor/model-id
 /team send "Senior Reviewer" Review the latest patch
 /team watch focus Alpha
-/team stop Beta
 ```
 
 You can instead ask the leader: “Give Alpha a $5 total budget” or “Switch Alpha to
@@ -465,7 +475,7 @@ pane temporarily. `/team watch focus <agent_id>` selects a member and
 `/team watch close` hides any debug controls without detaching your client or
 changing session/window selection. In a dedicated
 session, close detaches its clients without destroying live terminals. Use
-`/team stop <agent_id>` to cancel a member, or `/team stop <run_id>` to cancel the team. Killing a tmux pane or server terminates the harnesses it hosts;
+`/team stop <run_id>` to suspend the team, `/team remove <run_id>` to end it permanently, or ask the leader to close a single member. Killing a tmux pane or server terminates the harnesses it hosts;
 the controller recovers eligible members within its retry policy, falling back to
 detached execution when the saved terminal location is unavailable.
 
@@ -506,7 +516,7 @@ The tests never spend provider credits. Worker scenarios use `PI_TEAM_EXECUTOR=t
 
 ## Uninstall, stop, purge
 
-- `/team stop <run_id>` stops a run's managed workers.
+- `/team stop <run_id>` stops a run's managed workers resumably; `/team remove <run_id>` ends the team permanently.
 - `pi remove ./path/to/pi-recursive-team` removes the extension. It does **not** stop running workers or delete organization data.
 - To stop the controller, use `/team stop` on active runs (it idles out on its own) or send SIGTERM to the pid in `controller.json`.
 - To purge all state, run this after stopping: `rm -rf "<state dir>"` (path above). Worker worktrees live under each workspace's `.team-worktrees/`. Remove them with `git worktree remove`.
