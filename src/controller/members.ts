@@ -4,8 +4,8 @@ import type { ModelCatalogEntry } from "../shared/protocol.ts";
 import { obj, str, onlyKeys } from "./validate.ts";
 import { fail, CommittedError } from "./errors.ts";
 import { requireAgent, createTask } from "./messaging.ts";
-import { getRun, runConfig } from "./queries.ts";
-import { all, run, emit } from "./db.ts";
+import { getAgent, getRun, runConfig } from "./queries.ts";
+import { all, run, emit, newId, parseJson } from "./db.ts";
 import { createExpansion, decide } from "./governance.ts";
 
 function requireRoot(ctx: Ctx, p: Principal) {
@@ -66,7 +66,17 @@ export function createMember(ctx: Ctx, p: Principal, body: unknown) {
 	const name = str(b, "name", { optional: true }) ?? fallback, responsibility = str(b, "responsibility");
 	const registered = b.model === undefined ? undefined : registerModel(ctx, p, b.model);
 	if (registered && b.preferred_model_id !== undefined) fail("INVALID", "specify model or preferred_model_id, not both");
-	const modelId = registered?.id ?? str(b, "preferred_model_id", { optional: true }) ?? "leader";
+	let modelId: string | undefined = registered?.id ?? str(b, "preferred_model_id", { optional: true });
+	if (!modelId) {
+		// The saved `leader` entry is the initial model, not necessarily the model
+		// selected by this leader after a /model change or session resume.
+		const root = getAgent(ctx.db, a.actor_id);
+		const actual = parseJson<{ actual_model?: { provider: string; model: string } }>(root.metadata_json, {}).actual_model ?? root;
+		const cfg = runConfig(ctx.db, a.run_id);
+		modelId = cfg.models.find((m) => m.provider === actual.provider && m.model === actual.model)?.id;
+		if (!modelId) modelId = registerModel(ctx, p, { id: newId("model"), provider: actual.provider, model: actual.model,
+			capability_tags: ["general", "reasoning", "coding", "tools"], tool_support: true }).id;
+	}
 	const cost = b.max_cost_usd;
 	const runtime = b.max_runtime_seconds;
 	const task = createTask(ctx.db, { run_id: a.run_id, owner_id: a.actor_id, title: `Recruit ${name}`, spec: { responsibility }, parent_task_id: null, assigned_by: a.actor_id });

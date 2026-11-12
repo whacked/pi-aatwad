@@ -86,7 +86,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 			text = formatOrgContext(me);
 			if (me.is_root) text += "\nYou are the team leader. Configure the team through conversation; no config file is required. " +
 				"For a user task, decide the useful number and responsibilities of members, then use team_create_member once per member. " +
-				"Default to the initial leader model when no model is specified. You may briefly offer alternative models using team_get_models(source=available), without blocking work on a model-selection question. " +
+				"Default to the leader session's current model when no model is specified, including after session resume or model changes. You may briefly offer alternative models using team_get_models(source=available), without blocking work on a model-selection question. " +
 				"Honor explicit member names and model choices. Resolve exact models through Pi; ask on ambiguity and never guess or silently substitute. " +
 				"Check team_get_budget for your effective limits and grant authority. Runs never expire. No numeric limits are imposed by default; omitted member budgets and lifetimes inherit yours. You decide whether to constrain workers with explicit max_cost_usd and max_runtime_seconds, even under unlimited run policy. You may change descendant budgets/models, resume through budget updates, or close members within your delegated authority; restrictions and escalation still apply when explicitly configured. " +
 				"To close members when requested, use team_close_member. Completing tasks or zeroing a budget does not terminate a Pi process. Never claim a member is closed without a successful lifecycle result. " +

@@ -47,5 +47,15 @@ test("member tool discovers a Pi model and provisions through the real controlle
 		assert.equal((await invoke("team_set_model", { agent_id: "Adjudicator", model: "anthropic/claude-test" })).details.status, "PENDING");
 		const catalog = await rt.client.models();
 		assert.ok(catalog.models.some((m) => m.id === "openrouter/anthropic/claude-test"));
+		// The active Pi model is authoritative even when the server still has the old root selection.
+		const currentCtx = { ...ctx, model: { provider: "anthropic", id: "claude-test" } };
+		const inherited = await tools.get("team_create_member").execute("inherit", { name: "Inherited", responsibility: "Use this session's model" }, undefined, undefined, currentCtx);
+		const inheritedId = inherited.details.spawned_agent_ids[0];
+		const row = hs.h.db.prepare("SELECT provider,model FROM agents WHERE id=?").get(inheritedId);
+		assert.equal(row!.provider, "anthropic");
+		assert.equal(row!.model, "claude-test");
+		const explicit = await tools.get("team_create_member").execute("preferred", { name: "Explicit", responsibility: "Use the explicit catalog model", preferred_model_id: "leader" }, undefined, undefined, currentCtx);
+		const explicitRow = hs.h.db.prepare("SELECT model_id FROM agents WHERE id=?").get(explicit.details.spawned_agent_ids[0]);
+		assert.equal(explicitRow!.model_id, "leader", "explicit model selection overrides inheritance");
 	} finally { await hs.cleanup(); }
 });

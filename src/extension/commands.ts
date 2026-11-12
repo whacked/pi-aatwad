@@ -221,15 +221,18 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (!target) {
 				const choices = runs.filter(resumable).sort((x, y) => (y.active_members ?? y.agents - 1) - (x.active_members ?? x.agents - 1) || y.created_at.localeCompare(x.created_at));
 				if (!choices.length) { out(ctx, "No resumable teams. Use /team init to create a new team, then ask the leader to add members."); return; }
-				if (!ctx.hasUI) {
-					out(ctx, `Resumable teams:\n${choices.map(runLabel).join("\n")}\nUse /team resume <run_id> to attach, then /team watch.`);
-					return;
+				if (choices.length === 1) target = choices[0].run_id;
+				else {
+					if (!ctx.hasUI) {
+						out(ctx, `Resumable teams:\n${choices.map(runLabel).join("\n")}\nUse /team resume <run_id> to attach, then /team watch.`);
+						return;
+					}
+					const labels = choices.map((r) => runLabel(r) + (r.run_id === rt.identity?.run_id ? " · current" : ""));
+					const selected = await ctx.ui.select("Resume a team", labels);
+					if (!selected) return;
+					target = choices[labels.indexOf(selected)]?.run_id;
+					if (!target) return;
 				}
-				const labels = choices.map((r) => runLabel(r) + (r.run_id === rt.identity?.run_id ? " · current" : ""));
-				const selected = await ctx.ui.select("Resume a team", labels);
-				if (!selected) return;
-				target = choices[labels.indexOf(selected)]?.run_id;
-				if (!target) return;
 			}
 			const run = runs.find((r) => r.run_id === target);
 			if (!run) throw new Error(`team ${target} not found; /team resume lists resumable teams`);

@@ -297,7 +297,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_create_member", "Team: create member",
-		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. There are no implicit member limits. Omitted spend/runtime limits inherit the leader's limits (unbounded if the leader is unbounded). You may choose explicit worker budgets and lifetimes, which are enforced even with unlimited run policy. Subordinate managers use team_request_expansion instead.",
+		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to inherit the leader session's current model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. There are no implicit member limits. Omitted spend/runtime limits inherit the leader's limits (unbounded if the leader is unbounded). You may choose explicit worker budgets and lifetimes, which are enforced even with unlimited run policy. Subordinate managers use team_request_expansion instead.",
 		Type.Object({
 			name: Type.Optional(Type.String({ description: "Optional friendly member name; defaults to Alpha, Beta, etc." })), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
 			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),
@@ -305,7 +305,9 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 		}),
 		async (p, id, ctx) => {
 			if (p.model && p.preferred_model_id) throw new Error("Specify model or preferred_model_id, not both");
-			const body = { ...p, model: p.model ? resolveAvailableModel(ctx, p.model) : undefined };
+			const inherit = !p.model && !p.preferred_model_id && ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+			const requested = p.model ?? inherit;
+			const body = { ...p, model: requested ? resolveAvailableModel(ctx, requested) : undefined };
 			const terminalWarning = await autoOpenTerminals(rt, rt.identity!.run_id);
 			const result = await rt.client.post<Record<string, unknown>>("/members", body, { idempotencyKey: key("team_create_member", id) });
 			return json("Member provisioned", { ...result, ...(terminalWarning ? { terminal_warning: terminalWarning } : {}) });

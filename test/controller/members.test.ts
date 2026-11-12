@@ -38,6 +38,30 @@ test("conversational recruitment: leader default, runtime model, retry, permissi
 	} finally { await hs.cleanup(); }
 });
 
+test("omitted member model inherits the current leader after a model change and controller restart", async () => {
+	const hs = await harness();
+	try {
+		const { token, run_id } = await newRun(hs, { models: [] });
+		const initial = JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id=?", run_id)[0].config_json).models.find((m: any) => m.id === "leader");
+		const current = { provider: "openai", model: "gpt-6.1-sol" };
+		assert.equal((await hs.call("POST", "/sessions/model", { token, body: current })).status, 200);
+		await hs.restart();
+		const created = await hs.call("POST", "/members", { token, body: { responsibility: "Review on the current leader model" } });
+		assert.equal(created.status, 200, JSON.stringify(created.body));
+		const id = created.body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(id));
+		assert.equal(hs.ex.launchesFor(id)[0].spec.provider, current.provider);
+		assert.equal(hs.ex.launchesFor(id)[0].spec.model, current.model);
+		const cfg = JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id=?", run_id)[0].config_json);
+		assert.deepEqual(cfg.models.find((m: any) => m.id === "leader"), initial, "preserve the historical model for explicit selection");
+		const explicit = await hs.call("POST", "/members", { token, body: { responsibility: "Use the historical model deliberately", preferred_model_id: "leader" } });
+		assert.equal(explicit.status, 200, JSON.stringify(explicit.body));
+		const oldId = explicit.body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(oldId));
+		assert.equal(hs.ex.launchesFor(oldId)[0].spec.model, initial.model);
+	} finally { await hs.cleanup(); }
+});
+
 test("failed direct recruitment rolls back model, policy, tasks and proposal; invalid metadata rejected", async () => {
 	const hs = await harness();
 	try {

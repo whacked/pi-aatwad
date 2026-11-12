@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.11, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.12, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -44,10 +44,11 @@ To return to an existing team in a fresh Pi session:
 /team watch
 ```
 
-`resume` shows a picker with active member/running process counts. No `init` is
-required. Cancelled and terminal teams are excluded from the picker and resume/stop
+`resume` automatically attaches when exactly one valid team is available; with multiple
+teams, it shows a picker with active member/running process counts. Without an interactive
+UI, multiple candidates are listed so you can pass a run ID explicitly. No `init` is required. Cancelled and terminal teams are excluded from the picker and resume/stop
 autocomplete, while `/team list all` and history commands retain the audit record.
-`/team watch` from an unattached session offers the same resume picker. If you
+`/team watch` from an unattached session uses the same automatic selection/picker behavior. If you
 already ran `init`, resuming a different team cancels only that unused new team
 when it has no members or work. Existing teams with work continue independently.
 
@@ -77,7 +78,7 @@ Inside Pi:
 | Command | What it does |
 |---|---|
 | `/team init [--unlimited] [config.json]` | Makes this session the **root** of a new organization. This is the only way an org is created; installing the package creates nothing. |
-| `/team resume [run_id] [agent_id]` | Pick a resumable team or attach directly. Works in a fresh Pi session without init. |
+| `/team resume [run_id] [agent_id]` | Auto-resume the sole valid team, pick among multiple teams, or attach directly. Works without init. |
 | `/team list [all]` | List active teams, reporting relationships and member counts; `all` includes history. |
 | `/team report-to <run_id\|none>` | Make this leader report to another team leader, or disconnect it. |
 | `/team reporting [--all\|dismiss\|transfer <run_id>\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
@@ -172,7 +173,7 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 
 - **The controller is auto-started** by the first command that needs it. It is a detached process, so it keeps running when your Pi exits, and it exits by itself once idle (no live workers or pending spawns). Its state dir is `~/Library/Application Support/pi-recursive-team/` on macOS and `${XDG_STATE_HOME:-~/.local/state}/pi-recursive-team/` on Linux, with mode 0700. The socket is per-user, never under `/tmp`.
 - **Workers** run as interactive Pi harnesses in tmux when `/team watch` is enabled, or detached `pi --mode json -p --session <file>` processes otherwise. Each enrolls with a one-time credential passed through a 0600 file (never argv) and works in its own git worktree under `<workspace>/.team-worktrees/<run>/<agent>`. Interactive workers stay at their Pi prompt between assignments. Headless workers exit when their prompt settles and are relaunched on the **same Pi transcript and the same agent ID** for new work.
-- **Identity.** A logical agent ID is independent of the Pi session, process and model. If you close the root Pi, its reports keep working. Reopen Pi and use `/team resume <run>` (or the same Pi session re-attaches automatically). A forked or cloned Pi session is never silently adopted.
+- **Identity.** A logical agent ID is independent of the Pi session, process and model. If you close the root Pi, its reports keep working. Reopen Pi and use `/team resume` to choose a team. Pi's own `/resume` restores a previous conversation and automatically re-attaches its saved team identity when it is the same non-managed Pi session and the agent is still active. Running `/team resume <run>` afterward reports “Already attached” for that team; no second attach is needed. A forked or cloned Pi session is never silently adopted, and saved managed-worker identities require deliberate takeover.
 
 ### Configuration
 
@@ -205,7 +206,10 @@ Implement the feature described below. Create whatever team you need.
 [Your requirements here.]
 ```
 
-The leader decides useful roles and creates members using its initial model.
+The leader decides useful roles and creates members using its current session model,
+including after `/model` changes or Pi session resume. The catalog's `leader` entry
+retains the initial model for explicit selection; it is not the implicit default once
+the leader has switched models.
 It may briefly offer alternatives discovered from Pi without requiring model
 selection before work starts. There are no implicit member budgets or lifetimes. Omitted
 `max_cost_usd` shares the leader's budget pool (unbounded if the leader is unbounded);

@@ -57,7 +57,7 @@ function commandSession(hs: Awaited<ReturnType<typeof harness>>, id: string, sel
 		registerCommand: (_name: string, definition: unknown) => { command = definition; } };
 	const ctx = { hasUI: true, mode: "rpc", cwd: hs.dir, isIdle: () => true, hasPendingMessages: () => false,
 		ui: { notify: (text: string) => notes.push(text), confirm: async () => true, setStatus: () => {},
-			select: async (_title: string, options: string[]) => { choices.push(options); return options.find((s) => s.startsWith(selectedRun)); } },
+			select: async (_title: string, options: string[]) => { choices.push(options); return selectedRun ? options.find((s) => s.startsWith(selectedRun)) : undefined; } },
 		sessionManager: { getSessionId: () => id, getSessionFile: () => undefined, getEntries: () => entries } } as any;
 	const rt = new TeamRuntime(pi as any, { paths: statePaths(hs.dir), env: {}, heartbeatMs: 60000 });
 	registerTeamCommand(pi as any, rt);
@@ -97,7 +97,7 @@ test("fresh session init then watch reclaims stale leader tags after terminal me
 	}
 });
 
-test("fresh resume picker restores the existing multi-member team; init then resume discards only the new empty team", async () => {
+test("resume auto-attaches the sole valid team; multiple teams show a picker and init cleanup remains safe", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();
 	let fresh: ReturnType<typeof commandSession> | undefined, initialized: ReturnType<typeof commandSession> | undefined;
@@ -114,8 +114,7 @@ test("fresh resume picker restores the existing multi-member team; init then res
 		assert.equal(fresh.rt.identity, undefined);
 		await fresh.command.handler("resume", fresh.ctx);
 		assert.equal((fresh.rt as TeamRuntime).identity?.run_id, existing.run_id, fresh.notes.join("\n"));
-		assert.ok(fresh.choices[0].some((label) => label.includes("2 active members")));
-		assert.ok(!fresh.choices[0].some((label) => label.includes(cancelled.run_id)));
+		assert.equal(fresh.choices.length, 0, "sole valid team resumes without a picker, excluding cancelled teams");
 		assert.ok(fresh.notes.some((text) => text.includes("/team watch")));
 		fresh.rt.stop();
 
@@ -127,6 +126,9 @@ test("fresh resume picker restores the existing multi-member team; init then res
 		await initialized.command.handler("status", initialized.ctx);
 		assert.ok(initialized.notes.some((s) => s.includes("no active members")));
 		await initialized.command.handler("resume", initialized.ctx);
+		assert.equal(initialized.choices.length, 1, "multiple valid teams require selection");
+		assert.ok(initialized.choices[0].some((label) => label.includes("2 active members")));
+		assert.ok(!initialized.choices[0].some((label) => label.includes(cancelled.run_id)));
 		assert.equal(initialized.rt.identity!.run_id, existing.run_id);
 		await initialized.rt.heartbeat();
 		assert.equal(initialized.rt.fenced, false);
@@ -138,6 +140,48 @@ test("fresh resume picker restores the existing multi-member team; init then res
 		assert.equal(initialized.rt.identity!.agent_id, resumedId, "failed resume preserves current association");
 		assert.ok(initialized.notes.some((s) => s.includes("cannot be resumed")));
 	} finally { fresh?.rt.stop(); initialized?.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("resume handles a single team without UI and preserves association when already attached", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const session = commandSession(hs, "headless-resume", "");
+	try {
+		const existing = await newRun(hs);
+		session.ctx.hasUI = false;
+		await session.rt.start(session.ctx);
+		await session.command.handler("resume", session.ctx);
+		assert.equal(session.rt.identity?.run_id, existing.run_id, session.notes.join("\n"));
+		assert.equal(session.choices.length, 0);
+		const identity = session.rt.identity;
+		session.ctx.hasUI = true;
+		await session.command.handler("resume", session.ctx);
+		assert.equal(session.rt.identity, identity, "already attached must not create a new controller session");
+		assert.equal(session.choices.length, 0);
+		assert.ok(session.notes.some((text) => text.includes("Already attached")));
+	} finally { session.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("resume without UI lists multiple candidates rather than silently choosing one", async (t) => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const session = commandSession(hs, "headless-multiple", "");
+	try {
+		const first = await newRun(hs), second = await newRun(hs);
+		session.ctx.hasUI = false;
+		await session.rt.start(session.ctx);
+		const output: string[] = [];
+		const write = t.mock.method(process.stderr, "write", (chunk: any) => { output.push(String(chunk)); return true; });
+		await session.command.handler("resume", session.ctx);
+		write.mock.restore();
+		assert.equal(session.rt.identity, undefined);
+		assert.equal(session.choices.length, 0);
+		assert.ok(output.some((text) => text.includes(first.run_id) && text.includes(second.run_id)));
+		session.ctx.hasUI = true;
+		await session.command.handler("resume", session.ctx); // selector returns undefined (cancel)
+		assert.equal(session.choices.length, 1);
+		assert.equal(session.rt.identity, undefined, "cancelling the selector leaves the session unattached");
+	} finally { session.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
 
 test("human init --unlimited and admin policy commands remove and restore bounded defaults", async () => {
