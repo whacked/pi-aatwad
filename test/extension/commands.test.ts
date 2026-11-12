@@ -456,3 +456,33 @@ test("headless destructive actions require explicit --yes even for a sole target
 		write.mock.restore();
 	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
+
+test("operator lists and clears saved limits, and removes one member's ceiling by command", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness(), s = commandSession(hs, "limits-session", "");
+	try {
+		const legacy = await newRun(hs, { models: [], limits: { max_run_usd: 25, max_live_agents: 12 }, root_envelope: { max_subtree_usd: 20, max_subtree_slots: 11, max_grant_usd: 20, max_grant_slots: 11 } });
+		const made = await hs.call("POST", "/members", { token: legacy.token, body: { name: "Checker", responsibility: "Check", max_cost_usd: 2, max_runtime_seconds: 600 } });
+		const id = made.body.spawned_agent_ids[0];
+		await s.rt.start(s.ctx);
+		await s.command.handler("resume", s.ctx);
+		assert.ok(s.notes.some((n) => /saved limit\(s\).*\/team admin clear-limits/s.test(n)), s.notes.join("\n"));
+		await s.command.handler("admin limits", s.ctx);
+		const listing = s.notes.at(-1)!;
+		for (const expected of ["team spend ≤ $25", "live agents ≤ 12", "subtree spend ≤ $20", "Checker", "own spend ≤ $2", "runtime ≤ 600s"]) assert.ok(listing.includes(expected), `${expected}\n${listing}`);
+		await s.command.handler("budget Checker none", s.ctx);
+		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 20, "without its own ceiling the member shares its lead's");
+		await s.command.handler("budget Checker 3", s.ctx);
+		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 3);
+		await s.command.handler("budget Checker lots", s.ctx);
+		assert.ok(s.notes.at(-1)!.includes("usage: /team budget"));
+		await s.command.handler("admin clear-limits", s.ctx);
+		assert.ok(s.confirmations.at(-1)!.includes("Remove every spend, member-count, depth and time limit"));
+		assert.ok(s.notes.at(-1)!.includes("No limits in force"), s.notes.at(-1));
+		const budget = await s.rt.client.budget(id);
+		assert.equal(budget.own_budget_usd, null);
+		assert.equal(budget.available_usd, null);
+		await s.command.handler("admin status", s.ctx);
+		assert.ok(s.notes.at(-1)!.includes("No limits in force"));
+	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});

@@ -257,12 +257,15 @@ export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportR
 		return al.limits.max_subtree_usd !== null && al.spent_usd >= al.limits.max_subtree_usd - 1e-9;
 	});
 	for (const pool of exhaustedPools) for (const id of getSubtree(db, pool).filter((id) => id !== a.actor_id)) {
-		run(db, "UPDATE agents SET desired_state='PAUSED', status=CASE WHEN status='RUNNING' THEN 'PAUSED' ELSE status END WHERE id=? AND desired_state='RUNNING'", id);
+		if (run(db, "UPDATE agents SET desired_state='PAUSED', status=CASE WHEN status='RUNNING' THEN 'PAUSED' ELSE status END WHERE id=? AND desired_state='RUNNING'", id))
+			emit(db, { run_id: a.run_id, actor_id: "controller", type: "budget.exhausted", entity_id: id, payload: { pool_id: pool, cause_agent_id: a.actor_id } });
 	}
 	const pool = budgetPool(db, a.actor_id);
 	const ownExhausted = own !== null && pool.consumed >= own - 1e-9;
 	if (ownExhausted) for (const id of pool.members.filter((id) => id !== a.actor_id)) {
-		run(db, "UPDATE agents SET desired_state='PAUSED', status=CASE WHEN status='RUNNING' THEN 'PAUSED' ELSE status END WHERE id=? AND desired_state='RUNNING' AND status NOT IN ('CANCELLED','RETIRED','FAILED')", id);
+		// Recorded per member, so clearing limits can tell limit pauses from deliberate ones.
+		if (run(db, "UPDATE agents SET desired_state='PAUSED', status=CASE WHEN status='RUNNING' THEN 'PAUSED' ELSE status END WHERE id=? AND desired_state='RUNNING' AND status NOT IN ('CANCELLED','RETIRED','FAILED')", id))
+			emit(db, { run_id: a.run_id, actor_id: "controller", type: "budget.exhausted", entity_id: id, payload: { pool_id: pool.id, budget_usd: own, cause_agent_id: a.actor_id } });
 	}
 	const exhausted = ownExhausted || exhaustedPools.length > 0;
 	if (exhausted && getAgent(db, a.actor_id).desired_state === "RUNNING") {
@@ -271,7 +274,7 @@ export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportR
 		postMessage(db, { run_id: a.run_id, from: getCurrentManager(db, a.actor_id) ?? a.actor_id, to: a.actor_id, type: "agent.lifecycle", payload: { action: "pause", agent_id: a.actor_id, reason: "budget exhausted" } });
 		const mgr = getCurrentManager(db, a.actor_id);
 		if (mgr) {
-			postMessage(db, { run_id: a.run_id, from: a.actor_id, to: mgr, type: "system.notice", payload: { kind: "budget_paused", agent_id: a.actor_id, consumed_usd: consumed, budget_usd: own, text: `worker paused: budget exhausted ($${consumed} of $${own}). Its process stays up (tmux pane, if any, is unaffected); resume it with team_set_budget (resume: true) or a lifecycle resume.` } });
+			postMessage(db, { run_id: a.run_id, from: a.actor_id, to: mgr, type: "system.notice", payload: { kind: "budget_paused", agent_id: a.actor_id, consumed_usd: consumed, budget_usd: own, text: `worker paused: budget exhausted ($${consumed} of $${own}). Its process stays up (tmux pane, if any, is unaffected); resume it with team_set_budget (a higher max_cost_usd, or null for no ceiling, plus resume: true). The human operator can lift every limit with /team admin clear-limits.` } });
 		}
 	}
 	return { consumed_usd: consumed, budget_exhausted: exhausted };

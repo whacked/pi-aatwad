@@ -4,7 +4,7 @@
 // where it is the ancestor. Terminated descendants leave slot-less CONSUMED rows (their actual spend),
 // reported as settled_usd. max_subtree_slots bounds reserved_slots; max_subtree_usd bounds reserved_usd + settled_usd.
 import { type DB, all, get, run, newId, nowIso, emit } from "./db.ts";
-import { fail } from "./errors.ts";
+import { fail, LIMIT_REMEDY } from "./errors.ts";
 import { getAllocation, getAncestry, runConfig, getSubtree, TERMINAL_SQL } from "./queries.ts";
 import type { BudgetView, Envelope_Limits } from "../shared/protocol.ts";
 
@@ -73,7 +73,7 @@ export function assertWithinEnvelopes(db: DB, agents: Iterable<string>, hint?: s
 		if (runConfig(db, runId).operator_unlimited) continue;
 		const al = getAllocation(db, a);
 		if ((al.limits.max_subtree_slots !== null && al.reserved_slots > al.limits.max_subtree_slots) || (al.limits.max_subtree_usd !== null && al.committed_usd > al.limits.max_subtree_usd + EPS)) {
-			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} would be exceeded`, { agent_id: a, reserved_slots: al.reserved_slots, max_subtree_slots: al.limits.max_subtree_slots, reserved_usd: al.reserved_usd, settled_usd: al.settled_usd, max_subtree_usd: al.limits.max_subtree_usd, hint });
+			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} would be exceeded. ${LIMIT_REMEDY}`, { agent_id: a, reserved_slots: al.reserved_slots, max_subtree_slots: al.limits.max_subtree_slots, reserved_usd: al.reserved_usd, settled_usd: al.settled_usd, max_subtree_usd: al.limits.max_subtree_usd, hint });
 		}
 	}
 }

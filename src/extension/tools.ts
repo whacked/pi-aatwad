@@ -29,8 +29,8 @@ const RoleSchema = Type.Object({
 	count: Type.Integer({ minimum: 1, description: "How many agents of this role" }),
 	capabilities: Type.Array(Type.String(), { description: "Capability tags required (see team_get_models)" }),
 	preferred_model_id: Type.Optional(Type.String({ description: "Catalog model id from team_get_models" })),
-	max_cost_usd: Type.Optional(Type.Number({ minimum: 0, description: "Optional spend ceiling in USD; omitted shares the leader's budget pool" })),
-	max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1 })),
+	max_cost_usd: Type.Optional(Type.Number({ minimum: 0, description: "Spend ceiling in USD, only when the human asked for one; omitted shares the leader's budget pool" })),
+	max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1, description: "Only when the human asked for a time limit; omit otherwise" })),
 });
 
 const PROPOSAL_WARNING =
@@ -297,11 +297,12 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_create_member", "Team: create member",
-		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to inherit the leader session's current model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. There are no implicit member limits. Omitted spend/runtime limits inherit the leader's limits (unbounded if the leader is unbounded). You may choose explicit worker budgets and lifetimes, which are enforced even with unlimited run policy. Subordinate managers use team_request_expansion instead.",
+		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to inherit the leader session's current model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. There are no implicit member limits. Omit max_cost_usd and max_runtime_seconds unless the human explicitly asked for a spend or time limit: omitted limits inherit the leader's (unbounded if the leader is unbounded), and an explicit limit pauses or stops the member when reached. Subordinate managers use team_request_expansion instead.",
 		Type.Object({
 			name: Type.Optional(Type.String({ description: "Optional friendly member name; defaults to Alpha, Beta, etc." })), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
 			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),
-			max_cost_usd: Type.Optional(Type.Number({ minimum: 0 })), max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1 })),
+			max_cost_usd: Type.Optional(Type.Number({ minimum: 0, description: "Only when the human asked for a spend limit; omit otherwise" })),
+			max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1, description: "Only when the human asked for a time limit; omit otherwise" })),
 		}),
 		async (p, id, ctx) => {
 			if (p.model && p.preferred_model_id) throw new Error("Specify model or preferred_model_id, not both");
@@ -366,8 +367,8 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_set_budget", "Team: change budget",
-		"Change a member's total spend ceiling (including already consumed spend and inheriting members), by name or ID. This is an absolute USD total, not extra credits. Normal ancestor/global/grant limits apply; only the human can enable /team admin unlimited. Set resume=true to also resume a paused member; otherwise its state is unchanged. Explicit worker ceilings are enforced even with unlimited run policy.",
-		Type.Object({ agent_id: Type.String(), max_cost_usd: Type.Number({ minimum: 0 }), resume: Type.Optional(Type.Boolean()) }),
+		"Change or remove a member's total spend ceiling (including already consumed spend and inheriting members), by name or ID. A number is an absolute USD total, not extra credits; null removes the member's own ceiling so it shares its lead's budget (unbounded if the lead is). Prefer null over guessing a larger number when a ceiling was not requested by the human. Normal ancestor/global/grant limits apply; only the human can lift those (/team admin clear-limits). Set resume=true to also resume a paused member; otherwise its state is unchanged.",
+		Type.Object({ agent_id: Type.String(), max_cost_usd: Type.Union([Type.Number({ minimum: 0 }), Type.Null()]), resume: Type.Optional(Type.Boolean()) }),
 		async (p, id) => json("Budget updated", await rt.client.post(`/budgets/${encodeURIComponent(await agent(p.agent_id))}`, { max_cost_usd: p.max_cost_usd, resume: p.resume }, { idempotencyKey: key("team_set_budget", id) })),
 	);
 	reg(

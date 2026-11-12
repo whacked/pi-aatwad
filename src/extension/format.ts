@@ -20,6 +20,8 @@ export function formatBudget(b: BudgetView): string {
 		`  usd: consumed ${usd(b.consumed_usd)}, reserved ${usd(b.reserved_usd)}, available ${usd(b.available_usd)} (subtree ceiling ${usd(b.limits?.max_subtree_usd)})`,
 		`  slots: live descendants ${b.subtree_live_agents}, reserved ${b.reserved_slots}, available ${b.available_slots ?? "unbounded"} (ceiling ${b.limits?.max_subtree_slots ?? "unbounded"})`,
 		`  single-decision grant: ≤${b.limits?.max_grant_slots ?? "unbounded"} slots, ≤${usd(b.limits?.max_grant_usd)}`,
+		...(b.own_budget_usd != null || b.limits?.max_subtree_usd != null || b.limits?.max_subtree_slots != null
+			? ["  limits are optional: the human operator can list them with /team admin limits and remove them with /team admin clear-limits"] : []),
 	].join("\n");
 }
 
@@ -82,7 +84,7 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 	lines.push(`You are agent ${c.agent_id} (role: ${c.role}) in team run ${c.run_id}${c.is_root ? " — you are the ROOT of this organization" : ""}.`);
 	lines.push(c.parent ? `Manager: ${c.parent.role} [${c.parent.agent_id}]` : "Manager: none (root; you report to the human operator)");
 	const limits = c.budget?.limits;
-	lines.push(`Authority: manage descendants (budgets, models, close; resume via budget update); ${c.is_root ? "create members directly" : "request expansion; approval by your manager"}. Runs never expire. Omitted member limits inherit yours; you may choose explicit worker budgets/lifetimes.`);
+	lines.push(`Authority: manage descendants (budgets, models, close; resume via budget update); ${c.is_root ? "create members directly" : "request expansion; approval by your manager"}. Runs never expire. Omitted member limits inherit yours; set a spend or time limit only when the human asks for one.`);
 	if (c.budget?.own_budget_usd != null) lines.push(`Spend ceiling: ${usd(c.budget.own_budget_usd)}; pool consumed ${usd(c.budget.pool_consumed_usd ?? c.budget.consumed_usd)}. Inheriting members share this pool.`);
 	if (limits) lines.push(`Single-decision grant: ${limits.max_grant_slots ?? "unbounded"} slots / ${usd(limits.max_grant_usd)}; session limit: ${limits.max_session_seconds || "unbounded"} seconds. Configured ancestor limits still apply; escalate when exceeded.`);
 	if (c.reporting) {

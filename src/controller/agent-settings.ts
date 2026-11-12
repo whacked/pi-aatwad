@@ -23,7 +23,8 @@ export function updateBudget(ctx: Ctx, p: Principal, scope: ReqScope, id: string
 	onlyKeys(b, ["max_cost_usd", "resume"]);
 	if (b.resume !== undefined && typeof b.resume !== "boolean") fail("INVALID", "resume must be boolean");
 	const usd = b.max_cost_usd;
-	if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) fail("INVALID", "max_cost_usd must be a nonnegative finite total ceiling");
+	if (usd === null) return removeBudget(ctx, p, scope, a, b.resume === true);
+	if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) fail("INVALID", "max_cost_usd must be a nonnegative finite total ceiling, or null to remove the ceiling");
 	const db = ctx.db, cfg = runConfig(db, a.run_id), allocation = getAllocation(db, id);
 	if (usd < allocation.consumed_usd) fail("BUDGET_EXCEEDED", "cannot set a budget below spend already consumed");
 	const before = ownBudgetUsd(db, id);
@@ -55,6 +56,37 @@ export function updateBudget(ctx: Ctx, p: Principal, scope: ReqScope, id: string
 		if (usd <= allocation.consumed_usd) fail("BUDGET_EXCEEDED", "resume requires unspent budget");
 		lifecycle(ctx, p, scope, id, { action: "resume", reason: "resume requested with budget update" });
 	}
+	ctx.kick();
+	return budgetView(db, id);
+}
+
+/** Drop a member's own ceiling: it rejoins its lead's pool (unbounded when the lead is). */
+function removeBudget(ctx: Ctx, p: Principal, scope: ReqScope, a: ReturnType<typeof getAgent>, resume: boolean) {
+	const db = ctx.db, id = a.id as string, before = ownBudgetUsd(db, id);
+	const lead = getAncestry(db, id)[0];
+	const meta = parseJson<Record<string, unknown>>(a.metadata_json, {});
+	if (lead) {
+		const target = budgetPool(db, lead).id;
+		// Members that inherited this member's pool follow it into the lead's pool.
+		for (const descendant of getSubtree(db, id).slice(1)) {
+			const childMeta = parseJson<Record<string, unknown>>(getAgent(db, descendant).metadata_json, {});
+			if (childMeta.budget_pool_id !== id) continue;
+			childMeta.budget_pool_id = target;
+			run(db, "UPDATE agents SET metadata_json=? WHERE id=?", JSON.stringify(childMeta), descendant);
+		}
+		meta.own_budget_usd = null;
+		meta.budget_inherited = true;
+		meta.budget_pool_id = target;
+	} else {
+		delete meta.own_budget_usd;
+		delete meta.budget_inherited;
+		delete meta.budget_pool_id;
+	}
+	run(db, "UPDATE agents SET metadata_json=? WHERE id=?", JSON.stringify(meta), id);
+	run(db, "UPDATE reservations SET usd=0 WHERE beneficiary_id=? AND state='ACTIVE'", id);
+	recomputeAllocations(db, a.run_id);
+	emit(db, { run_id: a.run_id, actor_id: p.actor_id, type: "budget.updated", entity_id: id, payload: { before, max_cost_usd: null } });
+	if (resume) lifecycle(ctx, p, scope, id, { action: "resume", reason: "resume requested with budget removal" });
 	ctx.kick();
 	return budgetView(db, id);
 }

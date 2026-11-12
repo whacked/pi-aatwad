@@ -23,14 +23,14 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "tree", args: "[run_id] [--all]", help: "live logical hierarchy" },
 	{ name: "status", args: "", help: "controller, run, agent and pending work" },
 	{ name: "version", args: "", help: "loaded extension and controller versions, source and state paths" },
-	{ name: "budget", args: "[name|agent_id] [total_usd] [--resume]", help: "show budget or change total own spend ceiling" },
+	{ name: "budget", args: "[name|agent_id] [total_usd|none] [--resume]", help: "show budget, set a total spend ceiling, or remove it with none" },
 	{ name: "inbox", args: "", help: "deliver pending team messages into this session" },
 	{ name: "proposals", args: "", help: "expansion proposals to review / mine" },
 	{ name: "events", args: "[run_id]", help: "recent audit events" },
 	{ name: "model", args: "[name|agent_id] <provider/model>", help: "switch an existing member model when idle" },
 	{ name: "inspect", args: "[name|agent_id]", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
-	{ name: "admin", args: "[status|unlimited|bounded|clear-deadlines] [run_id]", help: "human operator resource policy" },
+	{ name: "admin", args: "[status|limits|clear-limits|clear-deadlines|unlimited|bounded] [run_id]", help: "human operator resource policy: list or remove limits" },
 	{ name: "stop", args: "[run_id]", help: "stop a whole team resumably; preserve identities and transcripts" },
 	{ name: "remove", args: "[run_id] [--yes]", help: "permanently remove a whole team; preserve Pi and worktrees" },
 	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi team terminals in tmux" },
@@ -189,6 +189,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				await view.focus(focusTarget === tree.root.agent_id ? "leader" : focusTarget);
 			}
 			else await view.focus();
+			if (view.reclaimedFrom) out(ctx, `This pane was still tagged for ${view.reclaimedFrom}. It now hosts ${id}; nothing was stopped or deleted.`);
 			out(ctx, view.opts.location ? `Team panes opened beside Pi in the current tmux window; interactive members appear automatically` : `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
 		},
 
@@ -245,13 +246,24 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		admin: async (a, ctx, yes) => {
 			if (rt.managed) throw new Error("only the human operator can change resource limits");
 			const action = a[0] ?? "status";
-			if (!["status", "unlimited", "bounded", "clear-deadlines"].includes(action)) throw new Error("usage: /team admin [status|unlimited|bounded|clear-deadlines] [run_id]");
+			if (!["status", "limits", "unlimited", "bounded", "clear-deadlines", "clear-limits"].includes(action)) throw new Error("usage: /team admin [status|limits|clear-limits|clear-deadlines|unlimited|bounded] [run_id]");
 			const id = await runId(ctx, a[1]);
 			const token = await rt.commandToken();
-			if (action !== "status" && !(await confirm(ctx, yes, `Apply resource policy ${action} to ${id}? Existing limits may be removed or re-enforced.`))) return;
-			const policy = action === "status" ? await rt.client.get<{ mode: string }>(`/runs/${id}/admin`, { token })
-				: await rt.client.post<{ mode: string }>(`/runs/${id}/admin`, { mode: action }, { token });
-			out(ctx, `Human operator policy for ${id}: ${policy.mode.toUpperCase()}${action === "clear-deadlines" ? " — saved session/runtime deadlines cleared for all members; budgets unchanged; paused members remain paused" : action === "unlimited" ? " — global spend, member-count and recursion-depth caps are bypassed; explicit worker budgets and deadlines remain enforced" : ""}`);
+			const read = action === "status" || action === "limits";
+			if (!read && !(await confirm(ctx, yes, action === "clear-limits"
+				? `Remove every spend, member-count, depth and time limit from ${id}, and resume members those limits paused?`
+				: `Apply resource policy ${action} to ${id}? Existing limits may be removed or re-enforced.`))) return;
+			type Policy = { mode: string; limits?: string[]; resumed?: string[]; still_paused?: string[] };
+			const policy = read ? await rt.client.get<Policy>(`/runs/${id}/admin`, { token })
+				: await rt.client.post<Policy>(`/runs/${id}/admin`, { mode: action }, { token });
+			const limits = policy.limits === undefined ? [] // older controller
+				: policy.limits.length ? [`Limits in force (${policy.limits.length}):`, ...policy.limits.map((l) => `  ${l}`), "Remove all with /team admin clear-limits, or one member's ceiling with /team budget <member> none."]
+				: ["No limits in force: spend, member count, depth and run time are unbounded. Set one with /team budget <member> <usd>."];
+			const cleared = action === "clear-limits" ? [
+				`Resumed ${policy.resumed?.length ?? 0} member(s) that a limit had paused.`,
+				...(policy.still_paused?.length ? [`Still paused (no limit-caused pause recorded; resume with /team budget <member> none --resume): ${policy.still_paused.join(", ")}`] : []),
+			] : [];
+			out(ctx, [`Human operator policy for ${id}: ${policy.mode.toUpperCase()}${action === "clear-deadlines" ? " — saved session/runtime deadlines cleared for all members; budgets unchanged; paused members remain paused" : action === "unlimited" ? " — global spend, member-count and recursion-depth caps are bypassed; explicit worker budgets and deadlines remain enforced" : ""}`, ...cleared, ...limits].join("\n"));
 		},
 
 		resume: async (a, ctx, yes) => {
@@ -303,7 +315,9 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				catch (e) { out(ctx, `Attached, but could not retire the unused empty team: ${errText(e)}`, "warning"); }
 			}
 			initializedRunId = undefined;
-			out(ctx, `Resumed ${runLabel(run)}. Use /team tree to inspect members, then /team watch to open their Pi panes.`);
+			// Teams created before limits became opt-in still carry their saved caps: say so up front.
+			const saved = await rt.client.get<{ limits?: string[] }>(`/runs/${target}/admin`, { token: op }).then((r) => r.limits ?? [], () => []);
+			out(ctx, `Resumed ${runLabel(run)}. Use /team tree to inspect members, then /team watch to open their Pi panes.${saved.length ? `\nThis team has ${saved.length} saved limit(s) that can block or pause members. /team admin limits lists them; /team admin clear-limits removes them all.` : ""}`);
 		},
 
 		tree: async (a, ctx) => {
@@ -348,13 +362,19 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		},
 
 		budget: async (a, ctx, yes) => {
-			const implicitValue = a[0] !== undefined && a[0].trim() !== "" && Number.isFinite(Number(a[0])) && (a.length === 1 || a[1] === "--resume");
+			const resume = a.includes("--resume");
+			a = a.filter((arg) => arg !== "--resume");
+			const isValue = (s: string | undefined) => s !== undefined && s.trim() !== "" && (s === "none" || Number.isFinite(Number(s)));
+			const implicitValue = a.length === 1 && isValue(a[0]);
 			const value = implicitValue ? a[0] : a[1];
+			if (value !== undefined && !isValue(value)) throw new Error("usage: /team budget [name|agent_id] [total_usd|none] [--resume]");
 			const target = implicitValue ? undefined : a[0] ?? rt.identity?.agent_id;
 			const tok = await rt.commandToken();
 			const id = await agent(target, ctx);
-			if (value !== undefined && !(await confirm(ctx, yes, `Set ${id} total spend ceiling to $${value}${a.includes("--resume") ? " and resume it" : ""}? This is not additional credit.`))) return;
-			const budget = value === undefined ? await rt.client.budget(id, { token: tok }) : await rt.client.post<import("../shared/protocol.ts").BudgetView>(`/budgets/${encodeURIComponent(id)}`, { max_cost_usd: Number(value), resume: a.includes("--resume") }, { token: tok });
+			if (value !== undefined && !(await confirm(ctx, yes, value === "none"
+				? `Remove ${id}'s own spend ceiling${resume ? " and resume it" : ""}? It will share its lead's budget (unbounded if the lead is).`
+				: `Set ${id} total spend ceiling to $${value}${resume ? " and resume it" : ""}? This is not additional credit.`))) return;
+			const budget = value === undefined ? await rt.client.budget(id, { token: tok }) : await rt.client.post<import("../shared/protocol.ts").BudgetView>(`/budgets/${encodeURIComponent(id)}`, { max_cost_usd: value === "none" ? null : Number(value), resume }, { token: tok });
 			out(ctx, formatBudget(budget));
 		},
 

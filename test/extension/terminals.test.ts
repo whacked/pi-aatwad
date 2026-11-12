@@ -99,3 +99,43 @@ test("recruitment works with missing tmux, stale markers, Herdr and an explicit 
   await hs.cleanup();
  }
 });
+
+test("the leader Pi occupying a pane takes over stale tags of an active or unknown team without stopping it", { skip: !haveTmux }, async () => {
+	const hs = await harness();
+	const socket = join(hs.dir, "tmux.sock");
+	const oldEnv = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
+	let view: TmuxWatch | undefined;
+	try {
+		const old = await newRun(hs, { models: [] }), current = await newRun(hs);
+		const made = await hs.call("POST", "/members", { token: old.token, body: { name: "Active", responsibility: "Keep working" } });
+		const member = made.body.spawned_agent_ids[0];
+		view = new TmuxWatch({ stateDir: hs.dir, runId: old.run_id, socket });
+		const pane = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "user-session", "-x", "180", "-y", "50", "/bin/sh");
+		await view.open(pane);
+		const pid = await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}");
+		process.env.TMUX = `${socket},0,0`; process.env.TMUX_PANE = pane;
+		const rt = { paths: statePaths(hs.dir), commandToken: async () => hs.op, client: new TeamClient({ paths: statePaths(hs.dir), noReconnect: true }) } as any;
+		// An inherited pane marker alone proves nothing: the other team stays protected.
+		await assert.rejects(openTerminals(rt, current.run_id), /not running inside it/);
+		const seen: number[] = [];
+		const fresh = await openTerminals(rt, current.run_id, { occupiesPane: async (panePid) => { seen.push(panePid); return true; } });
+		assert.deepEqual(seen, [Number(pid)], "occupancy is checked against the pane's own process");
+		assert.match(fresh.reclaimedFrom!, new RegExp(`${old.run_id}.*1 active member.*team resume ${old.run_id}`));
+		assert.equal(await fresh.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), fresh.owner);
+		assert.equal(await fresh.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_agent"), "leader");
+		assert.equal(await fresh.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid, "the human's pane is never respawned");
+		assert.notEqual((await hs.call("GET", `/agents/${member}`, { token: hs.op })).body.agent.status, "CANCELLED", "the previous team keeps its members");
+		assert.equal((await hs.call("GET", "/runs", { token: hs.op })).body.runs.find((r: any) => r.run_id === old.run_id).status, "RUNNING");
+		assert.equal((await hs.call("GET", `/runs/${current.run_id}/terminal`, { token: hs.op })).body.enabled, true);
+		// Tags left by a different controller state directory are taken over the same way.
+		await new TmuxWatch({ stateDir: join(hs.dir, "another-controller"), runId: "run-x", socket }).tag(pane, "old-member");
+		const again = await openTerminals(rt, current.run_id, { occupiesPane: async () => true });
+		assert.match(again.reclaimedFrom!, /another controller state directory/);
+		assert.equal(await again.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), again.owner);
+		assert.equal((await openTerminals(rt, current.run_id, { occupiesPane: async () => true })).reclaimedFrom, undefined, "own tags need no takeover");
+	} finally {
+		for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		try { await view?.tmux("kill-server"); } catch {}
+		await hs.cleanup();
+	}
+});

@@ -1,7 +1,7 @@
 // Expansion proposals and decisions (APPROVE / REJECT / AMEND / ESCALATE) with atomic reservation + durable spawn intents.
 import { join } from "node:path";
 import { type DB, type Row, all, get, run, newId, nowIso, emit, parseJson } from "./db.ts";
-import { ApiErr, CommittedError, fail } from "./errors.ts";
+import { ApiErr, CommittedError, fail, LIMIT_REMEDY } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type { CreateExpansionResponse, DecisionResponse, ExpansionProposal, ExpansionRole, ProposalListResponse, ProposalView, ProposalStatus } from "../shared/protocol.ts";
 import { assertSchema, obj, str, oneOf, onlyKeys, int } from "./validate.ts";
@@ -195,9 +195,9 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 		const ts = nowIso();
 		run(db, "UPDATE proposals SET status = 'REJECTED', decided_at = ?, updated_at = ? WHERE id = ?", ts, ts, prop.id);
 		recordDecision(db, prop.id, decidedBy, "REJECT", `HARD_CAP: ${violations.join("; ")}`, prop.revision);
-		postMessage(db, { run_id: runId, from: decidedBy, to: requester, type: "team.expand.decision", payload: { proposal_id: prop.id, decision: "REJECT", status: "REJECTED", reason: `global hard cap: ${violations.join("; ")}` }, correlation_id: prop.id });
+		postMessage(db, { run_id: runId, from: decidedBy, to: requester, type: "team.expand.decision", payload: { proposal_id: prop.id, decision: "REJECT", status: "REJECTED", reason: `global hard cap: ${violations.join("; ")}. ${LIMIT_REMEDY}` }, correlation_id: prop.id });
 		emit(db, { run_id: runId, actor_id: actor, type: "governance.hard_cap_denied", entity_id: prop.id, payload: { violations, requested_slots: n, requested_usd: usd } });
-		return new CommittedError(new ApiErr("HARD_CAP", `global hard cap: ${violations.join("; ")}`, { violations, proposal_status: "REJECTED" }));
+		return new CommittedError(new ApiErr("HARD_CAP", `global hard cap: ${violations.join("; ")}. ${LIMIT_REMEDY}`, { violations, proposal_status: "REJECTED", remedy: LIMIT_REMEDY }));
 	}
 
 	// 2) Reviewer's per-decision grant authority.
@@ -217,7 +217,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 		if (cfg.operator_unlimited) continue;
 		const al = getAllocation(db, a);
 		if ((al.limits.max_subtree_slots !== null && al.reserved_slots + n > al.limits.max_subtree_slots) || (al.limits.max_subtree_usd !== null && al.committed_usd + usd > al.limits.max_subtree_usd + 1e-9)) {
-			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} cannot absorb ${n} slots / $${usd}`, {
+			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} cannot absorb ${n} slots / $${usd}. ${LIMIT_REMEDY}`, {
 				agent_id: a,
 				reserved_slots: al.reserved_slots,
 				max_subtree_slots: al.limits.max_subtree_slots,

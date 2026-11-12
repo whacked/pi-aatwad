@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.18, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.19, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -99,9 +99,15 @@ operator commands for other teams.
 stops owned processes, revokes all credentials and takes the team out of every
 listing; a removed team can never be resumed. It always asks for confirmation
 (`--yes` without a UI). Neither command kills your Pi, deletes worktrees or touches
-project files. To close one member, ask the leader (`team_close_member`). A leftover pane
-tag with no active members is recovered automatically; active foreign teams are
-protected with instructions to resume or stop them first.
+project files. To close one member, ask the leader (`team_close_member`). 
+
+tmux pane tags outlive the Pi session that set them. When the leader Pi itself runs
+in a pane still tagged for another team, `/team watch` verifies that (the pane's
+process is an ancestor of this Pi), replaces the tag and opens the member panes; it
+reports which team the pane used to show. Nothing in the other team is stopped: its
+members continue detached and `/team resume <run_id>` returns to them. A pane this
+Pi does not occupy is never taken over. `/team watch focus <member>` switches to one
+member's pane.
 
 Inside Pi:
 
@@ -113,7 +119,7 @@ Inside Pi:
 | `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
 | `/team report-to [run_id\|none]` | Make this leader report to another team leader, or disconnect it. |
 | `/team reporting [--all\|dismiss\|transfer [run_id]\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
-| `/team admin [status\|unlimited\|bounded\|clear-deadlines] [run_id]` | Human operator: inspect/change resource policy or explicitly clear saved worker deadlines. |
+| `/team admin [status\|limits\|clear-limits\|clear-deadlines\|unlimited\|bounded] [run_id]` | Human operator: list the limits in force, remove them all, or change resource policy. |
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
 | `/team inspect [agent_id]` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
@@ -211,6 +217,28 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 ### Configuration
 
 `/team init config.json` accepts a partial `RunConfig` (see `src/shared/protocol.ts`): global hard caps (`limits`), a model catalog (`models`), and the root's envelope. Without one, there are no numeric spend, worker-lifetime, member-count, pending-spawn, grant or depth limits; the catalog contains just the root's own model (id `leader`). The historical design example is not the default policy. Runs never expire: legacy `max_run_seconds` values are accepted for compatibility but ignored. Provider API keys stay in your environment. They are never stored in SQLite or sent in messages.
+
+### Limits are opt-in
+
+A team has no spend, time, member-count or depth limit unless a human asks for one.
+This matters most on subscription accounts, where dollar accounting is not meaningful
+and an invented ceiling only pauses members mid-work. Leaders are instructed never
+to invent a member budget or lifetime.
+
+| Human operator | Effect |
+|---|---|
+| `/team admin limits [run_id]` | List every limit in force: run caps, the leader's envelope, and each member's own ceiling or timer. |
+| `/team admin clear-limits [run_id]` | Remove all of them, return every member to one shared unbounded pool, and resume members that a limit had paused. Deliberate pauses are left alone and listed. |
+| `/team budget <member> <usd>` | Set one member's total spend ceiling when you want one. |
+| `/team budget <member> none [--resume]` | Remove that ceiling; the member shares its lead's budget again. |
+
+Teams created before limits became opt-in keep the caps that were saved with them
+(for example a $25 run, a $20 leader envelope, 11 members, one-hour sessions).
+`/team resume` points this out, and `/team admin clear-limits` removes them. When a
+limit blocks an agent, the error names the limit and these commands, so the agent
+reports the remedy instead of asking for a new team. Agents can remove a
+descendant's ceiling (`team_set_budget` with `max_cost_usd: null`) but can never
+change run-level policy.
 
 ### Human operator resource policy
 
@@ -358,6 +386,7 @@ friendly unused names. Autocomplete suggests active member names.
 /team budget Alpha
 /team budget Alpha 5
 /team budget Alpha 5 --resume
+/team budget Alpha none
 /team model Alpha openrouter/vendor/model-id
 /team send "Senior Reviewer" Review the latest patch
 /team watch focus Alpha
@@ -368,7 +397,8 @@ openrouter/vendor/model-id”. It uses `team_set_budget` or `team_set_model` wit
 name. Budget changes retain accounting, update ancestor reservations, and enforce
 grant, ancestor and global ceilings. They cannot lower the ceiling below consumed
 spend. `resume: true` also resumes the member; otherwise paused state is preserved.
-`/team admin unlimited` remains the human-only way to remove caps.
+`max_cost_usd: null` (or `/team budget <member> none`) removes a member's ceiling.
+Run-level caps are removed only by the human, with `/team admin clear-limits`.
 
 A model change is queued, then applied through Pi's model API when the member is
 idle (normally on its next heartbeat, within about 10 seconds). The process, pane,

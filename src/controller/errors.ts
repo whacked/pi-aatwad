@@ -19,6 +19,9 @@ export function fail(code: ErrorCode, message: string, details?: unknown): never
 	throw new ApiErr(code, message, details);
 }
 
+/** Limits are operator policy: tell a blocked agent exactly who can lift them and how. */
+export const LIMIT_REMEDY = "Agents cannot lift this limit; do not retry or work around it. Ask the human operator to run /team admin limits (review) or /team admin clear-limits (lift every spend, member-count, depth and time limit in this team).";
+
 export function statusFor(code: ErrorCode): number {
 	return STATUS[code];
 }

@@ -17,6 +17,8 @@ export class TmuxWatch {
 	opts: WatchOptions;
 	name: string;
 	owner: string;
+	/** Set when opening took over a pane still tagged for another team; shown to the operator. */
+	reclaimedFrom?: string;
 	constructor(opts: WatchOptions) {
 		this.opts = opts;
 		this.owner = createHash("sha256").update(resolve(opts.stateDir)).update("\0").update(opts.runId).digest("hex");
@@ -78,7 +80,7 @@ export class TmuxWatch {
 		if (inPlacePane) {
 			if (!/^%\d+$/.test(inPlacePane)) throw new Error("Invalid leader pane ID");
 			const owner = await this.tmux("show-options", "-p", "-qv", "-t", inPlacePane, "@pi_team_owner");
-			if (owner && owner !== this.owner) throw new Error(`This pane already belongs to another team (pane ${inPlacePane}, owner ${owner.slice(0, 16)}, requested run ${this.opts.runId}). Ownership changed or stale code bypassed recovery; run /team version and /team list. Resume/stop the owning team or use a fresh pane; refusing to overwrite its tags.`);
+			if (owner && owner !== this.owner) throw new Error(`This pane is still tagged for another team (pane ${inPlacePane}, owner ${owner.slice(0, 16)}, requested run ${this.opts.runId}). Run /team watch from the leader Pi itself so the tag can be verified and replaced; if this persists, /team version shows whether the extension and controller are current.`);
 			this.opts.location = { window: await this.tmux("display-message", "-p", "-t", inPlacePane, "#{window_id}"), leader: inPlacePane };
 			// Only mark this pane; never take ownership of the user's session or window.
 			await this.tmux("set-option", "-p", "-t", inPlacePane, "@pi_team_owner", this.owner);
