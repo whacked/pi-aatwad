@@ -217,6 +217,11 @@ test("commands accept quoted member names, suggest names, and change budget/mode
 		const id = made.body.spawned_agent_ids[0];
 		await s.command.handler('budget "Senior Reviewer" 4', s.ctx);
 		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 4);
+		const words = id.slice("agent-".length).replaceAll("-", " ");
+		await s.command.handler(`budget "${words}" 3`, s.ctx);
+		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 3, "quoted multi-word IDs route to the selected member");
+		await s.command.handler(`budget "agent ${words}" 4`, s.ctx);
+		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 4, "optional agent prefix is accepted inside quoted command argument");
 		await s.command.handler('inspect "senior reviewer"', s.ctx);
 		assert.ok(s.notes.some((n) => n.includes("Senior Reviewer")));
 		await s.command.handler('send "Senior Reviewer" Check carefully', s.ctx);

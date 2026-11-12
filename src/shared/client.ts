@@ -7,6 +7,7 @@ import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, fstatSync } from "node:fs";
 import { basename } from "node:path";
+import { matchesAgentWords } from "./agent-reference.ts";
 import {
 	ENV_STATE_DIR,
 	HDR_IDEMPOTENCY,
@@ -551,21 +552,23 @@ export class TeamClient {
 	tree(runId: string, o?: CallOptions, activeOnly = false): Promise<TreeResponse> {
 		return this.get(`/runs/${enc(runId)}/tree${activeOnly ? "?active_only=1" : ""}`, o);
 	}
-	/** Resolve exact names within one run; IDs remain usable without a run. */
+	/** Resolve exact names or unique whole-word ID references within a run; full IDs need no run. */
 	async resolveAgent(ref: string, runId?: string, o?: CallOptions): Promise<string> {
 		// Preserve exact-ID routing (including cross-team IDs) for both saved hex and new word IDs.
 		if (/^agent-(?:[0-9a-f]{16}|[a-z]+(?:-[a-z]+){5})$/i.test(ref) || ref === "controller") return ref;
-		if (!runId) throw new Error("Agent names require an attached team; use /team resume or an agent ID");
+		if (!runId) throw new Error("Agent names and short IDs require an attached team; use /team resume or a full agent ID");
 		const t = await this.tree(runId, o);
 		const flat = (n: TreeResponse["root"]): TreeResponse["root"][] => [n, ...n.children.flatMap(flat)];
 		const nodes = flat(t.root);
 		if (nodes.some((n) => n.agent_id === ref)) return ref;
 		const matches = nodes.filter((n) => n.role.trim().toLowerCase() === ref.trim().toLowerCase());
 		const active = matches.filter((n) => !["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(n.status));
-		const candidates = active.length ? active : matches;
+		// Exact names retain active-replacement semantics. ID aliases must be
+		// unambiguous across all members, so lifecycle changes cannot silently retarget them.
+		const candidates = matches.length ? (active.length ? active : matches) : nodes.filter((n) => matchesAgentWords(n.agent_id, ref));
 		if (candidates.length === 1) return candidates[0].agent_id;
-		if (candidates.length > 1) throw new Error(`Ambiguous agent name '${ref}'; use an ID: ${candidates.map((n) => `${n.role} [${n.agent_id}]`).join(", ")}`);
-		throw new Error(`No agent named '${ref}' in this team. Use /team tree to see names and IDs.`);
+		if (candidates.length > 1) throw new Error(`Ambiguous agent reference '${ref}'; use more ID words or a full ID: ${candidates.map((n) => `${n.role} [${n.agent_id}]`).join(", ")}`);
+		throw new Error(`No agent named '${ref}' or matching those ID words in this team. Use /team tree to see names and IDs.`);
 	}
 
 	sendMessage(req: SendMessageRequest, o?: CallOptions): Promise<SendMessageResponse> {

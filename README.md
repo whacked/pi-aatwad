@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.13, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.14, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -296,11 +296,22 @@ so absent or refused sockets trigger controller startup.
 
 ### Names, budgets, and model changes
 
-Agent arguments accept exact names or IDs in commands and tools: budget, model,
-inspect, send, stop, watch focus, resume's member argument, and task delegation.
-Names are case insensitive and scoped to the attached team. Quote names containing
-spaces. Ambiguous names require an ID; an active member takes precedence over old
-closed members with the same name. IDs remain usable without an attached team.
+Agent arguments accept exact names, full IDs, or unique ID-word references in
+commands and tools: budget, model, inspect, send, stop, watch focus, resume's
+member argument, and task delegation. Names and short references are case
+insensitive and scoped to the attached team; full IDs remain usable without an
+attached team and across linked teams. Exact names take precedence; an active
+member takes precedence over old closed members with the same exact name.
+
+For `agent-river-maple-orbit-silver-garden-cloud`, use `maple`, `agent maple`, or
+`river maple`. Words can occur anywhere in the ID; multi-word references must be
+adjacent and ordered. Spaces and hyphens are equivalent, but partial words do not
+match (`map` is not `maple`). If another ID starts `agent-river-egg-…`, `river` is
+ambiguous, while `maple` and `egg` select their respective agents. Ambiguity lists
+full candidate IDs instead of guessing—even if one matching member is inactive.
+Use more words or a full ID to disambiguate. Quote references containing spaces
+in commands, for example `/team send "river maple" "Please review the change"`.
+Tools accept the same multi-word reference as a single string argument.
 Omitting `name` in `team_create_member` assigns Alpha, Beta, Gamma, and other
 friendly unused names. Autocomplete suggests active member names.
 

@@ -316,7 +316,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_close_member", "Team: close member",
-		"Actually terminate a member in your subtree when requested. Cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. agent_id accepts an exact member name or ID; ambiguous names require an ID. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
+		"Actually terminate a member in your subtree when requested. Cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. agent_id accepts an exact member name, full ID, or unique whole ID words; ambiguous short references require more words or a full ID. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
 		Type.Object({ agent_id: Type.String(), reason: Type.Optional(Type.String()) }),
 		async (p, id) => {
 			const target = await agent(p.agent_id);
@@ -340,7 +340,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_watch", "Team: tmux terminals",
 		"Root only: open, inspect, focus, close or disable the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Open/focus/debug require tmux and Node on PATH. Use action off for detached workers (no tmux required); live interactive workers restart on saved transcripts, interrupting any current turn. Closing only hides the view.",
-		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug", "off"] as const), agent_id: Type.Optional(Type.String({ description: "Member name or agent ID; required for focus" })) }),
+		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug", "off"] as const), agent_id: Type.Optional(Type.String({ description: "Member name, full agent ID, or unique ID words; required for focus" })) }),
 		async (p) => {
 			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
 			if (p.action === "off") return json("Detached worker mode selected; existing workers restart on their saved transcripts", await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { enabled: false }));
@@ -372,7 +372,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	);
 	reg(
 		"team_set_model", "Team: change model",
-		"Change an existing member's model by exact name or agent ID. Resolve model from authenticated Pi models, or supply preferred_model_id from the catalog. Root may register models; managers may choose existing eligible entries. Queues an in-process switch when idle; keeps the member ID, Pi process, tasks and transcript. PENDING is not confirmation of application. Direct /model selections in member panes are persisted without messaging the leader.",
+		"Change an existing member's model by exact name, full agent ID, or unique ID words. Resolve model from authenticated Pi models, or supply preferred_model_id from the catalog. Root may register models; managers may choose existing eligible entries. Queues an in-process switch when idle; keeps the member ID, Pi process, tasks and transcript. PENDING is not confirmation of application. Direct /model selections in member panes are persisted without messaging the leader.",
 		Type.Object({ agent_id: Type.String(), model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()) }),
 		async (p, id, ctx) => {
 			if (!!p.model === !!p.preferred_model_id) throw new Error("Specify exactly one of model or preferred_model_id");
