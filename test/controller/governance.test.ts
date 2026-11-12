@@ -50,7 +50,7 @@ test("idempotency: same key+payload replays, different payload → IDEMPOTENCY_M
 test("demo flow: root → lead → workers → nested worker via escalation; differing models; hard cap refusal", async () => {
 	const hs = await harness();
 	try {
-		const { run_id, root, token: rootTok } = await newRun(hs);
+		const { run_id, root, token: rootTok } = await newRun(hs, { limits: { max_live_agents: 12 } });
 		const rootTask = await ownTask(hs, rootTok, root);
 		// Root recruits Lead B on a different model (root self-reviews within its envelope).
 		const [lead] = await recruit(hs, rootTok, rootTok, rootTask, [{ title: "lead", max_cost_usd: 4, preferred_model_id: "economy-coder" }]);
@@ -77,6 +77,11 @@ test("demo flow: root → lead → workers → nested worker via escalation; dif
 		assert.equal(sql(hs, "SELECT COUNT(*) n FROM reservations WHERE beneficiary_id = ? AND state='ACTIVE'", c)[0].n, 2);
 		assert.equal((await hs.call("GET", `/budgets/${lead}`, { token: leadTok })).body.reserved_slots, 2);
 
+		// Explicitly constrain this delegated lead to exercise escalation (not a default).
+		const { getAllocation } = await import("../../src/controller/queries.ts");
+		const { setLimits } = await import("../../src/controller/budgets.ts");
+		setLimits(hs.h.db, lead, { ...getAllocation(hs.h.db, lead).limits, max_subtree_slots: 2 });
+		setLimits(hs.h.db, c, { ...getAllocation(hs.h.db, c).limits, max_subtree_slots: 0 });
 		// C (itself a subordinate) proposes nested worker E. B's subtree is full → B cannot approve; B escalates; root approves.
 		const cTok = hs.ex.tokens.get(c)!;
 		const cTask = (await hs.call("GET", "/me", { token: cTok })).body.tasks[0].task_id;
@@ -124,7 +129,7 @@ test("demo flow: root → lead → workers → nested worker via escalation; dif
 test("per-decision grant exceeded → FORBIDDEN with escalate hint; REJECT and AMEND keep history", async () => {
 	const hs = await harness();
 	try {
-		const { root, token: rootTok } = await newRun(hs);
+		const { root, token: rootTok } = await newRun(hs, { root_envelope: { max_grant_slots: 2 } });
 		const t = await ownTask(hs, rootTok, root);
 		const [lead] = await recruit(hs, rootTok, rootTok, t, [{ title: "lead", max_cost_usd: 2 }]);
 		const leadTok = hs.ex.tokens.get(lead)!;

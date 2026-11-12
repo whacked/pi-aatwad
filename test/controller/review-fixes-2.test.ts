@@ -43,24 +43,21 @@ test("F5: retire/cancel with transfer_children_to is version-checked and recorde
 	}
 });
 
-test("F6: max_run_seconds — approvals hard-capped, reconciler applies deadline policy to running agents", { timeout: 20_000 }, async () => {
+test("F6: legacy max_run_seconds cannot expire a resumed run or its workers", { timeout: 20_000 }, async () => {
 	const hs = await harness();
 	try {
 		const { run_id, root, token: rt } = await newRun(hs, { limits: { max_run_seconds: 1 } });
 		const task = await ownTask(hs, rt, root);
 		const [a] = await recruit(hs, rt, rt, task, [{}]);
-		const pid = hs.ex.launchesFor(a)[0].id.pid;
-		await waitFor(() => sql(hs, "SELECT COUNT(*) n FROM events WHERE type = 'run.wallclock_exceeded' AND run_id = ?", run_id)[0].n === 1, "run wallclock event", 5000);
-		const ev = JSON.parse(await waitFor(() => sql(hs, "SELECT payload_json p FROM events WHERE type = 'agent.deadline_exceeded' AND entity_id = ?", a)[0]?.p, "agent deadline"));
-		assert.equal(ev.kind, "run");
-		await waitFor(() => hs.ex.stopped.includes(pid), "stop");
-		assert.equal(sql(hs, "SELECT status FROM tasks WHERE owner_id = ?", a)[0].status, "BLOCKED");
-		assert.equal(sql(hs, "SELECT status FROM agents WHERE id = ?", root)[0].status, "RUNNING", "root unaffected");
+		hs.h.db.prepare("UPDATE runs SET created_at=? WHERE id=?").run("2000-01-01T00:00:00Z", run_id);
+		await hs.restart({ crash: true });
+		await hs.h.reconciler.idle();
+		assert.equal(sql(hs, "SELECT COUNT(*) n FROM events WHERE type IN ('run.wallclock_exceeded', 'agent.deadline_exceeded') AND run_id=?", run_id)[0].n, 0);
+		assert.equal(sql(hs, "SELECT desired_state FROM agents WHERE id=?", a)[0].desired_state, "RUNNING");
 		const p = await hs.call("POST", "/expansions", { token: rt, body: proposal(task, [{}]) });
 		const d = await hs.call("POST", `/expansions/${p.body.proposal_id}/decision`, { token: rt, body: { decision: "APPROVE", reason: "late" } });
-		assert.equal(d.body.error.code, "HARD_CAP");
-		assert.match(d.body.error.message, /max_run_seconds/);
-		assert.equal(sql(hs, "SELECT COUNT(*) n FROM events WHERE type = 'governance.hard_cap_denied' AND entity_id = ?", p.body.proposal_id)[0].n, 1);
+		assert.equal(d.status, 200, JSON.stringify(d.body));
+		assert.equal(d.body.spawned_agent_ids.length, 1);
 	} finally {
 		await hs.cleanup();
 	}

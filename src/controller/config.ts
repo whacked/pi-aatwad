@@ -3,13 +3,13 @@ import { isAbsolute } from "node:path";
 import { DEFAULT_PROVIDER, LEADER_MODEL_ID, type Envelope_Limits, type ExpansionRole, type GlobalLimits, type ModelCatalogEntry, type RunConfig } from "../shared/protocol.ts";
 import { fail } from "./errors.ts";
 
-/** From recursive-agent-org-v1.2/examples/config.example.yaml */
+/** No numeric defaults: finite caps must be explicitly configured. */
 export const DEFAULT_LIMITS: GlobalLimits = {
-	max_live_agents: 12,
-	max_pending_spawns: 8,
-	emergency_max_depth: 12,
-	max_run_usd: 25,
-	max_run_seconds: 14400,
+	max_live_agents: null,
+	max_pending_spawns: null,
+	emergency_max_depth: null,
+	max_run_usd: null,
+	max_run_seconds: 0, // Legacy config field; run age is never a deadline.
 	// No implicit worker lifetime limit. Positive values are explicit opt-in caps.
 	max_agent_seconds: 0,
 	allow_providers: ["anthropic", "openrouter", "local"],
@@ -18,9 +18,9 @@ export const DEFAULT_LIMITS: GlobalLimits = {
 export { DEFAULT_PROVIDER, LEADER_MODEL_ID };
 
 export function defaultRootEnvelope(l: GlobalLimits): Envelope_Limits {
-	// Generous but strictly inside global caps (root itself occupies one live slot).
-	const slots = Math.max(0, l.max_live_agents - 1);
-	const usd = Math.round(l.max_run_usd * 0.8 * 100) / 100;
+	// Inherit configured caps in full (root itself occupies one live slot).
+	const slots = l.max_live_agents === null ? null : Math.max(0, l.max_live_agents - 1);
+	const usd = l.max_run_usd;
 	return {
 		max_subtree_slots: slots,
 		max_subtree_usd: usd,
@@ -59,8 +59,8 @@ export function buildRunConfig(partial: Partial<RunConfig> | undefined, root: Ro
 	// "same model as leader" must always be permitted.
 	if (!limits.allow_providers.includes(provider)) limits.allow_providers = [...limits.allow_providers, provider];
 	const root_envelope: Envelope_Limits = { ...defaultRootEnvelope(limits), ...(p.root_envelope ?? {}) };
-	if (root_envelope.max_subtree_slots > limits.max_live_agents - 1) root_envelope.max_subtree_slots = limits.max_live_agents - 1;
-	if (root_envelope.max_subtree_usd > limits.max_run_usd) root_envelope.max_subtree_usd = limits.max_run_usd;
+	if (limits.max_live_agents !== null && (root_envelope.max_subtree_slots === null || root_envelope.max_subtree_slots > limits.max_live_agents - 1)) root_envelope.max_subtree_slots = Math.max(0, limits.max_live_agents - 1);
+	if (limits.max_run_usd !== null && (root_envelope.max_subtree_usd === null || root_envelope.max_subtree_usd > limits.max_run_usd)) root_envelope.max_subtree_usd = limits.max_run_usd;
 	const workspace_root = p.workspace_root ?? root.cwd;
 	if (!isAbsolute(workspace_root)) fail("INVALID", "workspace_root must be absolute");
 	const deadline_policy = p.deadline_policy ?? "BLOCKED";
@@ -68,7 +68,7 @@ export function buildRunConfig(partial: Partial<RunConfig> | undefined, root: Ro
 	const root_failure_policy = p.root_failure_policy ?? "continue";
 	if (root_failure_policy !== "continue" && root_failure_policy !== "pause_subtree") fail("INVALID", "invalid root_failure_policy");
 	for (const k of ["max_live_agents", "max_pending_spawns", "emergency_max_depth", "max_run_usd"] as const) {
-		if (typeof limits[k] !== "number" || limits[k] < 0) fail("INVALID", `limits.${k} must be a non-negative number`);
+		if (limits[k] !== null && (typeof limits[k] !== "number" || !Number.isFinite(limits[k]) || limits[k] < 0)) fail("INVALID", `limits.${k} must be a non-negative number`);
 	}
 	if (p.operator_unlimited !== undefined && typeof p.operator_unlimited !== "boolean") fail("INVALID", "operator_unlimited must be boolean");
 	return { limits, models, root_envelope, root_failure_policy, workspace_root, deadline_policy, ...(p.operator_unlimited ? { operator_unlimited: true } : {}) };
@@ -90,15 +90,15 @@ function normalizeModel(m: Partial<ModelCatalogEntry>): ModelCatalogEntry {
 	};
 }
 
-/** Envelope for a newly approved child. It holds no subtree capacity until a later approval grants it. */
+/** New children inherit their leader's authority; explicit worker timers may tighten it. */
 export function childEnvelope(role: ExpansionRole, parent: Envelope_Limits, limits: GlobalLimits): Envelope_Limits {
-	const timeCaps = [role.max_runtime_seconds, limits.max_agent_seconds].filter((n): n is number => typeof n === "number" && n > 0);
+	const timeCaps = [role.max_runtime_seconds, parent.max_session_seconds, limits.max_agent_seconds].filter((n): n is number => typeof n === "number" && n > 0);
 	return {
-		max_subtree_slots: 0,
-		max_subtree_usd: 0,
+		max_subtree_slots: parent.max_subtree_slots,
+		max_subtree_usd: parent.max_subtree_usd,
 		max_session_seconds: timeCaps.length ? Math.min(...timeCaps) : 0,
-		max_grant_slots: 2,
-		max_grant_usd: role.max_cost_usd,
+		max_grant_slots: parent.max_grant_slots,
+		max_grant_usd: parent.max_grant_usd,
 		allowed_providers: [...parent.allowed_providers],
 		allowed_capabilities: [...parent.allowed_capabilities],
 	};

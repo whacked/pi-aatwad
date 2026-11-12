@@ -25,7 +25,7 @@ test("only the human operator can remove resource caps; accounting and unlimited
 		assert.equal((await hs.call("POST", `/runs/${r.run_id}/admin`, { token: childToken, body: { mode: "unlimited" } })).body.error.code, "FORBIDDEN");
 		await new Promise((resolve) => setTimeout(resolve, 1100));
 		await hs.h.reconciler.idle();
-		assert.equal(sql(hs, "SELECT desired_state FROM agents WHERE id=?", workers[0])[0].desired_state, "RUNNING", "old numeric deadlines are disabled");
+		assert.equal(sql(hs, "SELECT desired_state FROM agents WHERE id=?", workers[0])[0].desired_state, "PAUSED", "explicit inherited worker deadlines still apply");
 		await hs.restart({ crash: true });
 		assert.equal((await hs.call("GET", `/runs/${r.run_id}/admin`, { token: hs.op })).body.unlimited, true);
 	} finally { await hs.cleanup(); }

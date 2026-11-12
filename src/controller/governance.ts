@@ -7,7 +7,7 @@ import type { CreateExpansionResponse, DecisionResponse, ExpansionProposal, Expa
 import { assertSchema, obj, str, oneOf, onlyKeys, int } from "./validate.ts";
 import { getAgent, getAllocation, getAncestry, getCurrentManager, getRun, isTerminal, runConfig, TERMINAL_SQL } from "./queries.ts";
 import { childEnvelope, resolveModel, type ModelChoice } from "./config.ts";
-import { assertWithinEnvelopes, raiseEnvelopeFor, recomputeAllocations, reserveAtAncestors } from "./budgets.ts";
+import { ownBudgetUsd, assertWithinEnvelopes, raiseEnvelopeFor, recomputeAllocations, reserveAtAncestors } from "./budgets.ts";
 import { createTask, postMessage, requireAgent } from "./messaging.ts";
 
 const OPEN_STATUSES: ProposalStatus[] = ["PENDING", "UNDER_REVIEW", "ESCALATED"];
@@ -29,17 +29,7 @@ export function defaultReviewer(db: DB, requester: string): string | null {
  * plus the unconsumed remainder of every active reservation (one row per beneficiary at the root).
  */
 export function runSpendUsd(db: DB, runId: string, rootId: string): number {
-	const consumed = Number(get(db, "SELECT COALESCE(SUM(al.consumed_usd),0) AS s FROM allocations al JOIN agents a ON a.id = al.agent_id WHERE a.run_id = ?", runId)!.s);
-	const open = Number(
-		get(
-			db,
-			`SELECT COALESCE(SUM(MAX(r.usd - al.consumed_usd, 0)),0) AS s FROM reservations r JOIN allocations al ON al.agent_id = r.beneficiary_id
-			 WHERE r.run_id = ? AND r.ancestor_id = ? AND r.state = 'ACTIVE'`,
-			runId,
-			rootId,
-		)!.s,
-	);
-	return consumed + open;
+	return getAllocation(db, rootId).committed_usd;
 }
 
 function providerChain(db: DB, agentId: string): string[][] {
@@ -182,7 +172,10 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const requester = prop.requester_id as string;
 	const choices = checkRoles(db, requester, request.roles, runId);
 	const n = request.roles.reduce((s, r) => s + r.count, 0);
-	const usd = request.roles.reduce((s, r) => s + r.count * r.max_cost_usd, 0);
+	const inheritedBudget = ownBudgetUsd(db, requester) ?? (cfg.operator_unlimited ? null : getAllocation(db, requester).limits.max_subtree_usd);
+	const roles = request.roles.map((r) => ({ ...r, budget: r.max_cost_usd ?? inheritedBudget }));
+	// Inherited budgets share the parent's pool, rather than reserving it once per sibling.
+	const usd = roles.reduce((s, r) => s + r.count * (r.max_cost_usd ?? 0), 0);
 	const runRow = getRun(db, runId);
 
 	// 1) Bounded-mode caps. Only an explicit human operator policy disables numeric caps.
@@ -193,12 +186,10 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const depth = chain.length; // depth of the new child (root = 0)
 	const runSpend = runSpendUsd(db, runId, runRow.root_agent_id);
 	const violations: string[] = [];
-	if (!cfg.operator_unlimited && live + n > L.max_live_agents) violations.push(`max_live_agents ${L.max_live_agents} (live ${live} + requested ${n})`);
-	if (!cfg.operator_unlimited && pending + n > L.max_pending_spawns) violations.push(`max_pending_spawns ${L.max_pending_spawns} (pending ${pending} + requested ${n})`);
-	const runAgeS = (Date.now() - Date.parse(runRow.created_at)) / 1000;
-	if (!cfg.operator_unlimited && L.max_run_seconds > 0 && runAgeS > L.max_run_seconds) violations.push(`max_run_seconds ${L.max_run_seconds} (run age ${Math.round(runAgeS)}s)`);
-	if (!cfg.operator_unlimited && depth > L.emergency_max_depth) violations.push(`emergency_max_depth ${L.emergency_max_depth} (new depth ${depth})`);
-	if (!cfg.operator_unlimited && runSpend + usd > L.max_run_usd + 1e-9) violations.push(`max_run_usd ${L.max_run_usd} (consumed+reserved ${Math.round(runSpend * 1e6) / 1e6} + requested ${usd})`);
+	if (!cfg.operator_unlimited && L.max_live_agents !== null && live + n > L.max_live_agents) violations.push(`max_live_agents ${L.max_live_agents} (live ${live} + requested ${n})`);
+	if (!cfg.operator_unlimited && L.max_pending_spawns !== null && pending + n > L.max_pending_spawns) violations.push(`max_pending_spawns ${L.max_pending_spawns} (pending ${pending} + requested ${n})`);
+	if (!cfg.operator_unlimited && L.emergency_max_depth !== null && depth > L.emergency_max_depth) violations.push(`emergency_max_depth ${L.emergency_max_depth} (new depth ${depth})`);
+	if (!cfg.operator_unlimited && L.max_run_usd !== null && runSpend + usd > L.max_run_usd + 1e-9) violations.push(`max_run_usd ${L.max_run_usd} (consumed+reserved ${Math.round(runSpend * 1e6) / 1e6} + requested ${usd})`);
 	for (const c of choices) if (!L.allow_providers.includes(c.entry.provider)) violations.push(`provider ${c.entry.provider} not in allow_providers`);
 	if (violations.length) {
 		const ts = nowIso();
@@ -212,7 +203,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	// 2) Reviewer's per-decision grant authority.
 	if (p.kind === "agent" && !cfg.operator_unlimited) {
 		const g = getAllocation(db, actor).limits;
-		if (n > g.max_grant_slots || usd > g.max_grant_usd + 1e-9) {
+		if ((g.max_grant_slots !== null && n > g.max_grant_slots) || (g.max_grant_usd !== null && usd > g.max_grant_usd + 1e-9)) {
 			fail("FORBIDDEN", `request (${n} slots, $${usd}) exceeds your per-decision grant (${g.max_grant_slots} slots, $${g.max_grant_usd}); ESCALATE to your manager`, { hint: "ESCALATE", max_grant_slots: g.max_grant_slots, max_grant_usd: g.max_grant_usd });
 		}
 	}
@@ -225,7 +216,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	for (const a of checked) {
 		if (cfg.operator_unlimited) continue;
 		const al = getAllocation(db, a);
-		if (al.reserved_slots + n > al.limits.max_subtree_slots || al.committed_usd + usd > al.limits.max_subtree_usd + 1e-9) {
+		if ((al.limits.max_subtree_slots !== null && al.reserved_slots + n > al.limits.max_subtree_slots) || (al.limits.max_subtree_usd !== null && al.committed_usd + usd > al.limits.max_subtree_usd + 1e-9)) {
 			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} cannot absorb ${n} slots / $${usd}`, {
 				agent_id: a,
 				reserved_slots: al.reserved_slots,
@@ -244,12 +235,13 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const ts = nowIso();
 	const reqEnv = getAllocation(db, requester).limits;
 	const spawned: string[] = [];
-	request.roles.forEach((role, i) => {
+	roles.forEach((role, i) => {
 		const choice = choices[i];
 		for (let j = 0; j < role.count; j++) {
 			const agentId = newId("agent");
-			const runtime = role.max_runtime_seconds ?? request.max_runtime_seconds ?? null;
-			const meta = { max_runtime_seconds: runtime, proposal_id: prop.id, responsibility: role.responsibility, capabilities: role.capabilities, requested_model_id: role.preferred_model_id ?? null, model_id: choice.entry.id, model_selection_reason: choice.reason, model_candidates: choice.candidates, cost_estimated: choice.cost_estimated };
+			const parentMeta = JSON.parse(getAgent(db, requester).metadata_json);
+			const runtime = role.max_runtime_seconds ?? request.max_runtime_seconds ?? parentMeta.max_runtime_seconds ?? null;
+			const meta = { budget_pool_id: role.max_cost_usd === undefined ? (parentMeta.budget_pool_id ?? requester) : agentId, own_budget_usd: role.budget, budget_inherited: role.max_cost_usd === undefined, max_runtime_seconds: runtime, proposal_id: prop.id, responsibility: role.responsibility, capabilities: role.capabilities, requested_model_id: role.preferred_model_id ?? null, model_id: choice.entry.id, model_selection_reason: choice.reason, model_candidates: choice.candidates, cost_estimated: choice.cost_estimated };
 			const cwd = null; // prepared by the reconciler (prepareWorkspace) outside the transaction
 			const piSession = join(ctx.paths.dir, "sessions", `${agentId}.jsonl`);
 			run(
@@ -269,7 +261,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 			);
 			run(db, "INSERT INTO reporting_edges(id, run_id, parent_id, child_id, valid_from, from_version, reason) VALUES (?,?,?,?,?,?,?)", newId("edge"), runId, requester, agentId, ts, v, `approved ${prop.id}`);
 			run(db, "INSERT INTO allocations(agent_id, limits_json) VALUES (?,?)", agentId, JSON.stringify(childEnvelope({ ...role, max_runtime_seconds: runtime ?? undefined }, reqEnv, cfg.limits)));
-			reserveAtAncestors(db, runId, agentId, chain, 1, role.max_cost_usd, prop.id);
+			reserveAtAncestors(db, runId, agentId, chain, 1, role.max_cost_usd ?? 0, prop.id);
 			const taskId = createTask(db, { run_id: runId, owner_id: agentId, title: role.title, spec: { responsibility: role.responsibility, proposal_id: prop.id }, parent_task_id: prop.task_id, assigned_by: requester });
 			const intentId = newId("spawn");
 			run(

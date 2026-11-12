@@ -23,8 +23,8 @@ import type {
 import { obj, str, int, onlyKeys } from "./validate.ts";
 import { buildRunConfig, modelIneligibility } from "./config.ts";
 import { hashToken, issueSessionToken, revokeAgentCredentials } from "./auth.ts";
-import { getAgent, getAllocation, getAncestry, getChildren, getCurrentManager, getReportingHistory, getRun, isAncestor, isTerminal, runConfig } from "./queries.ts";
-import { budgetView, ownBudgetUsd } from "./budgets.ts";
+import { getAgent, getAllocation, getAncestry, getChildren, getCurrentManager, getReportingHistory, getRun, getSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
+import { budgetPool, budgetView, ownBudgetUsd } from "./budgets.ts";
 import { inboxPending, postMessage, requireAgent } from "./messaging.ts";
 
 function requireOperator(p: Principal): void {
@@ -247,7 +247,21 @@ export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportR
 	const consumed = getAllocation(db, a.actor_id).consumed_usd;
 	emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "usage.reported", entity_id: a.actor_id, payload: { cost_usd: cost, input_tokens: b.input_tokens ?? null, output_tokens: b.output_tokens ?? null, consumed_usd: consumed } });
 	const own = ownBudgetUsd(db, a.actor_id);
-	const exhausted = !runConfig(db, a.run_id).operator_unlimited && own !== null && consumed >= own - 1e-9;
+	// Inherited pools charge actual spend once; exhausting one pauses the whole affected subtree.
+	const cfg = runConfig(db, a.run_id);
+	const exhaustedPools = cfg.operator_unlimited ? [] : [a.actor_id, ...getAncestry(db, a.actor_id)].filter((id) => {
+		const al = getAllocation(db, id);
+		return al.limits.max_subtree_usd !== null && al.spent_usd >= al.limits.max_subtree_usd - 1e-9;
+	});
+	for (const pool of exhaustedPools) for (const id of getSubtree(db, pool).filter((id) => id !== a.actor_id)) {
+		run(db, "UPDATE agents SET desired_state='PAUSED', status=CASE WHEN status='RUNNING' THEN 'PAUSED' ELSE status END WHERE id=? AND desired_state='RUNNING'", id);
+	}
+	const pool = budgetPool(db, a.actor_id);
+	const ownExhausted = own !== null && pool.consumed >= own - 1e-9;
+	if (ownExhausted) for (const id of pool.members.filter((id) => id !== a.actor_id)) {
+		run(db, "UPDATE agents SET desired_state='PAUSED', status=CASE WHEN status='RUNNING' THEN 'PAUSED' ELSE status END WHERE id=? AND desired_state='RUNNING' AND status NOT IN ('CANCELLED','RETIRED','FAILED')", id);
+	}
+	const exhausted = ownExhausted || exhaustedPools.length > 0;
 	if (exhausted && getAgent(db, a.actor_id).desired_state === "RUNNING") {
 		run(db, "UPDATE agents SET desired_state = 'PAUSED', status = CASE WHEN status = 'RUNNING' THEN 'PAUSED' ELSE status END WHERE id = ?", a.actor_id);
 		emit(db, { run_id: a.run_id, actor_id: "controller", type: "budget.exhausted", entity_id: a.actor_id, payload: { consumed_usd: consumed, budget_usd: own } });

@@ -17,9 +17,11 @@ test("R1: a manager FAILED by the reconciler (deadline) hands its live reports t
 	try {
 		const { run_id, root, token: rt } = await newRun(hs, { deadline_policy: "FAILED" });
 		const [A] = await recruit(hs, rt, rt, await ownTask(hs, rt, root), [{ max_cost_usd: 4 }]);
-		const [M] = await recruit(hs, tok(hs, A), hs.op, await firstTask(hs, A), [{ max_cost_usd: 2, max_runtime_seconds: 2 }]);
+		const [M] = await recruit(hs, tok(hs, A), hs.op, await firstTask(hs, A), [{ max_cost_usd: 2, max_runtime_seconds: 60 }]);
 		const [X] = await recruit(hs, tok(hs, M), hs.op, await firstTask(hs, M), [{ max_cost_usd: 0.5 }]);
 		const [Y] = await recruit(hs, tok(hs, X), hs.op, await firstTask(hs, X), [{ max_cost_usd: 0.1 }]);
+		// Age only M: descendants inherit its 60s policy, but have not lived that long yet.
+		hs.h.db.prepare("UPDATE sessions SET started_at=? WHERE agent_id=?").run(new Date(Date.now() - 61_000).toISOString(), M);
 		const v0 = sql(hs, "SELECT topology_version v FROM runs WHERE id = ?", run_id)[0].v;
 		await waitFor(() => sql(hs, "SELECT status FROM agents WHERE id = ?", M)[0].status === "FAILED", "M FAILED by deadline", 8000);
 		assert.equal(parentOf(hs, X), A, "X adopted by M's live manager");

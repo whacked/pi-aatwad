@@ -29,7 +29,7 @@ const RoleSchema = Type.Object({
 	count: Type.Integer({ minimum: 1, description: "How many agents of this role" }),
 	capabilities: Type.Array(Type.String(), { description: "Capability tags required (see team_get_models)" }),
 	preferred_model_id: Type.Optional(Type.String({ description: "Catalog model id from team_get_models" })),
-	max_cost_usd: Type.Number({ minimum: 0, description: "Per-agent spend ceiling in USD" }),
+	max_cost_usd: Type.Optional(Type.Number({ minimum: 0, description: "Optional spend ceiling in USD; omitted shares the leader's budget pool" })),
 	max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
@@ -297,7 +297,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_create_member", "Team: create member",
-		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. Bounded-mode defaults: $2 with no implicit per-agent time limit. Under human operator unlimited policy, no numeric spend/runtime/recruitment caps are enforced and no finite allocations are needed. Subordinate managers use team_request_expansion instead.",
+		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to use the initial leader model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. There are no implicit member limits. Omitted spend/runtime limits inherit the leader's limits (unbounded if the leader is unbounded). You may choose explicit worker budgets and lifetimes, which are enforced even with unlimited run policy. Subordinate managers use team_request_expansion instead.",
 		Type.Object({
 			name: Type.Optional(Type.String({ description: "Optional friendly member name; defaults to Alpha, Beta, etc." })), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
 			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),
@@ -364,7 +364,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_set_budget", "Team: change budget",
-		"Change a member's total own spend ceiling (including already consumed spend), by name or ID. This is an absolute USD total, not extra credits. Normal ancestor/global/grant limits apply; only the human can enable /team admin unlimited. Set resume=true to also resume a paused member; otherwise its state is unchanged. Unlimited runs continue ignoring numeric caps.",
+		"Change a member's total spend ceiling (including already consumed spend and inheriting members), by name or ID. This is an absolute USD total, not extra credits. Normal ancestor/global/grant limits apply; only the human can enable /team admin unlimited. Set resume=true to also resume a paused member; otherwise its state is unchanged. Explicit worker ceilings are enforced even with unlimited run policy.",
 		Type.Object({ agent_id: Type.String(), max_cost_usd: Type.Number({ minimum: 0 }), resume: Type.Optional(Type.Boolean()) }),
 		async (p, id) => json("Budget updated", await rt.client.post(`/budgets/${encodeURIComponent(await agent(p.agent_id))}`, { max_cost_usd: p.max_cost_usd, resume: p.resume }, { idempotencyKey: key("team_set_budget", id) })),
 	);

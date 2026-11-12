@@ -67,11 +67,11 @@ test("F2: max_run_usd counts consumed spend (incl. root and retired agents); sub
 		// Slot is back, but the consumed $1.5 stays charged.
 		const bv = (await hs.call("GET", `/budgets/${root}`, { token: rt })).body;
 		assert.deepEqual([bv.reserved_slots, bv.reserved_usd, bv.settled_usd], [0, 0, 1.5]);
-		assert.equal(bv.available_usd, 0.1); // root envelope $1.6 (80% of max_run_usd)
+		assert.equal(bv.available_usd, 0.5); // full configured run budget, no implicit 20% withholding
 		const p = await hs.call("POST", "/expansions", { token: rt, body: proposal(task, [{ max_cost_usd: 1.5 }]) });
 		const d = await hs.call("POST", `/expansions/${p.body.proposal_id}/decision`, { token: rt, body: { decision: "APPROVE", reason: "again" } });
 		assert.equal(d.body.error.code, "HARD_CAP");
-		// Within what is left (root envelope $1.6 − $1.5 consumed) it still works.
+		// Within the remaining configured budget it still works.
 		await recruit(hs, rt, rt, task, [{ max_cost_usd: 0.1 }]);
 		// Root's own consumption counts too.
 		const hs2 = await harness();

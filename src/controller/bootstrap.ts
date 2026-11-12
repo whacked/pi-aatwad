@@ -23,7 +23,7 @@ const CONTROLLER_LEASE_MS = 30_000;
 export interface ControllerOptions {
 	stateDir?: string;
 	executor: Executor;
-	/** Idle self-shutdown after this long without work/requests. 0 disables. Default env PI_TEAM_IDLE_MS or 600000. */
+	/** Idle self-shutdown after this long without work/requests. 0 disables. Default env PI_TEAM_IDLE_MS or 0 (no idle shutdown). */
 	idleMs?: number;
 	migrationsDir?: string;
 	tunables?: Partial<ControllerTunables>;
@@ -283,7 +283,7 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 	let closing: Promise<void> | null = null;
 	let server: Server;
 	let housekeeping: NodeJS.Timeout | undefined;
-	const idleMs = opts.idleMs ?? (Number(process.env.PI_TEAM_IDLE_MS ?? "") || 600_000);
+	const idleMs = opts.idleMs ?? Number(process.env.PI_TEAM_IDLE_MS ?? 0);
 
 	const health = (): HealthResponse => ({
 		ok: true,

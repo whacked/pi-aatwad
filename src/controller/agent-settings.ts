@@ -4,8 +4,8 @@ import type { Ctx, Principal, ReqScope } from "./context.ts";
 import { emit, newId, parseJson, run } from "./db.ts";
 import { fail } from "./errors.ts";
 import { obj, onlyKeys, str } from "./validate.ts";
-import { getAgent, getAllocation, getAncestry, getRun, isAncestor, isTerminal, runConfig } from "./queries.ts";
-import { assertWithinEnvelopes, budgetView, ownBudgetUsd, recomputeAllocations, setLimits } from "./budgets.ts";
+import { getAgent, getAllocation, getAncestry, getRun, getSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
+import { assertWithinEnvelopes, budgetPool, budgetView, ownBudgetUsd, recomputeAllocations } from "./budgets.ts";
 import { runSpendUsd } from "./governance.ts";
 import { modelIneligibility } from "./config.ts";
 import { registerRunModel } from "./members.ts";
@@ -27,21 +27,36 @@ export function updateBudget(ctx: Ctx, p: Principal, scope: ReqScope, id: string
 	const db = ctx.db, cfg = runConfig(db, a.run_id), allocation = getAllocation(db, id);
 	if (usd < allocation.consumed_usd) fail("BUDGET_EXCEEDED", "cannot set a budget below spend already consumed");
 	const before = ownBudgetUsd(db, id);
-	const delta = usd - (before ?? allocation.limits.max_subtree_usd);
-	if (!cfg.operator_unlimited && p.kind === "agent" && delta > getAllocation(db, p.actor_id).limits.max_grant_usd) fail("FORBIDDEN", "increase exceeds your single-decision grant; ask your manager");
-	if (before !== null) run(db, "UPDATE reservations SET usd=? WHERE beneficiary_id=? AND state='ACTIVE'", usd, id);
-	if (before === null) setLimits(db, id, { ...allocation.limits, max_subtree_usd: usd });
+	const pool = budgetPool(db, id);
+	const oldReservation = ctx.db.prepare("SELECT usd FROM reservations WHERE beneficiary_id=? AND state='ACTIVE' LIMIT 1").get(id) as { usd: number } | undefined;
+	const delta = usd - (oldReservation?.usd ?? 0);
+	if (pool.id === id && usd < pool.consumed) fail("BUDGET_EXCEEDED", "cannot set a pool budget below spend already consumed");
+	const grant = p.kind === "agent" ? getAllocation(db, p.actor_id).limits.max_grant_usd : null;
+	if (!cfg.operator_unlimited && grant !== null && delta > grant) fail("FORBIDDEN", "increase exceeds your single-decision grant; ask your manager");
+	run(db, "UPDATE reservations SET usd=? WHERE beneficiary_id=? AND state='ACTIVE'", usd, id);
+	const meta = parseJson<Record<string, unknown>>(a.metadata_json, {});
+	// A new explicit ceiling separates this inherited branch into its own pool.
+	for (const descendant of getSubtree(db, id)) {
+		const childMeta = parseJson<Record<string, unknown>>(getAgent(db, descendant).metadata_json, {});
+		if ((childMeta.budget_pool_id ?? descendant) !== pool.id) continue;
+		childMeta.budget_pool_id = id;
+		run(db, "UPDATE agents SET metadata_json=? WHERE id=?", JSON.stringify(childMeta), descendant);
+	}
+	meta.own_budget_usd = usd;
+	meta.budget_inherited = false;
+	meta.budget_pool_id = id;
+	run(db, "UPDATE agents SET metadata_json=? WHERE id=?", JSON.stringify(meta), id);
 	recomputeAllocations(db, a.run_id);
 	assertWithinEnvelopes(db, [id, ...getAncestry(db, id)]);
 	const r = getRun(db, a.run_id);
-	if (!cfg.operator_unlimited && runSpendUsd(db, a.run_id, r.root_agent_id) > cfg.limits.max_run_usd + 1e-9) fail("HARD_CAP", "increase exceeds the run's total budget");
+	if (!cfg.operator_unlimited && cfg.limits.max_run_usd !== null && runSpendUsd(db, a.run_id, r.root_agent_id) > cfg.limits.max_run_usd + 1e-9) fail("HARD_CAP", "increase exceeds the run's total budget");
 	emit(db, { run_id: a.run_id, actor_id: p.actor_id, type: "budget.updated", entity_id: id, payload: { before, max_cost_usd: usd } });
 	if (b.resume) {
-		if (!cfg.operator_unlimited && usd <= allocation.consumed_usd) fail("BUDGET_EXCEEDED", "resume requires unspent budget");
+		if (usd <= allocation.consumed_usd) fail("BUDGET_EXCEEDED", "resume requires unspent budget");
 		lifecycle(ctx, p, scope, id, { action: "resume", reason: "resume requested with budget update" });
 	}
 	ctx.kick();
-	return { ...budgetView(db, id), own_budget_usd: before === null ? null : usd };
+	return budgetView(db, id);
 }
 
 export function updateModel(ctx: Ctx, p: Principal, id: string, body: unknown) {

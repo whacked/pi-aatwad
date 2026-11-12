@@ -447,22 +447,16 @@ export class Reconciler {
 			 WHERE a.desired_state = 'RUNNING' AND a.status NOT IN ${TERMINAL_SQL}`,
 		);
 		for (const r of rows) {
-			if (runConfig(db, r.run_id).operator_unlimited) continue;
 			const sessionLimit = Number(parseJson<{ max_session_seconds?: number }>(r.limits_json, {}).max_session_seconds ?? 0);
 			const meta = parseJson<{ max_runtime_seconds?: number | null; runtime_epoch?: string }>(r.metadata_json, {});
 			const runtimeLimit = Number(meta.max_runtime_seconds ?? 0);
 			// An explicit resume restarts the runtime clock (runtime_epoch set by lifecycle resume).
 			const runtimeStart = [r.first_started, meta.runtime_epoch].filter(Boolean).sort().pop() as string | undefined;
 			const running = ["STARTING", "LIVE", "LOST"].includes(r.observed_state);
-			const runLimit = Number(runConfig(db, r.run_id).limits.max_run_seconds ?? 0);
-			let kind: "run" | "session" | "runtime" | null = null;
+			let kind: "session" | "runtime" | null = null;
 			let limit = 0;
 			let elapsed = 0;
-			if (runLimit > 0 && r.run_created && (elapsed = (now - Date.parse(r.run_created)) / 1000) > runLimit) {
-				// Run wallclock (limits.max_run_seconds) applies to every managed (non-root) agent of the run.
-				kind = "run";
-				limit = runLimit;
-			} else if (runtimeLimit > 0 && runtimeStart && (elapsed = (now - Date.parse(runtimeStart)) / 1000) > runtimeLimit) {
+			if (runtimeLimit > 0 && runtimeStart && (elapsed = (now - Date.parse(runtimeStart)) / 1000) > runtimeLimit) {
 				kind = "runtime";
 				limit = runtimeLimit;
 			} else if (running && sessionLimit > 0 && r.session_started && (elapsed = (now - Date.parse(r.session_started)) / 1000) > sessionLimit) {
@@ -479,9 +473,6 @@ export class Reconciler {
 				const tasks = all(db, "SELECT id FROM tasks WHERE owner_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS')", r.id).map((t) => t.id as string);
 				const reason = `${kind} deadline exceeded (${Math.round(elapsed)}s > ${limit}s)`;
 				for (const t of tasks) run(db, "UPDATE tasks SET status = ?, result_json = ?, updated_at = ? WHERE id = ?", policy, JSON.stringify({ summary: reason }), ts, t);
-				if (kind === "run" && !get(db, "SELECT 1 FROM events WHERE run_id = ? AND type = 'run.wallclock_exceeded'", r.run_id)) {
-					emit(db, { run_id: r.run_id, actor_id: "controller", type: "run.wallclock_exceeded", entity_id: r.run_id, payload: { max_run_seconds: limit, elapsed_seconds: Math.round(elapsed), policy } });
-				}
 				emit(db, { run_id: r.run_id, actor_id: "controller", type: "agent.deadline_exceeded", entity_id: r.id, payload: { kind, limit_seconds: limit, elapsed_seconds: Math.round(elapsed), policy, tasks, session_id: r.current_session_id } });
 				const mgr = getAncestry(db, r.id)[0];
 				if (mgr) postMessage(db, { run_id: r.run_id, from: r.id, to: mgr, type: "system.notice", payload: { kind: "deadline_exceeded", agent_id: r.id, deadline: kind, limit_seconds: limit, policy, tasks, text: `Controller stopped this worker because its configured ${kind} deadline (${limit}s) expired. State: ${policy === "FAILED" ? "FAILED (closed)" : "PAUSED (resume required)"}; its tmux pane, if any, will no longer be live. Task completion alone does not close workers.` } });

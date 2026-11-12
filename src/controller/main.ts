@@ -30,7 +30,7 @@ async function loadExecutor(): Promise<Executor> {
 /**
  * Optional env overrides for reconciler tunables (positive integers; invalid values are ignored).
  * Mainly for tests/demos that need fast expiry; defaults in bootstrap.ts.
- *   PI_TEAM_IDLE_MS              idle self-shutdown (0 = never)            default 600000
+ *   PI_TEAM_IDLE_MS              idle self-shutdown (0 = never)            default 0
  *   PI_TEAM_CLAIM_MS             inbox claim lease before redelivery       default 60000
  *   PI_TEAM_HEARTBEAT_LEASE_MS   session heartbeat lease (→ LOST)          default HEARTBEAT_LEASE_MS (45000)
  *   PI_TEAM_TICK_MS              reconciler tick                           default 1000

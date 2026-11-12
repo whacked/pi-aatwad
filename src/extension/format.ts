@@ -5,7 +5,7 @@ export const MAX_CONTEXT_CHARS = 2_000;
 const MAX_LIST = 8;
 
 function usd(n: number | null | undefined): string {
-	return typeof n === "number" && Number.isFinite(n) ? `$${n.toFixed(2)}` : "?";
+	return n === null ? "unbounded" : typeof n === "number" && Number.isFinite(n) ? `$${n.toFixed(2)}` : "?";
 }
 
 function clip(s: string, n: number): string {
@@ -13,13 +13,13 @@ function clip(s: string, n: number): string {
 }
 
 export function formatBudget(b: BudgetView): string {
-	if (b.unlimited) return `budget for ${b.agent_id}:\n  policy: UNLIMITED (human operator); no spend, runtime, member-count or depth caps\n  consumed ${usd(b.consumed_usd)}, reserved ${usd(b.reserved_usd)}; ${b.subtree_live_agents} active descendants`;
 	return [
+		...(b.unlimited ? ["  policy: UNLIMITED run policy; explicit worker budgets/lifetimes still apply"] : []),
 		`budget for ${b.agent_id}:`,
-		...(b.own_budget_usd != null ? [`  own spend ceiling: ${usd(b.own_budget_usd)} (includes consumed spend)`] : []),
+		...(b.own_budget_usd != null ? [`  spend ceiling: ${usd(b.own_budget_usd)} (pool ${b.budget_pool_id ?? b.agent_id}; consumed ${usd(b.pool_consumed_usd ?? b.consumed_usd)}; shared with inheriting members)`] : []),
 		`  usd: consumed ${usd(b.consumed_usd)}, reserved ${usd(b.reserved_usd)}, available ${usd(b.available_usd)} (subtree ceiling ${usd(b.limits?.max_subtree_usd)})`,
-		`  slots: live descendants ${b.subtree_live_agents}, reserved ${b.reserved_slots}, available ${b.available_slots} (ceiling ${b.limits?.max_subtree_slots ?? "?"})`,
-		`  single-decision grant: ≤${b.limits?.max_grant_slots ?? "?"} slots, ≤${usd(b.limits?.max_grant_usd)}`,
+		`  slots: live descendants ${b.subtree_live_agents}, reserved ${b.reserved_slots}, available ${b.available_slots ?? "unbounded"} (ceiling ${b.limits?.max_subtree_slots ?? "unbounded"})`,
+		`  single-decision grant: ≤${b.limits?.max_grant_slots ?? "unbounded"} slots, ≤${usd(b.limits?.max_grant_usd)}`,
 	].join("\n");
 }
 
@@ -81,6 +81,10 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 	const lines: string[] = [];
 	lines.push(`You are agent ${c.agent_id} (role: ${c.role}) in team run ${c.run_id}${c.is_root ? " — you are the ROOT of this organization" : ""}.`);
 	lines.push(c.parent ? `Manager: ${c.parent.role} [${c.parent.agent_id}]` : "Manager: none (root; you report to the human operator)");
+	const limits = c.budget?.limits;
+	lines.push(`Authority: manage descendants (budgets, models, close; resume via budget update); ${c.is_root ? "create members directly" : "request expansion; approval by your manager"}. Runs never expire. Omitted member limits inherit yours; you may choose explicit worker budgets/lifetimes.`);
+	if (c.budget?.own_budget_usd != null) lines.push(`Spend ceiling: ${usd(c.budget.own_budget_usd)}; pool consumed ${usd(c.budget.pool_consumed_usd ?? c.budget.consumed_usd)}. Inheriting members share this pool.`);
+	if (limits) lines.push(`Single-decision grant: ${limits.max_grant_slots ?? "unbounded"} slots / ${usd(limits.max_grant_usd)}; session limit: ${limits.max_session_seconds || "unbounded"} seconds. Configured ancestor limits still apply; escalate when exceeded.`);
 	if (c.reporting) {
 		const r = c.reporting;
 		lines.push(`Cross-team reporting relationships. Automatic inbox turns: ${r.wake_on_message ? "on" : "off"}.`);
@@ -103,8 +107,8 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 		lines.push(`Your tasks: ${shown.join("; ")}${c.tasks.length > MAX_LIST ? "; …" : ""}`);
 	} else lines.push("Your tasks: none assigned");
 	const b = c.budget;
-	if (b?.unlimited) lines.push("Budget: UNLIMITED, authorized by the human operator. No spend, runtime, slot or depth caps apply; do not invent finite allocations. Accounting and identity permissions remain active.");
-	else if (b) lines.push(`Budget: ${usd(b.available_usd)} available of ${usd(b.limits?.max_subtree_usd)} subtree ceiling; ${b.available_slots} spawn slot(s) available.`);
+	if (b?.unlimited) lines.push("Budget: UNLIMITED run policy; explicit worker budgets/lifetimes still apply. Accounting and identity permissions remain active.");
+	else if (b) lines.push(`Budget: ${usd(b.available_usd)} available of ${usd(b.limits?.max_subtree_usd)} subtree ceiling; ${b.available_slots ?? "unbounded"} spawn slot(s) available.`);
 	if (c.pending_proposals_to_review > 0) lines.push(`Pending expansion proposals awaiting YOUR review: ${c.pending_proposals_to_review} (use team_review_expansion).`);
 	if (c.inbox_pending > 0) lines.push(`Unread team messages: ${c.inbox_pending} (they will be delivered; or call team_get_inbox).`);
 	if (c.desired_state !== "RUNNING") lines.push(`Controller desired state for you: ${c.desired_state} — stop starting new work.`);

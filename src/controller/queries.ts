@@ -27,21 +27,44 @@ export interface AllocationView {
 	reserved_usd: number;
 	/** Spend actually consumed by terminated descendants: stays charged to this subtree. */
 	settled_usd: number;
-	/** reserved_usd + settled_usd: what max_subtree_usd bounds. */
+	/** Sum of max(reserved, spent) per pool: what max_subtree_usd bounds. */
 	committed_usd: number;
 	consumed_usd: number;
+	/** Actual own + descendant spend, excluding unspent reservations. */
+	spent_usd: number;
 }
 export function getAllocation(db: DB, agentId: string): AllocationView {
-	const r = get(db, "SELECT a.*, (SELECT COALESCE(SUM(usd),0) FROM reservations x WHERE x.ancestor_id = a.agent_id AND x.state = 'CONSUMED') AS settled FROM allocations a WHERE a.agent_id = ?", agentId);
+	const r = get(db, "SELECT * FROM allocations WHERE agent_id=?", agentId);
 	if (!r) fail("NOT_FOUND", `allocation for ${agentId} not found`);
-	const settled = Number(r.settled);
+	// Each explicit reservation funds its inherited pool. Charge the greater of the
+	// pool's reserved dollars and actual spend, not both the leader reservation and child spend.
+	const rows = all(db, `SELECT COALESCE(json_extract(a.metadata_json,'$.budget_pool_id'),a.id) AS pool,
+		CASE WHEN x.state='ACTIVE' THEN x.usd ELSE 0 END AS reserved,
+		CASE WHEN x.state='CONSUMED' THEN x.usd ELSE b.consumed_usd END AS spent,
+		x.state
+		FROM reservations x JOIN agents a ON a.id=x.beneficiary_id JOIN allocations b ON b.agent_id=a.id
+		WHERE x.ancestor_id=? AND x.state IN ('ACTIVE','CONSUMED')
+		UNION ALL SELECT COALESCE(json_extract(a.metadata_json,'$.budget_pool_id'),a.id),0,b.consumed_usd,'SELF'
+		FROM agents a JOIN allocations b ON b.agent_id=a.id WHERE a.id=?`, agentId, agentId);
+	const pools = new Map<string, { reserved: number; spent: number }>();
+	let settled = 0, spent = 0;
+	for (const row of rows) {
+		const pool = pools.get(row.pool) ?? { reserved: 0, spent: 0 };
+		pool.reserved += Number(row.reserved);
+		pool.spent += Number(row.spent);
+		pools.set(row.pool, pool);
+		spent += Number(row.spent);
+		if (row.state === 'CONSUMED') settled += Number(row.spent);
+	}
+	const committed = [...pools.values()].reduce((sum, pool) => sum + Math.max(pool.reserved, pool.spent), 0);
 	return {
 		limits: parseJson<Envelope_Limits>(r.limits_json, null as unknown as Envelope_Limits),
 		reserved_slots: r.reserved_slots,
 		reserved_usd: r.reserved_usd,
 		settled_usd: settled,
-		committed_usd: Number(r.reserved_usd) + settled,
+		committed_usd: committed,
 		consumed_usd: r.consumed_usd,
+		spent_usd: spent,
 	};
 }
 

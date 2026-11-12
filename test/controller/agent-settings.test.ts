@@ -29,7 +29,7 @@ test("friendly defaults, scoped names, ambiguity, and active replacements", asyn
 test("budget changes reserve ancestor funds, enforce spend and authority, and roll back invalid increases", async () => {
 	const hs = await harness();
 	try {
-		const { token, root } = await newRun(hs);
+		const { token, root } = await newRun(hs, { limits: { max_run_usd: 25 }, root_envelope: { max_subtree_usd: 20, max_grant_usd: 20 } });
 		const made = await hs.call("POST", "/members", { token, body: { responsibility: "work" } });
 		const id = made.body.spawned_agent_ids[0];
 		await waitFor(() => hs.ex.tokens.has(id));

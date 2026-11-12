@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.10, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.11, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -176,13 +176,13 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 
 ### Configuration
 
-`/team init config.json` accepts a partial `RunConfig` (see `src/shared/protocol.ts`): global hard caps (`limits`), a model catalog (`models`), and the root's envelope. Without one, the defaults from `recursive-agent-org-v1.2/examples/config.example.yaml` apply, and the catalog contains just the root's own model (id `leader`). Provider API keys stay in your environment. They are never stored in SQLite or sent in messages.
+`/team init config.json` accepts a partial `RunConfig` (see `src/shared/protocol.ts`): global hard caps (`limits`), a model catalog (`models`), and the root's envelope. Without one, there are no numeric spend, worker-lifetime, member-count, pending-spawn, grant or depth limits; the catalog contains just the root's own model (id `leader`). The historical design example is not the default policy. Runs never expire: legacy `max_run_seconds` values are accepted for compatibility but ignored. Provider API keys stay in your environment. They are never stored in SQLite or sent in messages.
 
 ### Human operator resource policy
 
 The initial human operator has a separate controller credential. `/team admin unlimited`
-removes numeric spend, runtime, member-count, pending-spawn, grant and recursion-depth
-caps from the current run, including existing members. `/team init --unlimited` enables
+disables run-wide spend, member-count, pending-spawn, grant and recursion-depth
+caps from the current run. Explicit worker budgets and inherited worker lifetime policies still apply. `/team init --unlimited` enables
 this when creating a run. `/team admin bounded` restores enforcement of the stored
 bounded limits. Accounting remains enabled in both modes. Removing caps does not
 resume already-paused agents automatically.
@@ -190,7 +190,7 @@ resume already-paused agents automatically.
 Agents can read the policy through `team_get_budget` but cannot change it using their
 session credentials. Unlimited policy is a run-wide human decision; it does not grant
 agents operator identity, cross-run access or permission to bypass reporting hierarchy.
-The leader should honor an unlimited policy rather than inventing dollar allocations.
+The leader decides whether individual workers need explicit budgets or lifetimes; omitted limits inherit its policy without inventing allocations.
 If the user requests unlimited mode in a bounded run, it should explain the human
 command `/team admin unlimited`, not claim that unlimited runs are impossible.
 
@@ -207,8 +207,25 @@ Implement the feature described below. Create whatever team you need.
 
 The leader decides useful roles and creates members using its initial model.
 It may briefly offer alternatives discovered from Pi without requiring model
-selection before work starts. In bounded mode, default member limits are $2 with no implicit per-agent time limit. In operator
-unlimited mode, no finite allocations or runtime caps are needed.
+selection before work starts. There are no implicit member budgets or lifetimes. Omitted
+`max_cost_usd` shares the leader's budget pool (unbounded if the leader is unbounded);
+omitted `max_runtime_seconds` inherits its lifetime policy. Leaders may explicitly choose
+either limit, including in operator-unlimited mode. Child subtree/grant authority inherits
+its leader's envelope rather than starting at zero. The injected context explains effective
+limits, grant authority, management tools, and when manager approval is required. Descendant
+budgets/models can be changed, paused members resumed through budget updates, and members
+closed; controller lifecycle endpoints additionally support pause/resume.
+
+Explicit budgets start separate pools; inheriting members' actual spend is charged once
+against their pool, including after members retire. Budget changes to the pool owner affect
+its inheriting members. Setting an inherited member's explicit budget separates its inherited
+branch into a new pool, subject to grant and ancestor limits. Pool membership survives reparenting;
+worker lifetime policies are inherited at creation and measured from each worker's own start.
+New finalized assistant/tool usage is reported with persisted, idempotent retries. Exhaustion
+pauses affected members and aborts active work; an in-flight provider request can still overshoot
+before final usage is known. Existing saved numeric policies remain configured (except run age);
+new defaults do not silently erase intentional limits. The controller has no idle shutdown by
+default; `PI_TEAM_IDLE_MS` is an optional operator-selected resource-cleanup setting, not a run lifetime.
 
 To specify a member and model directly:
 

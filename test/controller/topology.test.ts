@@ -14,7 +14,11 @@ async function org(hs: Harness) {
 	const [lead1, lead2] = await recruit(hs, rootTok, rootTok, t, [{ title: "lead", count: 2, max_cost_usd: 3 }]);
 	const [w] = await recruit(hs, tok(hs, lead1), hs.op, await firstTask(hs, lead1), [{ title: "w", max_cost_usd: 1 }]);
 	const [e] = await recruit(hs, tok(hs, w), hs.op, await firstTask(hs, w), [{ title: "e", max_cost_usd: 0.5 }]);
-	// Give lead2 a 2-slot ceiling by approving and then cancelling two temps.
+	// Explicitly grant lead2 two slots; no implicit child ceiling is imposed.
+	const { getAllocation } = await import("../../src/controller/queries.ts");
+	const { setLimits } = await import("../../src/controller/budgets.ts");
+	setLimits(hs.h.db, lead2, { ...getAllocation(hs.h.db, lead2).limits, max_subtree_slots: 2 });
+	// Exercise reservation release by approving and cancelling two temps.
 	const temps = await recruit(hs, tok(hs, lead2), hs.op, await firstTask(hs, lead2), [{ title: "tmp", count: 2, max_cost_usd: 1 }]);
 	for (const x of temps) assert.equal((await hs.call("POST", `/agents/${x}/lifecycle`, { token: tok(hs, lead2), body: { action: "cancel", reason: "temp" } })).status, 200);
 	return { run_id, root, rootTok, lead1, lead2, w, e };

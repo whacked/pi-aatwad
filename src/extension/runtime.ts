@@ -48,7 +48,7 @@ export interface Identity {
 }
 
 type PiLike = Pick<ExtensionAPI, "sendMessage" | "appendEntry"> & Partial<Pick<ExtensionAPI, "setModel">>;
-type CtxLike = Pick<ExtensionContext, "ui" | "hasUI" | "mode" | "isIdle" | "hasPendingMessages" | "sessionManager" | "cwd"> & Partial<Pick<ExtensionContext, "modelRegistry" | "model">>;
+type CtxLike = Pick<ExtensionContext, "ui" | "hasUI" | "mode" | "isIdle" | "hasPendingMessages" | "sessionManager" | "cwd"> & Partial<Pick<ExtensionContext, "modelRegistry" | "model" | "abort">>;
 
 function g<T>(name: string, init: () => T): T {
 	const k = Symbol.for(`pi-recursive-team.${name}`);
@@ -105,6 +105,9 @@ export class TeamRuntime {
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private delivering = false;
 	private stopped = false;
+	private usageAgent: string | undefined;
+	private pendingUsage = new Map<string, number>();
+	private usageFlushing: Promise<void> | undefined;
 
 	constructor(pi: PiLike, opts: RuntimeOptions = {}) {
 		this.pi = pi;
@@ -535,6 +538,52 @@ export class TeamRuntime {
 		} finally { this.applyingModel = false; }
 	}
 
+	private restoreUsage(): void {
+		const id = this.identity;
+		if (!id || this.usageAgent === id.agent_id) return;
+		this.usageAgent = id.agent_id;
+		this.pendingUsage.clear();
+		for (const entry of this.ctx?.sessionManager.getEntries() ?? []) {
+			if (entry.type !== "custom" || entry.customType !== "pi-recursive-team/usage") continue;
+			const data = entry.data as { agent: string; key: string; cost?: number; ack?: boolean };
+			if (data?.agent !== id.agent_id) continue;
+			if (data.ack) this.pendingUsage.delete(data.key);
+			else if (typeof data.cost === "number") this.pendingUsage.set(data.key, data.cost);
+		}
+	}
+
+	/** Persist new reports before sending; retries keep the original idempotency key. */
+	async reportUsage(cost: number, messageKey: string): Promise<void> {
+		if (!this.identity || !Number.isFinite(cost) || cost < 0) return;
+		this.restoreUsage();
+		const key = `usage:${this.identity.session_id}:${messageKey}`;
+		this.pendingUsage.set(key, cost);
+		this.pi.appendEntry("pi-recursive-team/usage", { agent: this.identity.agent_id, key, cost });
+		await this.flushUsage();
+	}
+
+	private async flushUsage(): Promise<void> {
+		if (this.usageFlushing) return this.usageFlushing;
+		this.restoreUsage();
+		const identity = this.identity;
+		if (!identity) return;
+		this.usageFlushing = (async () => {
+			for (const [key, cost] of this.pendingUsage) {
+				try {
+					const result = await this.client.post<{ budget_exhausted: boolean }>("/sessions/usage", { cost_usd: cost }, { idempotencyKey: key });
+					if (this.identity !== identity) return;
+					this.pendingUsage.delete(key);
+					this.pi.appendEntry("pi-recursive-team/usage", { agent: identity.agent_id, key, ack: true });
+					if (result.budget_exhausted) this.ctx?.abort?.();
+				} catch (e) {
+					if (!this.handleAgentError(e)) this.say(`team: usage report queued for retry: ${(e as Error).message}`, "warning");
+					return;
+				}
+			}
+		})();
+		try { await this.usageFlushing; } finally { this.usageFlushing = undefined; }
+	}
+
 	async heartbeat(): Promise<void> {
 		if (!this.identity || this.stopped) return;
 		const identity = this.identity;
@@ -546,6 +595,7 @@ export class TeamRuntime {
 				{ idempotencyKey: `hb:${this.identity.session_id}:${randomUUID()}`, timeoutMs: 5_000 },
 			);
 			if (this.identity !== identity) return;
+			await this.flushUsage();
 			this.updateStatus();
 			const hadLocalSelection = !!this.localModel;
 			await this.flushLocalModel();
@@ -553,6 +603,7 @@ export class TeamRuntime {
 				try { await this.applyModel(r.model_change); this.modelWarning = undefined; }
 				catch (e) { if (this.modelWarning !== r.model_change.request_id) this.say(`team: model switch remains pending: ${(e as Error).message}`, "warning"); this.modelWarning = r.model_change.request_id; }
 			}
+			if (r.desired_state !== "RUNNING") this.ctx?.abort?.();
 			this.lastInboxPending = r.inbox_pending;
 			// Managed one-shot workers pick messages up at run start / before settling instead.
 			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: r.desired_state === "RUNNING" && (r.reporting_wake || (this.identity?.managed && this.ctx?.mode === "tui")) });

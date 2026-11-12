@@ -46,7 +46,7 @@ function assertDepthWithinCap(db: DB, runId: string, moved: string[]): void {
 			who = m;
 		}
 	}
-	if (worst > cap) fail("HARD_CAP", `emergency_max_depth ${cap} would be exceeded (agent ${who} at depth ${worst})`, { violations: [`emergency_max_depth ${cap} (depth ${worst})`], agent_id: who });
+	if (cap !== null && worst > cap) fail("HARD_CAP", `emergency_max_depth ${cap} would be exceeded (agent ${who} at depth ${worst})`, { violations: [`emergency_max_depth ${cap} (depth ${worst})`], agent_id: who });
 }
 
 /** Transfer the direct children of `subject` to `target`, re-pointing reservations; budget-checked. */

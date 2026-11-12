@@ -167,7 +167,7 @@ export function proposal(taskId: string, roles: { title?: string; count?: number
 		reason: "Work is larger than one agent can finish before the deadline.",
 		alternatives: "Do it serially.",
 		estimated_cost_usd: roles.reduce((s, r) => s + (r.max_cost_usd ?? 1) * (r.count ?? 1), 0),
-		roles: roles.map((r) => ({ title: r.title ?? "worker", responsibility: "do the work", count: r.count ?? 1, capabilities: r.capabilities ?? ["coding"], max_cost_usd: r.max_cost_usd ?? 1, ...(r.preferred_model_id ? { preferred_model_id: r.preferred_model_id } : {}), ...(r.max_runtime_seconds ? { max_runtime_seconds: r.max_runtime_seconds } : {}) })),
+		roles: roles.map((r) => ({ title: r.title ?? "worker", responsibility: "do the work", count: r.count ?? 1, capabilities: r.capabilities ?? ["coding"], max_cost_usd: Object.hasOwn(r, "max_cost_usd") ? r.max_cost_usd : 1, ...(r.preferred_model_id ? { preferred_model_id: r.preferred_model_id } : {}), ...(r.max_runtime_seconds ? { max_runtime_seconds: r.max_runtime_seconds } : {}) })),
 	};
 }
 

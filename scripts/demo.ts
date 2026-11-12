@@ -160,6 +160,15 @@ function q<T = Record<string, any>>(paths: StatePaths, sql: string, ...args: (st
 	}
 }
 
+/** Seed an explicit delegated envelope for this bounded-policy demo (not a production default). */
+function demoSlots(paths: StatePaths, agent: string, slots: number): void {
+	const db = new DatabaseSync(paths.db);
+	try {
+		db.exec("PRAGMA busy_timeout=5000");
+		db.prepare("UPDATE allocations SET limits_json=json_set(limits_json,'$.max_subtree_slots',?) WHERE agent_id=?").run(slots, agent);
+	} finally { db.close(); }
+}
+
 interface LogRec {
 	event: string;
 	[k: string]: any;
@@ -310,6 +319,7 @@ export async function runDemo(opts: DemoOptions = {}): Promise<DemoResult> {
 				{
 					config: {
 						workspace_root: workspace,
+						limits: { max_live_agents: 12, max_pending_spawns: 8, max_run_usd: 25, emergency_max_depth: 12, max_run_seconds: 0, max_agent_seconds: 0, allow_providers: ["anthropic", "openrouter", "local"] },
 						models: [
 							{ id: "economy", provider: "local", model: "fake-small-1", capability_tags: ["general"], tool_support: true, cost_per_m_input_usd: 0.1, cost_per_m_output_usd: 0.4, availability: "available" },
 							{ id: "strong", provider: "openrouter", model: "fake-large-2", capability_tags: ["general", "reasoning"], tool_support: true, cost_per_m_input_usd: 3, cost_per_m_output_usd: 15, availability: "available" },
@@ -351,6 +361,7 @@ export async function runDemo(opts: DemoOptions = {}): Promise<DemoResult> {
 			assert.equal(dec.status, "APPROVED");
 			assert.equal(dec.spawned_agent_ids.length, 1);
 			ids.B = dec.spawned_agent_ids[0];
+			demoSlots(paths, ids.B, 2);
 			const b = await waitUntil("Lead B enrolled (LIVE)", () => live(ids.B));
 			const del = await client.delegateTask({ owner_id: ids.B, title: "Verify DRC + LVS", parent_task_id: own.task_id, spec: { scope: "full chip" } });
 			const t = await tree();
@@ -381,6 +392,7 @@ export async function runDemo(opts: DemoOptions = {}): Promise<DemoResult> {
 			ids.C = (await agentByRole("DRC verifier"))!;
 			ids.D = (await agentByRole("LVS verifier"))!;
 			assert.ok(ids.C && ids.D);
+			demoSlots(paths, ids.C, 0);
 			await waitUntil("C and D LIVE", async () => (await live(ids.C)) && (await live(ids.D)));
 			const bB = await budget(ids.B);
 			const bA = await budget(ids.A);

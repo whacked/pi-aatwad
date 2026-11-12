@@ -165,7 +165,7 @@ export interface ExpansionRole {
 	count: number;
 	capabilities: string[];
 	preferred_model_id?: string;
-	max_cost_usd: number;
+	max_cost_usd?: number;
 	max_runtime_seconds?: number;
 }
 
@@ -199,10 +199,10 @@ export interface ModelCatalogEntry {
 }
 
 export interface GlobalLimits {
-	max_live_agents: number;
-	max_pending_spawns: number;
-	emergency_max_depth: number;
-	max_run_usd: number;
+	max_live_agents: number | null;
+	max_pending_spawns: number | null;
+	emergency_max_depth: number | null;
+	max_run_usd: number | null;
 	max_run_seconds: number;
 	max_agent_seconds: number;
 	allow_providers: string[];
@@ -210,11 +210,11 @@ export interface GlobalLimits {
 
 /** Delegated envelope of one agent (allocations.limits_json). Ceilings. */
 export interface Envelope_Limits {
-	max_subtree_slots: number; // live descendants this agent's subtree may hold
-	max_subtree_usd: number; // spend ceiling for the whole subtree (incl. self)
+	max_subtree_slots: number | null; // live descendants this agent's subtree may hold
+	max_subtree_usd: number | null; // spend ceiling for the whole subtree (incl. self)
 	max_session_seconds: number;
-	max_grant_slots: number; // most slots it may approve in a single decision without escalation
-	max_grant_usd: number; // most usd it may approve in a single decision without escalation
+	max_grant_slots: number | null; // most slots it may approve in a single decision without escalation
+	max_grant_usd: number | null; // most usd it may approve in a single decision without escalation
 	allowed_providers: string[];
 	allowed_capabilities: string[]; // empty = any
 }
@@ -562,6 +562,8 @@ export interface LifecycleResponse {
 /** GET /budgets/:agent_id (self or ancestor or operator) */
 export interface BudgetView {
 	own_budget_usd?: number | null;
+	budget_pool_id?: string;
+	pool_consumed_usd?: number;
 	unlimited?: boolean;
 	agent_id: string;
 	limits: Envelope_Limits;

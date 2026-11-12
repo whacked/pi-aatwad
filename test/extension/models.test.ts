@@ -31,7 +31,7 @@ test("member tool discovers a Pi model and provisions through the real controlle
 		const tools = new Map<string, any>();
 		const pi = { registerTool: (tool: any) => tools.set(tool.name, tool) };
 		const rt = { identity: { agent_id: "root", run_id }, client: new TeamClient({ paths: statePaths(hs.dir), token: () => token, noReconnect: true }),
-			agentCall: (fn: () => unknown) => fn() };
+			agentCall: (fn: () => unknown) => fn(), commandToken: () => token, attached: () => false };
 		registerTools(pi as any, rt as any);
 		const discovered = await tools.get("team_get_models").execute("discover", { source: "available" }, undefined, undefined, ctx);
 		assert.equal(discovered.details.models.length, 2);

@@ -70,7 +70,7 @@ test("real Pi + real controller: /team init auto-starts the controller; status/t
 		assert.match(st.message, /controller: up .*schema 4/);
 		assert.match(st.message, new RegExp(`identity: root ${agentId} · run ${runId}`));
 		assert.match((await cmd("tree", /topology v\d+/)).message, new RegExp(`root \\[${agentId}\\].*← you`));
-		assert.match((await cmd("budget", /^budget for/)).message, /available \$/);
+		assert.match((await cmd("budget", /^budget for/)).message, /available unbounded/);
 		assert.match((await cmd("events", /run\.created/)).message, /agent\.created/);
 		assert.match((await cmd("proposals", /to review \(0\)/)).message, /mine \(0\)/);
 		assert.match((await cmd(`inspect ${agentId}`, /parent: \(root\)|\/team inspect:/)).message, /sessions \(\d+\)/);

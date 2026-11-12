@@ -72,7 +72,7 @@ export function assertWithinEnvelopes(db: DB, agents: Iterable<string>, hint?: s
 		const runId = get(db, "SELECT run_id FROM agents WHERE id=?", a)!.run_id;
 		if (runConfig(db, runId).operator_unlimited) continue;
 		const al = getAllocation(db, a);
-		if (al.reserved_slots > al.limits.max_subtree_slots || al.committed_usd > al.limits.max_subtree_usd + EPS) {
+		if ((al.limits.max_subtree_slots !== null && al.reserved_slots > al.limits.max_subtree_slots) || (al.limits.max_subtree_usd !== null && al.committed_usd > al.limits.max_subtree_usd + EPS)) {
 			fail("BUDGET_EXCEEDED", `subtree envelope of ${a} would be exceeded`, { agent_id: a, reserved_slots: al.reserved_slots, max_subtree_slots: al.limits.max_subtree_slots, reserved_usd: al.reserved_usd, settled_usd: al.settled_usd, max_subtree_usd: al.limits.max_subtree_usd, hint });
 		}
 	}
@@ -89,11 +89,11 @@ export function raiseEnvelopeFor(db: DB, runId: string, actor: string, agentId: 
 	const needUsd = al.committed_usd + addUsd;
 	const lim = { ...al.limits };
 	let changed = false;
-	if (needSlots > lim.max_subtree_slots) {
+	if (lim.max_subtree_slots !== null && needSlots > lim.max_subtree_slots) {
 		lim.max_subtree_slots = needSlots;
 		changed = true;
 	}
-	if (needUsd > lim.max_subtree_usd + EPS) {
+	if (lim.max_subtree_usd !== null && needUsd > lim.max_subtree_usd + EPS) {
 		lim.max_subtree_usd = Math.round(needUsd * 1e6) / 1e6;
 		changed = true;
 	}
@@ -102,10 +102,22 @@ export function raiseEnvelopeFor(db: DB, runId: string, actor: string, agentId: 
 	emit(db, { run_id: runId, actor_id: actor, type: "budget.grant_raised", entity_id: agentId, payload: { proposal_id: proposalId, before: al.limits, after: lim } });
 }
 
-/** The agent's own budget = usd of its reservation rows (same amount at every ancestor). */
+/** Effective pool ceiling; explicit legacy budgets use reservation rows at each ancestor. */
 export function ownBudgetUsd(db: DB, agentId: string): number | null {
+	const meta = JSON.parse(get(db, "SELECT metadata_json FROM agents WHERE id=?", agentId)!.metadata_json);
+	if (meta.budget_inherited && meta.budget_pool_id && meta.budget_pool_id !== agentId) return ownBudgetUsd(db, meta.budget_pool_id) ?? meta.own_budget_usd;
+	if (meta.own_budget_usd === null || meta.budget_inherited) return meta.own_budget_usd;
 	const r = get(db, "SELECT usd FROM reservations WHERE beneficiary_id = ? AND state = 'ACTIVE' LIMIT 1", agentId);
-	return r ? Number(r.usd) : null;
+	return r ? Number(r.usd) : meta.own_budget_usd ?? null;
+}
+
+/** Pool membership survives topology moves and terminal settlements. Explicit budgets start a new pool. */
+export function budgetPool(db: DB, agentId: string): { id: string; consumed: number; members: string[] } {
+	const a = get(db, "SELECT run_id, metadata_json FROM agents WHERE id=?", agentId)!;
+	const id = JSON.parse(a.metadata_json).budget_pool_id ?? agentId;
+	const rows = all(db, `SELECT a.id,b.consumed_usd FROM agents a JOIN allocations b ON b.agent_id=a.id
+		WHERE a.run_id=? AND COALESCE(json_extract(a.metadata_json,'$.budget_pool_id'),a.id)=?`, a.run_id, id);
+	return { id, consumed: rows.reduce((sum, r) => sum + Number(r.consumed_usd), 0), members: rows.map((r) => r.id) };
 }
 
 export function budgetView(db: DB, agentId: string): BudgetView {
@@ -119,6 +131,8 @@ export function budgetView(db: DB, agentId: string): BudgetView {
 	return {
 		agent_id: agentId,
 		own_budget_usd: ownBudgetUsd(db, agentId),
+		budget_pool_id: budgetPool(db, agentId).id,
+		pool_consumed_usd: budgetPool(db, agentId).consumed,
 		unlimited,
 		limits: al.limits,
 		reserved_slots: al.reserved_slots,
@@ -126,7 +140,7 @@ export function budgetView(db: DB, agentId: string): BudgetView {
 		settled_usd: al.settled_usd,
 		consumed_usd: al.consumed_usd,
 		subtree_live_agents: live,
-		available_slots: unlimited ? null : Math.max(0, al.limits.max_subtree_slots - al.reserved_slots),
-		available_usd: unlimited ? null : Math.max(0, Math.round((al.limits.max_subtree_usd - al.committed_usd) * 1e6) / 1e6),
+		available_slots: unlimited || al.limits.max_subtree_slots === null ? null : Math.max(0, al.limits.max_subtree_slots - al.reserved_slots),
+		available_usd: unlimited || al.limits.max_subtree_usd === null ? null : Math.max(0, Math.round((al.limits.max_subtree_usd - al.committed_usd) * 1e6) / 1e6),
 	};
 }

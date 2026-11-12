@@ -67,11 +67,10 @@ export function createMember(ctx: Ctx, p: Principal, body: unknown) {
 	const registered = b.model === undefined ? undefined : registerModel(ctx, p, b.model);
 	if (registered && b.preferred_model_id !== undefined) fail("INVALID", "specify model or preferred_model_id, not both");
 	const modelId = registered?.id ?? str(b, "preferred_model_id", { optional: true }) ?? "leader";
-	const unlimited = !!runConfig(ctx.db, a.run_id).operator_unlimited;
-	const cost = b.max_cost_usd ?? (unlimited ? 0 : 2);
+	const cost = b.max_cost_usd;
 	const runtime = b.max_runtime_seconds;
 	const task = createTask(ctx.db, { run_id: a.run_id, owner_id: a.actor_id, title: `Recruit ${name}`, spec: { responsibility }, parent_task_id: null, assigned_by: a.actor_id });
-	const proposal = createExpansion(ctx, p, { version: 1, task_id: task, reason: `Recruit member: ${responsibility}`, alternatives: "Leader performs the work alone", estimated_cost_usd: cost,
+	const proposal = createExpansion(ctx, p, { version: 1, task_id: task, reason: `Recruit member: ${responsibility}`, alternatives: "Leader performs the work alone", estimated_cost_usd: cost ?? 0,
 		roles: [{ title: name, responsibility, count: 1, capabilities: [], preferred_model_id: modelId, max_cost_usd: cost, ...(runtime !== undefined ? { max_runtime_seconds: runtime } : {}) }] });
 	const result = decide(ctx, p, proposal.proposal_id, { decision: "APPROVE", reason: "Root requested direct member creation" });
 	// Roll back this convenience operation fully on failure, including model/task registration.
