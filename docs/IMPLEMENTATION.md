@@ -264,3 +264,24 @@ detached one-shot exits remain quiet (they settle after each prompt by design).
 Regression tests use both stub processes and real Pi in dedicated/in-place tmux:
 complete the actual task, age its session past the former default limits, send
 more work, deliberately kill it, observe a notice, and verify resumed communication.
+
+## Reclaiming stale leader-pane tags (v0.1.10)
+
+Tmux pane tags outlive individual Pi sessions. A fresh session followed by
+`/team init` creates a new run, but does not erase the previous run's pane tags.
+`/team watch off` and terminal fallback can also delete saved terminal locations
+while leaving those tags behind. Previously, watch tried to release the old
+run's saved layout; missing or moved locations made that cleanup a no-op on the
+current pane, then `TmuxWatch.open()` threw `This pane already belongs to another team`.
+
+Watch now releases only the verified leader-pane tags on the current tmux server
+when their old run is known to this controller and has zero active members.
+It does not use saved locations to tear down another layout, kill the human Pi
+process, cancel the old root-only run, or alter its history. The old run remains
+resumable. `releaseLeaderPane()` verifies both owner and `leader` role before
+clearing tags; active-member teams, worker panes, and unknown/controller-foreign
+owners remain protected. Low-level ownership checks remain in place.
+
+Tests cover saved, missing, disabled and moved terminal locations, protected
+foreign/worker/active-team panes, unchanged human PID, preservation of a different
+saved layout and the old run, plus the full fresh-session init/watch command path.

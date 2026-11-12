@@ -9,7 +9,7 @@ import { TmuxWatch } from "../../src/watch/tmux.ts";
 import { harness, newRun } from "../controller/helpers.ts";
 const haveTmux = spawnSync("tmux", ["-V"]).status === 0;
 
-test("stopped pane ownership is released for a new team; active teams remain protected", { skip: !haveTmux }, async () => {
+for (const savedLocation of ["saved", "missing", "disabled", "moved"]) test(`pane ownership is released for a new team (location: ${savedLocation}); active teams remain protected`, { skip: !haveTmux }, async () => {
 	const hs = await harness();
 	const socket = join(hs.dir, "tmux.sock");
 	const oldEnv = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
@@ -20,14 +20,39 @@ test("stopped pane ownership is released for a new team; active teams remain pro
 		const pane = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "user-session", "-x", "180", "-y", "50", "/bin/sh");
 		await view.open(pane);
 		const pid = await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}");
-		await hs.call("POST", `/runs/${old.run_id}/terminal`, { token: hs.op, body: { socket, location: view.opts.location } });
-		await hs.call("POST", `/agents/${old.root}/lifecycle`, { token: hs.op, body: { action: "cancel", reason: "old team stopped", children_policy: "cascade" } });
+		let elsewhere: string | undefined;
+		if (savedLocation === "saved") {
+			await hs.call("POST", `/runs/${old.run_id}/terminal`, { token: hs.op, body: { socket, location: view.opts.location } });
+			await hs.call("POST", `/agents/${old.root}/lifecycle`, { token: hs.op, body: { action: "cancel", reason: "old team stopped", children_policy: "cascade" } });
+		}
+		if (savedLocation === "disabled") {
+			await hs.call("POST", `/runs/${old.run_id}/terminal`, { token: hs.op, body: { socket, location: view.opts.location } });
+			await hs.call("POST", `/runs/${old.run_id}/terminal`, { token: hs.op, body: { enabled: false } });
+		}
+		if (savedLocation === "moved") {
+			elsewhere = await view.tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "user-session", "/bin/sh");
+			const moved = new TmuxWatch({ stateDir: hs.dir, runId: old.run_id, socket });
+			await moved.open(elsewhere);
+			await hs.call("POST", `/runs/${old.run_id}/terminal`, { token: hs.op, body: { socket, location: moved.opts.location } });
+		}
+		// Without a saved location the old root-only team is still RUNNING, as
+		// after /new; its tmux tags outlive the Pi session that installed them.
 		process.env.TMUX = `${socket},0,0`; process.env.TMUX_PANE = pane;
 		const rt = { paths: statePaths(hs.dir), commandToken: async () => hs.op, client: new TeamClient({ paths: statePaths(hs.dir), noReconnect: true }) } as any;
+		const foreign = new TmuxWatch({ stateDir: join(hs.dir, "another-controller"), runId: old.run_id, socket });
+		await foreign.tag(pane, "leader");
+		await assert.rejects(openTerminals(rt, current.run_id), /another controller state directory/);
+		assert.equal(await foreign.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), foreign.owner);
+		await view.tag(pane, "old-member");
+		await assert.rejects(openTerminals(rt, current.run_id), /not its leader/);
+		assert.equal(await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid, "old member pane is not killed");
+		await view.tag(pane, "leader");
 		const fresh = await openTerminals(rt, current.run_id);
 		assert.equal(await fresh.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), fresh.owner);
 		assert.equal(await fresh.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid);
 		assert.equal((await fresh.tmux("list-sessions", "-F", "#{session_name}")).trim(), "user-session");
+		if (elsewhere) assert.equal(await view.tmux("show-options", "-p", "-qv", "-t", elsewhere, "@pi_team_owner"), view.owner, "a different saved layout is not released");
+		assert.equal((await hs.call("GET", "/runs", { token: hs.op })).body.runs.find((r: any) => r.run_id === old.run_id).status, savedLocation === "saved" ? "CANCELLED" : "RUNNING");
 		await hs.call("POST", "/members", { token: current.token, body: { name: "Active", responsibility: "Wait for new tasks" } });
 		await assert.rejects(openTerminals(rt, next.run_id), /active members.*team resume/);
 		assert.equal(await fresh.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), fresh.owner);

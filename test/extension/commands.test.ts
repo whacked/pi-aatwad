@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { TmuxWatch } from "../../src/watch/tmux.ts";
 import { registerTeamCommand } from "../../src/extension/commands.ts";
 import { TeamRuntime, __resetProcessStateForTests } from "../../src/extension/runtime.ts";
 import { statePaths } from "../../src/shared/paths.ts";
@@ -60,6 +63,39 @@ function commandSession(hs: Awaited<ReturnType<typeof harness>>, id: string, sel
 	registerTeamCommand(pi as any, rt);
 	return { rt, ctx, notes, choices, command };
 }
+
+test("fresh session init then watch reclaims stale leader tags after terminal metadata was cleared", { skip: spawnSync("tmux", ["-V"]).status !== 0 }, async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const env = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
+	const old = commandSession(hs, "old-pane-session", ""), fresh = commandSession(hs, "new-pane-session", "");
+	const view = new TmuxWatch({ stateDir: hs.dir, runId: "setup", socket: join(hs.dir, "tmux.sock") });
+	try {
+		const pane = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "human", "/bin/sh");
+		process.env.TMUX = `${view.opts.socket},0,0`; process.env.TMUX_PANE = pane;
+		const pid = await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}");
+		await old.rt.start(old.ctx);
+		await old.command.handler("init", old.ctx);
+		const oldRun = old.rt.identity!.run_id;
+		await old.command.handler("watch", old.ctx);
+		await old.command.handler("watch off", old.ctx); // leaves pane tags but deletes terminal config
+		old.rt.stop();
+		await fresh.rt.start(fresh.ctx);
+		assert.equal(fresh.rt.identity, undefined);
+		await fresh.command.handler("init", fresh.ctx);
+		await fresh.command.handler("watch", fresh.ctx);
+		assert.ok(fresh.notes.some((s) => s.includes("Team panes opened")), fresh.notes.join("\n"));
+		assert.ok(!fresh.notes.some((s) => s.includes("Error:")), fresh.notes.join("\n"));
+		assert.equal(await view.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), new TmuxWatch({ stateDir: hs.dir, runId: fresh.rt.identity!.run_id }).owner);
+		assert.equal(await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid);
+		assert.equal((await hs.call("GET", "/runs", { token: hs.op })).body.runs.find((r: any) => r.run_id === oldRun).status, "RUNNING", "old team is not cancelled by reclaiming pane tags");
+	} finally {
+		old.rt.stop(); fresh.rt.stop();
+		for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		try { await view.tmux("kill-server"); } catch {}
+		await hs.cleanup(); __resetProcessStateForTests();
+	}
+});
 
 test("fresh resume picker restores the existing multi-member team; init then resume discards only the new empty team", async () => {
 	__resetProcessStateForTests();

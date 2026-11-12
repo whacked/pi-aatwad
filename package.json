@@ -1,6 +1,6 @@
 {
   "name": "pi-recursive-team",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Recursive agent organizations for Pi: /team commands, org tools, and an auto-started local controller",
   "type": "module",
   "keywords": [

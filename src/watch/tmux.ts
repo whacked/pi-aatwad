@@ -150,6 +150,14 @@ export class TmuxWatch {
 		}
 		await this.tmux("kill-session", "-t", this.name);
 	}
+	/** Clear verified human-pane tags even when the saved layout was lost. */
+	async releaseLeaderPane(pane: string): Promise<void> {
+		const owner = await this.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner");
+		const agent = await this.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_agent");
+		if (owner !== this.owner || agent !== "leader") throw new Error("Pane is not this team's leader; refusing to release it");
+		for (const key of ["@pi_team_owner", "@pi_team_agent", "@pi_team_harness"]) await this.tmux("set-option", "-p", "-u", "-t", pane, key);
+	}
+
 	/** Release only this team's UI after its members stop; preserve the human Pi pane. */
 	async releaseLayout(): Promise<void> {
 		if (!await this.exists()) return;
@@ -159,7 +167,7 @@ export class TmuxWatch {
 		for (const p of [...panes.filter((p) => p.agent === "dashboard"), ...panes.filter((p) => p.agent && p.agent !== "dashboard" && p.agent !== "leader")])
 			await this.tmux("kill-pane", "-t", p.id).catch(() => {});
 		for (const p of panes.filter((p) => p.agent === "leader")) {
-			for (const key of ["@pi_team_owner", "@pi_team_agent", "@pi_team_harness"]) await this.tmux("set-option", "-p", "-u", "-t", p.id, key);
+			await this.releaseLeaderPane(p.id);
 		}
 		if (!this.opts.location && await this.exists()) await this.tmux("set-option", "-u", "-t", this.name, "@pi_team_watch");
 	}

@@ -1,5 +1,5 @@
 import { TmuxWatch } from "../watch/tmux.ts";
-import type { TerminalLocation, TerminalOptions } from "../shared/protocol.ts";
+import type { TerminalOptions } from "../shared/protocol.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { currentTmuxPane } from "../shared/environment.ts";
 import { execFile } from "node:child_process";
@@ -44,8 +44,14 @@ export async function openTerminals(rt: TeamRuntime, runId: string, options: { d
 			const runs = (await rt.client.listRuns({ token })).runs;
 			const old = runs.find((r) => new TmuxWatch({ stateDir: rt.paths.dir, runId: r.run_id }).owner === owner);
 			if (old && old.active_members === 0) {
-				const cfg = await rt.client.get<{ socket?: string; location?: TerminalLocation }>(`/runs/${encodeURIComponent(old.run_id)}/terminal`, { token });
-				await new TmuxWatch({ stateDir: rt.paths.dir, runId: old.run_id, ...cfg }).releaseLayout();
+				if (await view.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_agent") !== "leader")
+					throw new Error("This pane is an old team member pane, not its leader; open this team in a fresh tmux pane.");
+				// Tags live in tmux, not in the Pi session or controller config.
+				// Release only this verified human-pane association on this server,
+				// not a whole saved layout (which can be missing or point elsewhere).
+				// The old root-only run stays intact and can still be resumed.
+				const stale = new TmuxWatch({ stateDir: rt.paths.dir, runId: old.run_id });
+				await stale.releaseLeaderPane(pane);
 			} else throw new Error(old
 				? `This pane has active members for ${old.run_id}. Use /team resume ${old.run_id} to return to them, /team stop ${old.run_id} to end them, or open the new team in another pane. /team list shows active teams.`
 				: "This pane belongs to a team from another controller state directory; use its controller to stop it or open this team in a fresh tmux pane.");
