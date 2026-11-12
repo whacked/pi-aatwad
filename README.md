@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.14, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.15, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -82,7 +82,7 @@ Inside Pi:
 | `/team list [all]` | List active teams, reporting relationships and member counts; `all` includes history. |
 | `/team report-to <run_id\|none>` | Make this leader report to another team leader, or disconnect it. |
 | `/team reporting [--all\|dismiss\|transfer <run_id>\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
-| `/team admin [status\|unlimited\|bounded] [run_id]` | Human operator: inspect, remove or restore resource caps. |
+| `/team admin [status\|unlimited\|bounded\|clear-deadlines] [run_id]` | Human operator: inspect/change resource policy or explicitly clear saved worker deadlines. |
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
 | `/team inspect <agent_id>` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
@@ -229,7 +229,14 @@ worker lifetime policies are inherited at creation and measured from each worker
 New finalized assistant/tool usage is reported with persisted, idempotent retries. Exhaustion
 pauses affected members and aborts active work; an in-flight provider request can still overshoot
 before final usage is known. Existing saved numeric policies remain configured (except run age);
-new defaults do not silently erase intentional limits. The controller has no idle shutdown by
+new defaults do not silently erase intentional limits. To remove an existing team's saved
+lifetime policy, the human operator can run `/team admin clear-deadlines [run_id]`.
+This explicitly clears session and total-runtime limits for every existing member,
+as well as the root/global defaults inherited by future members. It preserves budgets,
+grants, resource mode, membership, task states, and transcripts; paused members remain
+paused until deliberately resumed. It does not rewrite pending expansion requests;
+newly approved explicit worker timers still apply. The action is transactional and audited.
+The controller has no idle shutdown by
 default; `PI_TEAM_IDLE_MS` is an optional operator-selected resource-cleanup setting, not a run lifetime.
 
 To specify a member and model directly:
@@ -395,6 +402,12 @@ Both legacy tmux layout strings and tmux 3.8 JSON layouts are supported.
 Install `tmux` and put it on PATH. Run `/team watch` or ask the leader to open the
 team terminals. **Each member pane runs a separate, interactive Pi harness** on a
 real tmux PTY: its own prompt, model, transcript, worktree and process identity.
+A deadline-stopped member remains paused and resumable, but its dead Pi pane is
+removed automatically after its process exits. A live paused Pi stays visible;
+RUNNING workers awaiting restart keep their panes for the executor to reuse.
+Removing a pane does not dismiss the member or discard its transcript. Idle workers
+and completed tasks alone do not trigger a deadline or pane cleanup.
+
 The agent name appears as a **bold, accent-colored label on the right of the input's top border** (the root shows “Team leader”), as well as highlighted in the footer. The label follows the active identity and theme, fits narrow terminals, and preserves existing custom editors, keyboard shortcuts, and border status indicators. If another editor leaves no spare border space, the footer still identifies the agent. Reload the extension with `/reload` to apply this to an already-open Pi.
 
 These are not log-tail panels. Type directly in a member's Pi prompt, or have the

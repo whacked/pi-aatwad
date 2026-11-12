@@ -103,8 +103,14 @@ export class PiExecutor implements Executor {
 	async syncTerminal(stateDir: string, runId: string, terminal: TerminalOptions, members: TerminalMember[]): Promise<void> {
 		const view = new TmuxWatch({ stateDir, runId, ...terminal });
 		if (!await view.exists()) return;
-		const paneAgents = new Set((await view.panes()).map((p) => p.agent));
-		for (const member of members.filter((m) => paneAgents.has(m.agent_id) && ["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(m.status))) {
+		const panes = new Map((await view.panes()).map((p) => [p.agent, p]));
+		// Deadline/budget pauses can stop a harness while retaining its member and
+		// transcript. Remove only a dead pane after the process exits; never keep an unexplained dead Pi
+		// or interfere with RUNNING workers awaiting controller-managed restart.
+		for (const member of members.filter((m) => panes.has(m.agent_id) && (
+			["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(m.status) ||
+			(m.status === "PAUSED" && m.desired_state === "PAUSED" && panes.get(m.agent_id)!.dead)
+		))) {
 			if (!member.process || await this.probe(member.process) === "dead") await view.removeMember(member.agent_id);
 		}
 		await view.sync(members.filter((m) => !["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(m.status)), true);

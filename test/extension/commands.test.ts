@@ -196,6 +196,9 @@ test("human init --unlimited and admin policy commands remove and restore bounde
 		assert.ok(s.notes.some((n) => n.includes("policy: UNLIMITED")));
 		await s.command.handler("admin bounded", s.ctx);
 		assert.equal((await s.rt.client.budget(s.rt.identity!.agent_id)).unlimited, false);
+		await s.command.handler("admin clear-deadlines", s.ctx);
+		assert.ok(s.notes.some((n) => n.includes("deadlines cleared") && n.includes("budgets unchanged")));
+		assert.equal((await s.rt.client.budget(s.rt.identity!.agent_id)).unlimited, false);
 		await s.command.handler("admin unlimited", s.ctx);
 		assert.equal((await s.rt.client.budget(s.rt.identity!.agent_id)).available_usd, null);
 		await s.command.handler("stop", s.ctx);

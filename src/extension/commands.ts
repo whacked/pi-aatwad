@@ -28,7 +28,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "model", args: "<name|agent_id> <provider/model>", help: "switch an existing member model when idle" },
 	{ name: "inspect", args: "<name|agent_id>", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
-	{ name: "admin", args: "[status|unlimited|bounded] [run_id]", help: "human operator resource policy" },
+	{ name: "admin", args: "[status|unlimited|bounded|clear-deadlines] [run_id]", help: "human operator resource policy" },
 	{ name: "stop", args: "[name|agent_id|run_id]", help: "controlled cancellation (cascades to subtree)" },
 	{ name: "watch", args: "[open|status|close|off|debug|focus <name|agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
 	{ name: "send", args: "<name|agent_id> <message>", help: "send directions to a team member" },
@@ -200,12 +200,12 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		admin: async (a, ctx) => {
 			if (rt.managed) throw new Error("only the human operator can change resource limits");
 			const action = a[0] ?? "status";
-			if (!["status", "unlimited", "bounded"].includes(action)) throw new Error("usage: /team admin [status|unlimited|bounded] [run_id]");
+			if (!["status", "unlimited", "bounded", "clear-deadlines"].includes(action)) throw new Error("usage: /team admin [status|unlimited|bounded|clear-deadlines] [run_id]");
 			const id = runId(a[1]);
 			const token = await rt.commandToken();
 			const policy = action === "status" ? await rt.client.get<{ mode: string }>(`/runs/${id}/admin`, { token })
 				: await rt.client.post<{ mode: string }>(`/runs/${id}/admin`, { mode: action }, { token });
-			out(ctx, `Human operator policy for ${id}: ${policy.mode.toUpperCase()}${action === "unlimited" ? " — spend, runtime, member-count and recursion-depth caps are removed; accounting remains enabled" : ""}`);
+			out(ctx, `Human operator policy for ${id}: ${policy.mode.toUpperCase()}${action === "clear-deadlines" ? " — saved session/runtime deadlines cleared for all members; budgets unchanged; paused members remain paused" : action === "unlimited" ? " — global spend, member-count and recursion-depth caps are bypassed; explicit worker budgets and deadlines remain enforced" : ""}`);
 		},
 
 		resume: async (a, ctx) => {
