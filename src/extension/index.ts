@@ -81,10 +81,12 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 	// Small, fresh org context before each run. Never a cached hierarchy, never the whole tree.
 	pi.on("before_agent_start", async (event) => {
 		await waitBounded(rt.ready, rt.managed ? 15_000 : 5_000);
-		if (!rt.identity) return;
+		const identity = rt.identity;
+		if (!identity) return;
 		let text: string;
 		try {
 			const me = await rt.client.me({ timeoutMs: 3_000 });
+			if (rt.identity !== identity) return;
 			text = formatOrgContext(me);
 			if (me.is_root) text += "\nYou are the team leader. Configure the team through conversation; no config file is required. " +
 				"For a user task, decide the useful number and responsibilities of members, then use team_create_member once per member. " +
@@ -98,12 +100,13 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 				"Runtime model registrations persist in this run; existing members retain their selected models. Lifecycle notices report process loss, restart scheduling or failure: update your understanding of the team and use team_get_tree to verify current state; a completed task is not a closed worker.";
 			else text += "\nCompleting a task does not end your membership. Remain available for leader messages and new assignments. Do not exit Pi, kill your pane or retire yourself after finishing; your manager or the human decides when to close you.";
 		} catch (e) {
-			if (rt.handleAgentError(e)) return;
-			text = `You are agent ${rt.identity.agent_id} in team run ${rt.identity.run_id}; the team controller is currently unreachable (${(e as Error).message.slice(0, 120)}). Team tools may fail until it recovers.`;
+			if (rt.identity !== identity || rt.handleAgentError(e, identity)) return;
+			text = `You are agent ${identity.agent_id} in team run ${identity.run_id}; the team controller is currently unreachable (${(e as Error).message.slice(0, 120)}). Team tools may fail until it recovers.`;
 		}
-		event.systemPromptOptions.sections[CONTEXT_SECTION] = text;
 		// Managed worker: messages already waiting (e.g. the reason for a resume launch) ride along with this run.
 		const message = await rt.inboxForRunStart();
+		if (rt.identity !== identity) return;
+		event.systemPromptOptions.sections[CONTEXT_SECTION] = text;
 		if (message) return { message };
 	});
 

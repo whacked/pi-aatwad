@@ -264,6 +264,8 @@ export interface RunConfig {
 /** GET /health (no auth needed, protocol header still required) */
 export interface HealthResponse {
 	ok: true;
+	package_version?: string;
+	source_root?: string;
 	protocol: number;
 	schema: number;
 	controller_id: string;

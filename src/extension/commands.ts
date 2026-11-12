@@ -12,26 +12,28 @@ import type { RunSummary } from "../shared/protocol.ts";
 import { formatBudget, formatEvents, formatInspect, formatProposal, formatTree } from "./format.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
+import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 
 export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
-	{ name: "report-to", args: "<run_id|none>", help: "make this leader report to another team leader, or disconnect it" },
-	{ name: "reporting", args: "[--all|dismiss|transfer <run_id>|wake on|off]", help: "inspect, dismiss or transfer reporting links; configure automatic inbox turns" },
+	{ name: "report-to", args: "[run_id|none]", help: "make this leader report to another team leader, or disconnect it" },
+	{ name: "reporting", args: "[--all|dismiss|transfer [run_id]|wake on|off]", help: "inspect, dismiss or transfer reporting links; configure automatic inbox turns" },
 	{ name: "help", args: "", help: "show this help" },
 	{ name: "init", args: "[--unlimited] [config-json-path]", help: "create a new organization with this session as root" },
 	{ name: "resume", args: "[run_id] [name|agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
 	{ name: "tree", args: "[run_id] [--all]", help: "live logical hierarchy" },
 	{ name: "status", args: "", help: "controller, run, agent and pending work" },
+	{ name: "version", args: "", help: "loaded extension and controller versions, source and state paths" },
 	{ name: "budget", args: "[name|agent_id] [total_usd] [--resume]", help: "show budget or change total own spend ceiling" },
 	{ name: "inbox", args: "", help: "deliver pending team messages into this session" },
 	{ name: "proposals", args: "", help: "expansion proposals to review / mine" },
 	{ name: "events", args: "[run_id]", help: "recent audit events" },
-	{ name: "model", args: "<name|agent_id> <provider/model>", help: "switch an existing member model when idle" },
-	{ name: "inspect", args: "<name|agent_id>", help: "tasks, sessions, history, budget of an agent" },
+	{ name: "model", args: "[name|agent_id] <provider/model>", help: "switch an existing member model when idle" },
+	{ name: "inspect", args: "[name|agent_id]", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
 	{ name: "admin", args: "[status|unlimited|bounded|clear-deadlines] [run_id]", help: "human operator resource policy" },
 	{ name: "stop", args: "[name|agent_id|run_id]", help: "controlled cancellation (cascades to subtree)" },
-	{ name: "watch", args: "[open|status|close|off|debug|focus <name|agent_id>] [run_id]", help: "manage live Pi team terminals in tmux" },
-	{ name: "send", args: "<name|agent_id> <message>", help: "send directions to a team member" },
+	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi team terminals in tmux" },
+	{ name: "send", args: "[name|agent_id] <message>", help: "send directions to a team member" },
 ];
 
 export function helpText(pi: Pick<ExtensionAPI, "getAllTools">, rt: TeamRuntime): string {
@@ -44,10 +46,13 @@ export function helpText(pi: Pick<ExtensionAPI, "getAllTools">, rt: TeamRuntime)
 		registered = [];
 	}
 	lines.push(`tools (${registered.length}/${TOOL_NAMES.length}): ${registered.join(", ")}`);
+	lines.push("Omitted targets use the current team or select the sole viable candidate; multiple candidates prompt. Destructive commands confirm; --yes explicitly authorizes them (required without UI).");
 	const id = rt.identity;
 	lines.push(id ? `identity: ${id.role ?? "agent"} ${id.agent_id} in run ${id.run_id}${id.managed ? " (managed worker)" : ""}` : `identity: not enrolled${rt.notice ? ` — ${rt.notice}` : ""}`);
 	return lines.join("\n");
 }
+
+class SelectionCancelled extends Error {}
 
 function splitArgs(args: string): string[] {
 	return (args.match(/"(?:\\.|[^"\\])*"|'[^']*'|\S+/g) ?? []).map((part) => part.startsWith('"') ? JSON.parse(part) : part.startsWith("'") ? part.slice(1, -1) : part);
@@ -74,20 +79,46 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		else process.stderr.write(`${text}\n`);
 	};
 
-	const runId = (arg?: string): string => {
-		const r = arg ?? rt.identity?.run_id;
-		if (!r) throw new Error(`no run: pass a run_id or ${"enroll first (/team init | /team resume <run_id>)"}`);
-		return r;
+	const choose = async <T,>(ctx: ExtensionCommandContext, title: string, rows: T[], id: (row: T) => string, label: (row: T) => string): Promise<string> => {
+		if (!rows.length) throw new Error(`No viable candidates: ${title}`);
+		if (rows.length === 1) return id(rows[0]);
+		const labels = rows.map(label);
+		if (!ctx.hasUI) throw new Error(`${title}: specify a target; candidates:\n${labels.join("\n")}`);
+		const selected = await ctx.ui.select(title, labels);
+		const index = selected === undefined ? -1 : labels.indexOf(selected);
+		if (index < 0) throw new SelectionCancelled();
+		return id(rows[index]);
 	};
-
-	const agent = async (ref: string, run = rt.identity?.run_id) => rt.client.resolveAgent(ref, run, { token: await rt.commandToken() });
+	const confirm = async (ctx: ExtensionCommandContext, yes: boolean | undefined, detail: string): Promise<boolean> => {
+		if (yes) return true;
+		if (!ctx.hasUI) throw new Error(`Confirmation required: ${detail}. Rerun with --yes to authorize.`);
+		if (await ctx.ui.confirm("Confirm team operation?", detail)) return true;
+		out(ctx, "Operation cancelled; no changes made.");
+		return false;
+	};
+	const runId = async (ctx: ExtensionCommandContext, arg?: string, foreign = false): Promise<string> => {
+		if (arg) return arg; // Invalid explicit references must never select another target.
+		if (!foreign && rt.identity) return rt.identity.run_id;
+		const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs.filter((r) => resumable(r) && (!foreign || r.run_id !== rt.identity?.run_id));
+		return choose(ctx, "Choose a team", runs, (r) => r.run_id, runLabel);
+	};
+	const agent = async (ref: string | undefined, ctx: ExtensionCommandContext, selectedRun = rt.identity?.run_id): Promise<string> => {
+		const token = await rt.commandToken();
+		if (ref) return rt.client.resolveAgent(ref, selectedRun, { token });
+		const tree = await rt.client.tree(selectedRun ?? await runId(ctx), { token });
+		const flatten = (n: typeof tree.root): typeof tree.root[] => [n, ...n.children.flatMap(flatten)];
+		const nodes = flatten(tree.root);
+		const scope = rt.managed ? nodes.find((n) => n.agent_id === rt.identity?.agent_id) ?? tree.root : tree.root;
+		const members = flatten(scope).filter((n) => n.agent_id !== scope.agent_id && !TERMINAL_STATUSES.has(n.status));
+		return choose(ctx, "Choose a member", members.length ? members : [scope].filter((n) => !TERMINAL_STATUSES.has(n.status)), (n) => n.agent_id, (n) => `${n.role} [${n.agent_id}] · ${n.status}`);
+	};
 	let initializedRunId: string | undefined;
-	const handlers: Record<string, (a: string[], ctx: ExtensionCommandContext) => Promise<void>> = {
+	const handlers: Record<string, (a: string[], ctx: ExtensionCommandContext, yes?: boolean) => Promise<void>> = {
 		help: async (_a, ctx) => out(ctx, helpText(pi, rt)),
 
-		reporting: async (a, ctx) => {
+		reporting: async (a, ctx, yes) => {
 			await rt.requireIdentity();
-			const id = runId();
+			const id = await runId(ctx);
 			const token = await rt.commandToken();
 			if (!a.length || (a.length === 1 && a[0] === "--all")) {
 				out(ctx, JSON.stringify(await rt.client.reporting(id, a[0] === "--all", { token }), null, 2));
@@ -95,32 +126,37 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			}
 			let request: ReportingRequest;
 			if (a.length === 1 && a[0] === "dismiss") request = { action: "dismiss" };
-			else if (a.length === 2 && a[0] === "transfer") request = { action: "transfer", parent_run_id: a[1] };
+			else if (a.length <= 2 && a[0] === "transfer") request = { action: "transfer", parent_run_id: await runId(ctx, a[1], true) };
 			else if (a.length === 2 && a[0] === "wake" && ["on", "off"].includes(a[1])) request = { action: "wake", wake_on_message: a[1] === "on" };
 			else throw new Error("usage: /team reporting [--all|dismiss|transfer <run_id>|wake on|off]");
+			if (request.action !== "wake" && !(await confirm(ctx, yes, `Change reporting links for ${id}: ${JSON.stringify(request)}?`))) return;
 			out(ctx, JSON.stringify(await rt.client.setReporting(id, request, { token }), null, 2));
 		},
 
-		"report-to": async (a, ctx) => {
+		"report-to": async (a, ctx, yes) => {
 			await rt.requireIdentity();
-			if (a.length !== 1) throw new Error("usage: /team report-to <run_id|none>");
-			const result = await rt.client.setReporting(runId(), a[0] === "none" ? { action: "disconnect" } : { action: "connect", parent_run_id: a[0] }, { token: await rt.commandToken() });
+			if (a.length > 1) throw new Error("usage: /team report-to [run_id|none]");
+			const target = a[0] === "none" ? "none" : await runId(ctx, a[0], true);
+			if (!(await confirm(ctx, yes, `Change this team reporting parent to ${target}?`))) return;
+			const result = await rt.client.setReporting(await runId(ctx), target === "none" ? { action: "disconnect" } : { action: "connect", parent_run_id: target }, { token: await rt.commandToken() });
 			out(ctx, JSON.stringify(result, null, 2));
 		},
 
-		watch: async (a, ctx) => {
+		watch: async (a, ctx, yes) => {
 			await rt.ready;
 			if (rt.managed) throw new Error("managed workers cannot manage tmux views; use the leader session");
 			const action = a[0] ?? "open";
 			if (!["open", "status", "close", "focus", "debug", "off"].includes(action)) throw new Error("usage: /team watch [open|status|close|off|debug|focus <name|agent_id>] [run_id]");
-			if (action === "focus" && !a[1]) throw new Error("usage: /team watch focus <name|agent_id> [run_id]");
+			// Missing focus target is selected from viable members below.
 			const explicitRun = a[action === "focus" ? 2 : 1];
 			if (!explicitRun && !rt.identity && (action === "open" || action === "focus" || action === "debug")) {
-				await handlers.resume([], ctx);
+				await handlers.resume([], ctx, yes);
 				if (!rt.identity) return;
 			}
-			const id = runId(explicitRun);
+			const id = await runId(ctx, explicitRun);
+			const focusTarget = action === "focus" ? await agent(a[1], ctx, id) : undefined;
 			if (action === "off") {
+				if (!(await confirm(ctx, yes, `Disable team terminals for ${id}? Existing workers may be interrupted and restarted detached.`))) return;
 				await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { enabled: false }, { token: await rt.commandToken() });
 				out(ctx, "Detached worker mode selected. Existing workers restart on their saved transcripts; automatic panes stay off until /team watch open.");
 				return;
@@ -134,6 +170,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (action === "close") {
+				if (!(await confirm(ctx, yes, `Close the team view for ${id}? Workers remain running.`))) return;
 				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { socket: terminal.socket, location: terminal.location, debug: false }, { token: await rt.commandToken() });
 				await view.close();
 				out(ctx, `Team terminals left running for ${id}; your current tmux session is unchanged`);
@@ -146,16 +183,23 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			// Validate access and run existence before creating terminal resources.
 			await rt.client.tree(id, { token: await rt.commandToken() });
 			view = await openTerminals(rt, id, { debug: action === "debug" });
-			if (action === "focus") await view.focus(await agent(a[1], id));
+			if (action === "focus") {
+				const tree = await rt.client.tree(id, { token: await rt.commandToken() });
+				await view.focus(focusTarget === tree.root.agent_id ? "leader" : focusTarget);
+			}
 			else await view.focus();
 			out(ctx, view.opts.location ? `Team panes opened beside Pi in the current tmux window; interactive members appear automatically` : `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
 		},
 
 		send: async (a, ctx) => {
 			await rt.requireIdentity();
-			if (!a[0] || !a[1]) throw new Error("usage: /team send <name|agent_id> <message>");
-			const sent = await rt.agentCall(async () => rt.client.sendMessage({ to: await agent(a[0]), type: "question", payload: { text: a.slice(1).join(" ") } }));
-			out(ctx, `message ${sent.message_id} sent to ${a[0]}`);
+			if (!a.length) throw new Error("usage: /team send [name|agent_id] <message>; use -- before multiword text to omit the target");
+			const omitted = a.length === 1 || a[0] === "--";
+			const to = await agent(omitted ? undefined : a[0], ctx);
+			const text = omitted && a[0] !== "--" ? a[0] : a.slice(1).join(" ");
+			if (!text) throw new Error("message is required");
+			const sent = await rt.agentCall(async () => rt.client.sendMessage({ to, type: "question", payload: { text } }));
+			out(ctx, `message ${sent.message_id} sent to ${omitted ? to : a[0]}`);
 		},
 
 		init: async (a, ctx) => {
@@ -197,18 +241,19 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			out(ctx, runs.length ? runs.map((r) => `${runLabel(r)} · ${r.status}${r.run_id === rt.identity?.run_id ? " · current" : ""}`).join("\n") : "No active teams. /team init creates one; /team list all shows history.");
 		},
 
-		admin: async (a, ctx) => {
+		admin: async (a, ctx, yes) => {
 			if (rt.managed) throw new Error("only the human operator can change resource limits");
 			const action = a[0] ?? "status";
 			if (!["status", "unlimited", "bounded", "clear-deadlines"].includes(action)) throw new Error("usage: /team admin [status|unlimited|bounded|clear-deadlines] [run_id]");
-			const id = runId(a[1]);
+			const id = await runId(ctx, a[1]);
 			const token = await rt.commandToken();
+			if (action !== "status" && !(await confirm(ctx, yes, `Apply resource policy ${action} to ${id}? Existing limits may be removed or re-enforced.`))) return;
 			const policy = action === "status" ? await rt.client.get<{ mode: string }>(`/runs/${id}/admin`, { token })
 				: await rt.client.post<{ mode: string }>(`/runs/${id}/admin`, { mode: action }, { token });
 			out(ctx, `Human operator policy for ${id}: ${policy.mode.toUpperCase()}${action === "clear-deadlines" ? " — saved session/runtime deadlines cleared for all members; budgets unchanged; paused members remain paused" : action === "unlimited" ? " — global spend, member-count and recursion-depth caps are bypassed; explicit worker budgets and deadlines remain enforced" : ""}`);
 		},
 
-		resume: async (a, ctx) => {
+		resume: async (a, ctx, yes) => {
 			await rt.ready;
 			if (rt.managed) throw new Error("managed workers cannot resume a different team; use the leader Pi");
 			if (!a[0] && !rt.identity) {
@@ -247,6 +292,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				const me = await rt.client.me();
 				if (me.is_root && runs.find((r) => r.run_id === initializedRunId)?.agents === 1 && !me.children.length && !me.tasks.length && !me.inbox_pending && !me.pending_proposals_to_review) emptyNewRoot = me.agent_id;
 			}
+			if (!(await confirm(ctx, yes, `Attach to ${target} as ${member ?? "its root"}, replacing its existing session${emptyNewRoot ? ` and cancel unused empty team ${initializedRunId}` : ""}?`))) return;
 			// Attach first: a failed resume must leave the current team intact.
 			await rt.attach(target, member);
 			if (emptyNewRoot) {
@@ -258,7 +304,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		},
 
 		tree: async (a, ctx) => {
-			const t = await rt.client.tree(runId(a.find((arg) => arg !== "--all")), { token: await rt.commandToken() }, !a.includes("--all"));
+			const t = await rt.client.tree(await runId(ctx, a.find((arg) => arg !== "--all")), { token: await rt.commandToken() }, !a.includes("--all"));
 			out(ctx, formatTree(t, rt.identity?.agent_id));
 		},
 
@@ -285,23 +331,37 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					lines.push(`org context: ${errText(e)}`);
 				}
 			}
+			lines.push(`extension: v${LOADED_VERSION} · source ${LOADED_SOURCE}`);
 			out(ctx, lines.join("\n"));
 		},
 
-		budget: async (a, ctx) => {
-			const target = a[0] ?? rt.identity?.agent_id;
-			if (!target) throw new Error("usage: /team budget <name|agent_id> (or enroll first)");
-			const tok = rt.identity && !a[0] ? rt.identity.token : await rt.commandToken();
-			const id = await rt.client.resolveAgent(target, rt.identity?.run_id, { token: tok });
-			const budget = a[1] === undefined ? await rt.client.budget(id, { token: tok }) : await rt.client.post<import("../shared/protocol.ts").BudgetView>(`/budgets/${encodeURIComponent(id)}`, { max_cost_usd: Number(a[1]), resume: a.includes("--resume") }, { token: tok });
+		version: async (_a, ctx) => {
+			const lines = [`extension: v${LOADED_VERSION} · source ${LOADED_SOURCE}`];
+			try {
+				const health = await ping(rt.paths);
+				lines.push(`controller: ${health.package_version ? `v${health.package_version}` : "unknown version (older controller; restart to update)"} · pid ${health.pid} · source ${health.source_root ?? "unknown"} · state ${health.state_dir}`);
+			} catch { lines.push(`controller: not running · state ${rt.paths.dir}`); }
+			out(ctx, lines.join("\n"));
+		},
+
+		budget: async (a, ctx, yes) => {
+			const implicitValue = a[0] !== undefined && a[0].trim() !== "" && Number.isFinite(Number(a[0])) && (a.length === 1 || a[1] === "--resume");
+			const value = implicitValue ? a[0] : a[1];
+			const target = implicitValue ? undefined : a[0] ?? rt.identity?.agent_id;
+			const tok = await rt.commandToken();
+			const id = await agent(target, ctx);
+			if (value !== undefined && !(await confirm(ctx, yes, `Set ${id} total spend ceiling to $${value}${a.includes("--resume") ? " and resume it" : ""}? This is not additional credit.`))) return;
+			const budget = value === undefined ? await rt.client.budget(id, { token: tok }) : await rt.client.post<import("../shared/protocol.ts").BudgetView>(`/budgets/${encodeURIComponent(id)}`, { max_cost_usd: Number(value), resume: a.includes("--resume") }, { token: tok });
 			out(ctx, formatBudget(budget));
 		},
 
 		model: async (a, ctx) => {
-			if (!a[0] || !a[1]) throw new Error("usage: /team model <name|agent_id> <provider/model>");
+			if (!a.length) throw new Error("usage: /team model [name|agent_id] <provider/model>");
 			const token = await rt.commandToken();
-			const id = await rt.client.resolveAgent(a[0], rt.identity?.run_id, { token });
-			const result = await rt.client.post(`/agents/${encodeURIComponent(id)}/model`, { model: resolveAvailableModel(ctx, a.slice(1).join(" ")) }, { token });
+			const omitted = a.length === 1 || a[0] === "--";
+			const id = await agent(omitted ? undefined : a[0], ctx);
+			const model = omitted && a[0] !== "--" ? a[0] : a.slice(1).join(" ");
+			const result = await rt.client.post(`/agents/${encodeURIComponent(id)}/model`, { model: resolveAvailableModel(ctx, model) }, { token });
 			out(ctx, JSON.stringify(result, null, 2));
 		},
 
@@ -321,49 +381,42 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		},
 
 		events: async (a, ctx) => {
-			const r = await rt.client.events({ run_id: runId(a[0]), limit: 500 }, { token: await rt.commandToken() });
+			const r = await rt.client.events({ run_id: await runId(ctx, a[0]), limit: 500 }, { token: await rt.commandToken() });
 			out(ctx, formatEvents(r.events));
 		},
 
 		inspect: async (a, ctx) => {
-			if (!a[0]) throw new Error("usage: /team inspect <name|agent_id>");
-			out(ctx, formatInspect(await rt.client.inspect(await agent(a[0]), { token: await rt.commandToken() })));
+			out(ctx, formatInspect(await rt.client.inspect(await agent(a[0], ctx), { token: await rt.commandToken() })));
 		},
 
-		stop: async (a, ctx) => {
-			const target = a[0] ?? rt.identity?.run_id;
-			if (!target) { await handlers.list([], ctx); out(ctx, "Use /team stop <run_id> to choose a team."); return; }
+		stop: async (a, ctx, yes) => {
+			const target = a[0] ?? await runId(ctx);
 			const tok = await rt.commandToken();
 			let agentId = target;
 			let stoppedRun: RunSummary | undefined;
 			let what = `agent ${target}`;
 			// Protocol has no run-level stop: a run is stopped by cancelling its root with cascade.
 			if (!rt.managed) {
-				try {
-					const runs = await rt.client.listRuns({ token: tok });
-					const run = runs.runs.find((r) => r.run_id === target || r.root_agent_id === target);
-					stoppedRun = run;
-					if (run) {
-						agentId = run.root_agent_id;
-						what = `run ${run.run_id} (root ${run.root_agent_id} + whole subtree)`;
-					}
-				} catch {
-					/* fall back to treating the id as an agent */
+				const runs = await rt.client.listRuns({ token: tok });
+				stoppedRun = runs.runs.find((r) => r.run_id === target || r.root_agent_id === target);
+				if (stoppedRun) {
+					agentId = stoppedRun.root_agent_id;
+					what = `run ${stoppedRun.run_id} (root ${stoppedRun.root_agent_id} + whole subtree)`;
 				}
 			}
 			if (!stoppedRun) agentId = await rt.client.resolveAgent(target, rt.identity?.run_id, { token: tok });
-			if (ctx.hasUI && !(await ctx.ui.confirm("Stop team members?", `Cancel ${what}? Workers are stopped by the controller.`))) {
+			if (!(await confirm(ctx, yes, `Cancel ${what}? Workers are stopped by the controller.`))) {
 				out(ctx, "stop cancelled");
 				return;
 			}
 			const r = await rt.client.lifecycle(agentId, { action: "cancel", reason: "operator /team stop", children_policy: "cascade" }, { token: tok });
+			if (rt.identity && (r.affected_agent_ids.includes(rt.identity.agent_id) || (rt.identity.agent_id === r.agent_id && r.status === "CANCELLED"))) rt.releaseStoppedIdentity("CANCELLED");
 			if (stoppedRun && r.status === "CANCELLED") {
 				try {
 					const cfg = await rt.client.get<{ enabled?: boolean; socket?: string; location?: TerminalLocation }>(`/runs/${stoppedRun.run_id}/terminal`, { token: tok });
 					if (cfg.enabled) await new TmuxWatch({ stateDir: rt.paths.dir, runId: stoppedRun.run_id, ...cfg }).releaseLayout();
 				} catch (e) { out(ctx, `Team stopped; pane cleanup could not finish: ${errText(e)}`, "warning"); }
 			}
-			if (rt.identity && (r.affected_agent_ids.includes(rt.identity.agent_id) || (rt.identity.agent_id === r.agent_id && r.status === "CANCELLED"))) rt.releaseStoppedIdentity("CANCELLED");
 			out(ctx, `${r.affected_agent_ids.length ? "stopped" : "already stopped"} ${what}: ${r.status}; affected ${r.affected_agent_ids.length} agent(s)`);
 		},
 	};
@@ -425,8 +478,11 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
 					return;
 				}
-				await h(rest, ctx);
+				const supportsYes = ["stop", "admin", "budget", "report-to", "reporting", "watch", "resume"].includes(command);
+				const yes = supportsYes && rest.includes("--yes");
+				await h(yes ? rest.filter((arg) => arg !== "--yes") : rest, ctx, yes);
 			} catch (e) {
+				if (e instanceof SelectionCancelled) return;
 				out(ctx, `/team ${sub}: ${errText(e)}`, "error");
 			}
 		},

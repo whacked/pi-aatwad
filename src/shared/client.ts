@@ -475,10 +475,12 @@ export class TeamClient {
 	 */
 	async call<T>(method: "GET" | "POST", path: string, body?: unknown, o: CallOptions = {}): Promise<T> {
 		const idempotencyKey = method === "POST" ? (o.idempotencyKey ?? randomUUID()) : undefined;
+		// A logical request keeps its original credential across reconnect retries.
+		const token = o.token ?? this.opts.token?.();
 		const send = () =>
 			rawRequest<T>(this.paths.socket, method, path, {
 				body,
-				token: o.token ?? this.opts.token?.(),
+				token,
 				idempotencyKey,
 				timeoutMs: o.timeoutMs,
 			});

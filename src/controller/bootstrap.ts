@@ -15,6 +15,7 @@ import type { Ctx, ControllerTunables } from "./context.ts";
 import { createApiServer } from "./server.ts";
 import { Reconciler } from "./reconciler.ts";
 import { liveWorkerCount, pendingSpawnCount } from "./queries.ts";
+import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 
 /** Number of migrations this controller applies (db/001..004) = protocol SCHEMA_VERSION. */
 export const CONTROLLER_SCHEMA_VERSION = SCHEMA_VERSION;
@@ -287,6 +288,8 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 
 	const health = (): HealthResponse => ({
 		ok: true,
+		package_version: LOADED_VERSION,
+		source_root: LOADED_SOURCE,
 		protocol: PROTOCOL_VERSION,
 		schema: CONTROLLER_SCHEMA_VERSION,
 		controller_id: controllerId,

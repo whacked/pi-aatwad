@@ -105,6 +105,9 @@ export class TeamRuntime {
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private delivering = false;
 	private stopped = false;
+	private attachQueue: Promise<void> = Promise.resolve();
+	/** Explicit local transitions invalidate both pending and queued attaches. */
+	private attachEpoch = 0;
 	private usageAgent: string | undefined;
 	private pendingUsage = new Map<string, number>();
 	private usageFlushing: Promise<void> | undefined;
@@ -219,6 +222,7 @@ export class TeamRuntime {
 
 	/** session_shutdown. Idempotent; never kills the controller or org members. */
 	stop(): void {
+		this.attachEpoch++;
 		this.stopped = true;
 		this.ctx = undefined;
 		if (this.timer) clearInterval(this.timer);
@@ -329,21 +333,42 @@ export class TeamRuntime {
 	/** Operator attach: POST /runs/:id/attach (used by /team resume and same-session restart). */
 	async attach(runId: string, agentId?: string, o: { quiet?: boolean } = {}): Promise<Identity> {
 		if (this.managed) throw new Error("managed workers cannot attach to another identity");
-		await this.ensure();
-		const op = await this.operatorToken();
-		const pis = this.piSession();
-		const r = await this.client.attach(
-			runId,
-			{ agent_id: agentId, pi_session_id: pis.id, pi_session_path: pis.path, mode: "attach" },
-			{ token: op, idempotencyKey: `attach:${pis.id}:${randomUUID()}` },
-		);
-		const id: Identity = { run_id: r.run_id, agent_id: r.agent_id, session_id: r.session_id, token: r.token, managed: false, pi_session_id: pis.id };
-		this.notice = undefined;
-		this.persist(id);
-		this.adopt(id);
-		await this.refreshRole();
-		if (!o.quiet) this.say(`attached to run ${id.run_id} as ${id.role ?? "agent"} ${id.agent_id} (session ${id.session_id})`);
-		return id;
+		const epoch = this.attachEpoch;
+		const previous = this.attachQueue;
+		let release!: () => void;
+		this.attachQueue = new Promise<void>((resolve) => { release = resolve; });
+		const checkCurrent = () => {
+			if (this.attachEpoch !== epoch) throw new Error("team identity changed while attach was pending");
+		};
+		// Serialize the server requests, not just adoption: a later server-side attach
+		// invalidates the earlier credential even if its response arrives first.
+		await previous;
+		try {
+			checkCurrent();
+			await this.ensure();
+			checkCurrent();
+			const op = await this.operatorToken();
+			checkCurrent();
+			const pis = this.piSession();
+			const r = await this.client.attach(
+				runId,
+				{ agent_id: agentId, pi_session_id: pis.id, pi_session_path: pis.path, mode: "attach" },
+				{ token: op, idempotencyKey: `attach:${pis.id}:${randomUUID()}` },
+			);
+			checkCurrent();
+			const id: Identity = { run_id: r.run_id, agent_id: r.agent_id, session_id: r.session_id, token: r.token, managed: false, pi_session_id: pis.id };
+			this.notice = undefined;
+			this.persist(id);
+			// An attach's own adoption must not invalidate later queued attaches.
+			this.adoptIdentity(id);
+			await this.refreshRole();
+			checkCurrent();
+			if (this.identity !== id) throw new Error("team identity changed while attach was pending");
+			if (!o.quiet) this.say(`attached to run ${id.run_id} as ${id.role ?? "agent"} ${id.agent_id} (session ${id.session_id})`);
+			return id;
+		} finally {
+			release();
+		}
 	}
 
 	/** Called by /team init after POST /runs. */
@@ -368,6 +393,11 @@ export class TeamRuntime {
 	}
 
 	adopt(id: Identity): void {
+		this.attachEpoch++;
+		this.adoptIdentity(id);
+	}
+
+	private adoptIdentity(id: Identity): void {
 		if (id.managed) {
 			if (!id.socket_path) throw new Error(MANAGED_NO_STATE_DIR);
 			if (this._paths?.socket !== id.socket_path) this.useManagedSocket(id.socket_path);
@@ -381,16 +411,17 @@ export class TeamRuntime {
 	}
 
 	async refreshRole(): Promise<OrgContext | undefined> {
+		const identity = this.identity;
+		if (!identity) return undefined;
 		try {
 			const me = await this.client.me({ timeoutMs: 5_000 });
-			if (this.identity) {
-				this.identity.role = me.role;
-				this.identity.parent_id = me.parent?.agent_id ?? null;
-			}
+			if (this.identity !== identity) return undefined;
+			identity.role = me.role;
+			identity.parent_id = me.parent?.agent_id ?? null;
 			this.updateStatus();
 			return me;
 		} catch (e) {
-			this.handleAgentError(e);
+			this.handleAgentError(e, identity);
 			return undefined;
 		}
 	}
@@ -412,6 +443,7 @@ export class TeamRuntime {
 	// ------------------------------------------------------------------ errors
 	/** End the local association without disabling operator commands for other runs. */
 	releaseStoppedIdentity(status: string): void {
+		this.attachEpoch++;
 		const id = this.identity;
 		if (!id) return;
 		identityCache().delete(id.pi_session_id);
@@ -424,8 +456,9 @@ export class TeamRuntime {
 		this.updateStatus();
 	}
 
-	/** Map fencing/auth errors to local state. Returns true if the identity was dropped. */
-	handleAgentError(e: unknown): boolean {
+	/** Map fencing/auth errors to local state. Stale originating identities are ignored. */
+	handleAgentError(e: unknown, identity: Identity | undefined = this.identity): boolean {
+		if (this.identity !== identity) return false;
 		if (e instanceof TeamApiError && (e.code === "STALE_SESSION" || e.code === "UNAUTHENTICATED") && this.identity) {
 			const id = this.identity;
 			const details = e.details as { reason?: string; agent_status?: string } | undefined;
@@ -467,10 +500,12 @@ export class TeamRuntime {
 	async agentCall<T>(fn: (o: CallOptions) => Promise<T>, o: CallOptions = {}): Promise<T> {
 		const identity = await this.requireIdentity();
 		try {
-			return await fn(o);
+			const result = await fn({ ...o, token: o.token ?? identity.token });
+			if (this.identity !== identity) throw new Error("team identity changed while request was pending");
+			return result;
 		} catch (e) {
 			if (this.identity !== identity) throw e;
-			if (this.handleAgentError(e)) {
+			if (this.handleAgentError(e, identity)) {
 				if (!this.fenced) throw new Error(this.notice ?? NOT_ENROLLED);
 				throw new Error(`session fenced (${(e as TeamApiError).code}): this Pi session no longer represents the agent. Run /team resume.`);
 			}
@@ -518,16 +553,22 @@ export class TeamRuntime {
 
 	private async flushLocalModel(): Promise<void> {
 		const selected = this.localModel;
-		if (!selected || !this.identity) return;
+		const identity = this.identity;
+		if (!selected || !identity) return;
 		try {
 			await this.client.post("/sessions/model", selected);
+			if (this.identity !== identity) return;
 			if (this.localModel === selected) this.localModel = undefined;
 		}
-		catch (e) { if (!this.handleAgentError(e)) this.say(`team: model switched locally, but controller persistence failed: ${(e as Error).message}`, "warning"); }
+		catch (e) {
+			if (this.identity !== identity) return;
+			if (!this.handleAgentError(e, identity)) this.say(`team: model switched locally, but controller persistence failed: ${(e as Error).message}`, "warning");
+		}
 	}
 
 	private async applyModel(change: import("../shared/protocol.ts").ModelChange): Promise<void> {
-		if (this.applyingModel || this.localModel) return;
+		const identity = this.identity;
+		if (!identity || this.applyingModel || this.localModel) return;
 		if (this.ctx?.model?.provider === change.provider && this.ctx.model.id === change.model) {
 			await this.client.post("/sessions/model", { provider: change.provider, model: change.model, request_id: change.request_id });
 			return;
@@ -537,7 +578,9 @@ export class TeamRuntime {
 		if (!model || !this.pi.setModel) throw new Error(`requested model ${change.provider}/${change.model} is unavailable in this Pi`);
 		this.applyingModel = true;
 		try {
-			if (!await this.pi.setModel(model)) throw new Error("Pi has no authentication for this model");
+			const applied = await this.pi.setModel(model);
+			if (this.identity !== identity) return;
+			if (!applied) throw new Error("Pi has no authentication for this model");
 			await this.client.post("/sessions/model", { provider: model.provider, model: model.id, request_id: change.request_id });
 		} finally { this.applyingModel = false; }
 	}
@@ -580,7 +623,8 @@ export class TeamRuntime {
 					this.pi.appendEntry("pi-recursive-team/usage", { agent: identity.agent_id, key, ack: true });
 					if (result.budget_exhausted) this.ctx?.abort?.();
 				} catch (e) {
-					if (!this.handleAgentError(e)) this.say(`team: usage report queued for retry: ${(e as Error).message}`, "warning");
+					if (this.identity !== identity) return;
+					if (!this.handleAgentError(e, identity)) this.say(`team: usage report queued for retry: ${(e as Error).message}`, "warning");
 					return;
 				}
 			}
@@ -600,12 +644,21 @@ export class TeamRuntime {
 			);
 			if (this.identity !== identity) return;
 			await this.flushUsage();
+			if (this.identity !== identity) return;
 			this.updateStatus();
 			const hadLocalSelection = !!this.localModel;
 			await this.flushLocalModel();
+			if (this.identity !== identity) return;
 			if (r.model_change && !hadLocalSelection && selectionVersion === this.modelSelectionVersion) {
-				try { await this.applyModel(r.model_change); this.modelWarning = undefined; }
-				catch (e) { if (this.modelWarning !== r.model_change.request_id) this.say(`team: model switch remains pending: ${(e as Error).message}`, "warning"); this.modelWarning = r.model_change.request_id; }
+				try {
+					await this.applyModel(r.model_change);
+					if (this.identity !== identity) return;
+					this.modelWarning = undefined;
+				} catch (e) {
+					if (this.identity !== identity || this.handleAgentError(e, identity)) return;
+					if (this.modelWarning !== r.model_change.request_id) this.say(`team: model switch remains pending: ${(e as Error).message}`, "warning");
+					this.modelWarning = r.model_change.request_id;
+				}
 			}
 			if (r.desired_state !== "RUNNING") this.ctx?.abort?.();
 			this.lastInboxPending = r.inbox_pending;
@@ -613,7 +666,7 @@ export class TeamRuntime {
 			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: r.desired_state === "RUNNING" && (r.reporting_wake || (this.identity?.managed && this.ctx?.mode === "tui")) });
 		} catch (e) {
 			if (this.identity !== identity) return;
-			if (this.handleAgentError(e)) return;
+			if (this.handleAgentError(e, identity)) return;
 			try {
 				this.ctx?.ui.setStatus(STATUS_KEY, `team: controller unreachable (${(e as Error).message.slice(0, 60)})`);
 			} catch {
@@ -652,12 +705,19 @@ export class TeamRuntime {
 	 * At-least-once delivery + message_id dedupe; dedupe IDs are re-seeded from the transcript.
 	 */
 	async claimInbox(limit = 20): Promise<{ fresh: Envelope[]; all: Envelope[] }> {
-		if (!this.identity) return { fresh: [], all: [] };
+		const identity = this.identity;
+		if (!identity) return { fresh: [], all: [] };
 		const seen = this.seen();
 		for (const id of this.seededIds) seen.add(id);
-		const res = await this.client.inbox(limit, { timeoutMs: 5_000 });
-		this.lastInboxPending = 0;
-		return { fresh: res.messages.filter((m) => !seen.has(m.message_id)), all: res.messages };
+		try {
+			const res = await this.client.inbox(limit, { timeoutMs: 5_000 });
+			if (this.identity !== identity) return { fresh: [], all: [] };
+			this.lastInboxPending = 0;
+			return { fresh: res.messages.filter((m) => !seen.has(m.message_id)), all: res.messages };
+		} catch (e) {
+			if (this.identity !== identity) return { fresh: [], all: [] };
+			throw e;
+		}
 	}
 
 	inboxMessage(fresh: Envelope[]): { customType: string; content: string; display: boolean; details: { message_ids: string[] } } {
@@ -674,12 +734,14 @@ export class TeamRuntime {
 	}
 
 	/** Ack every claimed ID (duplicates included). Failures are fine: redelivery is deduped. */
-	async ack(all: Envelope[]): Promise<void> {
+	async ack(all: Envelope[], identity: Identity | undefined = this.identity): Promise<void> {
 		for (const m of all) {
+			if (!identity || this.identity !== identity) return;
 			try {
 				await this.client.ack(m.message_id, { timeoutMs: 5_000 });
 			} catch (e) {
-				if (this.handleAgentError(e)) return;
+				if (this.identity !== identity) return;
+				if (this.handleAgentError(e, identity)) return;
 			}
 		}
 	}
@@ -704,10 +766,11 @@ export class TeamRuntime {
 				);
 				this.markInjected(fresh);
 			}
-			await this.ack(all);
+			await this.ack(all, identity);
+			if (this.identity !== identity) return [];
 			return fresh;
 		} catch (e) {
-			this.handleAgentError(e);
+			this.handleAgentError(e, identity);
 			return [];
 		} finally {
 			this.delivering = false;
@@ -726,20 +789,22 @@ export class TeamRuntime {
 		if (!this.identity?.managed || this.ctx?.mode === "tui" || this.delivering) return undefined;
 		if (ev.outcome && ev.outcome !== "completed") return undefined;
 		if (this.settleContinuations >= MAX_SETTLE_CONTINUATIONS) return undefined;
+		const identity = this.identity;
 		this.delivering = true;
 		try {
 			const { fresh, all } = await this.claimInbox();
+			if (this.identity !== identity) return undefined;
 			if (!fresh.length) {
-				void this.ack(all);
+				void this.ack(all, identity);
 				return undefined;
 			}
 			this.settleContinuations++;
 			this.markInjected(fresh);
 			// Ack after Pi has appended the entry (the continuation keeps the process alive).
-			setTimeout(() => void this.ack(all), 0);
+			setTimeout(() => void this.ack(all, identity), 0);
 			return { entries: [{ type: "custom_message", ...this.inboxMessage(fresh) }], continue: true };
 		} catch (e) {
-			this.handleAgentError(e);
+			this.handleAgentError(e, identity);
 			return undefined;
 		} finally {
 			this.delivering = false;
@@ -749,18 +814,20 @@ export class TeamRuntime {
 	/** Managed worker, before_agent_start: messages already pending when the run starts ride along with it. */
 	async inboxForRunStart(): Promise<ReturnType<TeamRuntime["inboxMessage"]> | undefined> {
 		if (!this.identity?.managed || this.delivering) return undefined;
+		const identity = this.identity;
 		this.delivering = true;
 		try {
 			const { fresh, all } = await this.claimInbox();
+			if (this.identity !== identity) return undefined;
 			if (!fresh.length) {
-				void this.ack(all);
+				void this.ack(all, identity);
 				return undefined;
 			}
 			this.markInjected(fresh);
-			setTimeout(() => void this.ack(all), 0);
+			setTimeout(() => void this.ack(all, identity), 0);
 			return this.inboxMessage(fresh);
 		} catch (e) {
-			this.handleAgentError(e);
+			this.handleAgentError(e, identity);
 			return undefined;
 		} finally {
 			this.delivering = false;

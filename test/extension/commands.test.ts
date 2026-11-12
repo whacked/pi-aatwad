@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { LOADED_SOURCE, LOADED_VERSION } from "../../src/shared/version.ts";
 import { TmuxWatch } from "../../src/watch/tmux.ts";
 import { registerTeamCommand } from "../../src/extension/commands.ts";
 import { TeamRuntime, __resetProcessStateForTests } from "../../src/extension/runtime.ts";
@@ -50,18 +52,18 @@ test("stop own run, stop another, repeat stop, and refresh completion without fa
 	} finally { rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
 
-function commandSession(hs: Awaited<ReturnType<typeof harness>>, id: string, selectedRun: string) {
-	const entries: any[] = [], notes: string[] = [], choices: string[][] = [];
+function commandSession(hs: Awaited<ReturnType<typeof harness>>, id: string, selectedRun: string, paths = statePaths(hs.dir)) {
+	const entries: any[] = [], notes: string[] = [], choices: string[][] = [], confirmations: string[] = [];
 	let command: any;
 	const pi = { appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }), sendMessage: () => {}, getAllTools: () => [],
 		registerCommand: (_name: string, definition: unknown) => { command = definition; } };
 	const ctx = { hasUI: true, mode: "rpc", cwd: hs.dir, isIdle: () => true, hasPendingMessages: () => false,
-		ui: { notify: (text: string) => notes.push(text), confirm: async () => true, setStatus: () => {},
+		ui: { notify: (text: string) => notes.push(text), confirm: async (_title: string, detail: string) => { confirmations.push(detail); return true; }, setStatus: () => {},
 			select: async (_title: string, options: string[]) => { choices.push(options); return selectedRun ? options.find((s) => s.startsWith(selectedRun)) : undefined; } },
 		sessionManager: { getSessionId: () => id, getSessionFile: () => undefined, getEntries: () => entries } } as any;
-	const rt = new TeamRuntime(pi as any, { paths: statePaths(hs.dir), env: {}, heartbeatMs: 60000 });
+	const rt = new TeamRuntime(pi as any, { paths, env: {}, heartbeatMs: 60000 });
 	registerTeamCommand(pi as any, rt);
-	return { rt, ctx, notes, choices, command };
+	return { rt, ctx, notes, choices, confirmations, command };
 }
 
 test("fresh session init then watch reclaims stale leader tags after terminal metadata was cleared", { skip: spawnSync("tmux", ["-V"]).status !== 0 }, async () => {
@@ -142,7 +144,7 @@ test("resume auto-attaches the sole valid team; multiple teams show a picker and
 	} finally { fresh?.rt.stop(); initialized?.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
 
-test("resume handles a single team without UI and preserves association when already attached", async () => {
+test("resume handles a single team without UI and preserves association when already attached", async (t) => {
 	__resetProcessStateForTests();
 	const hs = await harness();
 	const session = commandSession(hs, "headless-resume", "");
@@ -150,16 +152,59 @@ test("resume handles a single team without UI and preserves association when alr
 		const existing = await newRun(hs);
 		session.ctx.hasUI = false;
 		await session.rt.start(session.ctx);
+		const output: string[] = [];
+		const write = t.mock.method(process.stderr, "write", (chunk: any) => { output.push(String(chunk)); return true; });
 		await session.command.handler("resume", session.ctx);
-		assert.equal(session.rt.identity?.run_id, existing.run_id, session.notes.join("\n"));
+		assert.ok(output.some((text) => text.includes("Confirmation required")));
+		assert.equal(session.rt.identity, undefined);
+		assert.equal((await hs.call("GET", "/me", { token: existing.token })).status, 200, "denied root takeover preserves the old credential");
+		await session.command.handler("resume --yes", session.ctx);
+		write.mock.restore();
+		assert.equal((session.rt as TeamRuntime).identity?.run_id, existing.run_id, session.notes.join("\n"));
 		assert.equal(session.choices.length, 0);
 		const identity = session.rt.identity;
 		session.ctx.hasUI = true;
 		await session.command.handler("resume", session.ctx);
 		assert.equal(session.rt.identity, identity, "already attached must not create a new controller session");
 		assert.equal(session.choices.length, 0);
+		assert.equal(session.confirmations.length, 0, "already attached does not prompt for takeover");
 		assert.ok(session.notes.some((text) => text.includes("Already attached")));
 	} finally { session.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("declining root resume confirmation never attaches or revokes the old credential", async (t) => {
+	__resetProcessStateForTests();
+	const hs = await harness(), session = commandSession(hs, "declined-root-resume", "");
+	try {
+		const existing = await newRun(hs);
+		await session.rt.start(session.ctx);
+		const attach = t.mock.method(session.rt, "attach");
+		session.ctx.ui.confirm = async (_title: string, detail: string) => { session.confirmations.push(detail); return false; };
+		await session.command.handler("resume", session.ctx);
+		assert.equal(session.confirmations.length, 1);
+		assert.ok(session.confirmations[0].includes(existing.run_id));
+		assert.equal(attach.mock.callCount(), 0);
+		assert.equal(session.rt.identity, undefined);
+		assert.equal((await hs.call("GET", "/me", { token: existing.token })).status, 200);
+		assert.ok(session.notes.some((text) => text.includes("Operation cancelled")));
+	} finally { session.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("version reports loaded extension/controller versions and paths without enrollment or controller startup", async (t) => {
+	__resetProcessStateForTests();
+	const hs = await harness(), session = commandSession(hs, "version-unenrolled", "");
+	const offline = commandSession(hs, "version-offline", "", statePaths(join(hs.dir, "offline")));
+	try {
+		for (const s of [session, offline]) {
+			t.mock.method(s.rt, "ensure", async () => { throw new Error("version must not start the controller"); });
+			await s.command.handler("version", s.ctx);
+			assert.equal(s.rt.identity, undefined);
+			assert.ok(s.notes.some((text) => text.includes(`extension: v${LOADED_VERSION} · source ${LOADED_SOURCE}`)), s.notes.join("\n"));
+		}
+		assert.ok(session.notes.some((text) => text.includes(`controller: v${LOADED_VERSION}`) && text.includes(`source ${LOADED_SOURCE}`) && text.includes(`state ${hs.dir}`)), session.notes.join("\n"));
+		assert.ok(offline.notes.some((text) => text.includes(`controller: not running · state ${offline.rt.paths.dir}`)));
+		assert.equal(existsSync(offline.rt.paths.dir), false, "version does not create controller state");
+	} finally { session.rt.stop(); offline.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });
 
 test("resume without UI lists multiple candidates rather than silently choosing one", async (t) => {
@@ -300,4 +345,103 @@ test("watch off and status work without tmux and persist the automatic-pane opt-
   if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
   session.rt.stop(); await hs.cleanup(); __resetProcessStateForTests();
  }
+});
+
+test("unattached commands infer the sole viable team and stopped teams never become resume candidates", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness(), s = commandSession(hs, "sole-target", "");
+	try {
+		const r = await newRun(hs);
+		await s.rt.start(s.ctx);
+		for (const command of ["tree", "events", "admin status", "budget", "inspect", "watch status"]) await s.command.handler(command, s.ctx);
+		assert.equal(s.choices.length, 0);
+		assert.equal(s.rt.identity, undefined, "read-only target inference does not attach or create a team");
+		assert.ok(!s.notes.some((n) => n.startsWith("/team")), s.notes.join("\n"));
+		await s.command.handler("stop", s.ctx);
+		assert.equal(s.confirmations.length, 1);
+		assert.ok(s.confirmations[0].includes(r.run_id));
+		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "CANCELLED");
+		hs.h.db.prepare("UPDATE runs SET status='RUNNING' WHERE id=?").run(r.run_id);
+		await s.command.handler("resume", s.ctx);
+		assert.ok(s.notes.some((n) => n.includes("No resumable teams")));
+		assert.equal(s.choices.length, 0);
+		assert.equal(await s.command.getArgumentCompletions("resume "), null);
+		await s.command.handler(`stop ${r.run_id}`, s.ctx);
+		assert.ok(s.notes.some((n) => n.includes("already stopped")));
+		assert.ok(!s.notes.some((n) => /FENCED|CONFLICT/.test(n)), s.notes.join("\n"));
+	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("multiple team candidates require selection; invalid explicit targets never fall back; cancellation is inert", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness(), s = commandSession(hs, "multiple-targets", "");
+	try {
+		const first = await newRun(hs), second = await newRun(hs);
+		await s.rt.start(s.ctx);
+		await s.command.handler("stop", s.ctx); // selector cancelled
+		assert.equal(s.choices[0].length, 2);
+		assert.equal(s.confirmations.length, 0);
+		assert.equal((await hs.call("GET", `/agents/${first.root}`, { token: hs.op })).body.agent.status, "RUNNING");
+		s.ctx.ui.select = async (_title: string, options: string[]) => options.find((o) => o.startsWith(second.run_id));
+		s.ctx.ui.confirm = async () => false;
+		await s.command.handler("stop", s.ctx);
+		assert.equal((await hs.call("GET", `/agents/${second.root}`, { token: hs.op })).body.agent.status, "RUNNING");
+		await s.command.handler("stop run-not-a-team", s.ctx);
+		assert.ok(s.notes.some((n) => n.startsWith("/team stop:")), s.notes.join("\n"));
+		assert.equal(s.choices.length, 1, "invalid explicit target never opens another selector");
+		assert.equal((await hs.call("GET", `/agents/${first.root}`, { token: hs.op })).body.agent.status, "RUNNING");
+	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("member commands infer sole active member, retain self budget reads, and require selection for multiple members", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness(), s = commandSession(hs, "member-targets", "");
+	s.ctx.modelRegistry = { getAvailable: () => [{ provider: "openai", id: "test-model", name: "Test Model" }] };
+	try {
+		await s.rt.start(s.ctx);
+		await s.command.handler("init", s.ctx);
+		const made = await hs.call("POST", "/members", { token: s.rt.identity!.token, body: { name: "OnlyMember", responsibility: "Review" } });
+		const id = made.body.spawned_agent_ids[0];
+		await s.command.handler("inspect", s.ctx);
+		assert.ok(s.notes.some((n) => n.includes("OnlyMember")));
+		await s.command.handler("model openai/test-model", s.ctx);
+		assert.equal((await s.rt.client.inspect(id)).agent.pending_model, "openai/test-model");
+		await s.command.handler('send "Please review"', s.ctx);
+		await s.command.handler("send -- Please review carefully", s.ctx);
+		assert.equal(s.notes.filter((n) => n.includes(`sent to ${id}`)).length, 2);
+		await s.command.handler("budget 3", s.ctx);
+		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 3);
+		assert.equal(s.choices.length, 0);
+		await hs.call("POST", "/members", { token: s.rt.identity!.token, body: { name: "Another", responsibility: "Review" } });
+		await s.command.handler("inspect", s.ctx);
+		assert.equal(s.choices.at(-1)!.length, 2);
+		const selections = s.choices.length;
+		await s.command.handler("inspect misspelled", s.ctx);
+		assert.equal(s.choices.length, selections, "explicit invalid names do not trigger default selection");
+		s.ctx.ui.confirm = async () => false;
+		await s.command.handler(`budget ${id} 1`, s.ctx);
+		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 3);
+		await s.command.handler("admin unlimited", s.ctx);
+		assert.equal((await s.rt.client.budget(id)).unlimited, false);
+		await s.command.handler("reporting dismiss", s.ctx);
+		assert.ok(s.notes.some((n) => n.includes("Operation cancelled")));
+	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("headless destructive actions require explicit --yes even for a sole target", async (t) => {
+	__resetProcessStateForTests();
+	const hs = await harness(), s = commandSession(hs, "headless-confirm", "");
+	try {
+		const r = await newRun(hs);
+		await s.rt.start(s.ctx);
+		s.ctx.hasUI = false;
+		const output: string[] = [];
+		const write = t.mock.method(process.stderr, "write", (chunk: any) => { output.push(String(chunk)); return true; });
+		await s.command.handler("stop", s.ctx);
+		assert.ok(output.some((n) => n.includes("Confirmation required")));
+		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "RUNNING");
+		await s.command.handler("stop --yes", s.ctx);
+		assert.equal((await hs.call("GET", `/agents/${r.root}`, { token: hs.op })).body.agent.status, "CANCELLED");
+		write.mock.restore();
+	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
 });

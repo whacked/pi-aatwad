@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.16, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.17, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -25,7 +25,7 @@ pi
 Git installation clones the package outside `node_modules`, so it works with the
 current TypeScript controller. Pick one source above; if this package was already
 installed from a local path, remove that local source before switching to Git.
-Restart Pi or run `/reload` after installing. Git refs can select a branch, tag or
+Restart Pi or run `/reload` after installing. `/team version` reports the loaded extension and controller versions, source paths and controller state directory, even when this session is not enrolled; it does not start a stopped controller. `/team status` also reports the loaded extension version and controller PID. `/reload` reloads the extension, not an already-running controller; restart the controller separately to update its loaded code. Git refs can select a branch, tag or
 commit; see [Pi package installation](https://pi.dev/docs/latest/packages).
 
 Requires Node ≥ 22.13 (for built-in `node:sqlite` and type stripping), Pi and `ps`
@@ -65,7 +65,27 @@ In a valid tmux pane, member creation through the leader's tool opens live Pi pa
 `reports 0` and `live workers 0` mean there are no member processes to display.
 Use `/team list` to find other teams instead of repeatedly creating new ones.
 
-`/team stop` stops the current team. An explicit run or agent ID stops another
+Commands with optional targets use the current team when attached; otherwise they
+select the sole viable team or show a picker. Member commands select the sole active
+(non-terminal) member, or prompt when several exist; with no members they can target
+the leader itself. Explicit invalid targets never fall back to another candidate.
+`/team budget` keeps its attached-session self-budget display. Paused members remain
+viable, while cancelled/terminal teams are never offered for automatic selection.
+Without UI, ambiguous candidates are listed and require an explicit target.
+
+Destructive operations ask for confirmation even when only one target exists:
+stopping a subtree, changing budgets/resource policy/reporting links, disabling or
+closing terminal views, taking over a root or member session, and cancelling an unused team
+during resume. Selection or confirmation cancellation makes no changes. Add `--yes`
+to these commands to explicitly authorize them; headless use requires it.
+
+Examples with an omitted member target: `/team inspect`, `/team budget 5`,
+`/team model openai/gpt-6.1-sol`, `/team send "Please review"`, or
+`/team send -- Please review this change`. The `--` separator also supports
+multiword model names when the target is omitted. Other command arguments remain required.
+
+`/team stop` stops the current team, or selects a viable team when unattached.
+An explicit run or agent ID stops another
 team/member. Repeated stops of cancelled targets succeed harmlessly. Stopping your
 own team ends the local association without claiming a newer session took over,
 and you can still issue operator commands for other teams. Stopped team panes and
@@ -80,15 +100,16 @@ Inside Pi:
 | `/team init [--unlimited] [config.json]` | Makes this session the **root** of a new organization. This is the only way an org is created; installing the package creates nothing. |
 | `/team resume [run_id] [agent_id]` | Auto-resume the sole valid team, pick among multiple teams, or attach directly. Works without init. |
 | `/team list [all]` | List active teams, reporting relationships and member counts; `all` includes history. |
-| `/team report-to <run_id\|none>` | Make this leader report to another team leader, or disconnect it. |
-| `/team reporting [--all\|dismiss\|transfer <run_id>\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
+| `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
+| `/team report-to [run_id\|none]` | Make this leader report to another team leader, or disconnect it. |
+| `/team reporting [--all\|dismiss\|transfer [run_id]\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
 | `/team admin [status\|unlimited\|bounded\|clear-deadlines] [run_id]` | Human operator: inspect/change resource policy or explicitly clear saved worker deadlines. |
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
-| `/team inspect <agent_id>` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
+| `/team inspect [agent_id]` | Tasks, sessions (model, pid, transcript), reporting history, budget. |
 | `/team watch [open\|status\|close\|off\|debug] [run_id]` | Manage live member panes; show optional controls with `debug`. |
-| `/team watch focus <agent_id> [run_id]` | Focus a member monitor pane. |
-| `/team send <agent_id> <message>` | Send directions through durable team messaging. |
+| `/team watch focus [agent_id] [run_id]` | Focus a member monitor pane. |
+| `/team send [agent_id] <message>` | Send directions through durable team messaging. |
 | `/team stop [agent_id\|run_id]` | Controlled cancellation. Cascades to the subtree, revokes tokens and releases reservations. |
 
 Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, `team_set_budget`, `team_set_model`, plus root-only `team_reporting`, `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
