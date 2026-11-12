@@ -16,7 +16,10 @@ test("friendly defaults, scoped names, ambiguity, and active replacements", asyn
 		assert.equal(await client.resolveAgent(beta), beta);
 		await assert.rejects(client.resolveAgent("missing", run_id), /No agent/);
 		await assert.rejects(client.resolveAgent("Alpha"), /attached team/);
+		assert.equal(await client.resolveAgent("agent-0123456789abcdef"), "agent-0123456789abcdef", "legacy IDs need no attached team");
 		const other = await newRun(hs);
+		assert.equal(await client.resolveAgent(other.root), other.root, "word IDs need no attached team");
+		assert.equal(await client.resolveAgent(other.root, run_id), other.root, "foreign exact IDs bypass local-name lookup");
 		await hs.call("POST", "/members", { token: other.token, body: { name: "Alpha", responsibility: "Another run" } });
 		assert.equal(await client.resolveAgent("Alpha", run_id), alpha);
 		const duplicate = (await client.post<any>("/members", { name: "Alpha", responsibility: "Duplicate" })).spawned_agent_ids[0];

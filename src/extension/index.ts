@@ -7,6 +7,7 @@ import { TeamRuntime } from "./runtime.ts";
 import { registerTools } from "./tools.ts";
 import { registerTeamCommand } from "./commands.ts";
 import { formatOrgContext } from "./format.ts";
+import { agentDisplayName, installAgentLabel } from "./agent-label.ts";
 
 export const CONTEXT_SECTION = "team_org_context";
 
@@ -56,6 +57,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		const managedLaunch = !!process.env[ENV_ENROLL_FILE]; // read before start() consumes it
 		const p = rt.start(ctx);
+		if (ctx.mode === "tui") installAgentLabel(ctx.ui, () => rt.identity ? agentDisplayName(rt.identity.role) : undefined);
 		// Managed one-shot worker: enroll before the first turn (Pi awaits session_start handlers).
 		// Interactive sessions: do not block startup; tools and before_agent_start wait with a bound.
 		if (managedLaunch) return waitBounded(p, 15_000).then(() => undefined);

@@ -4,6 +4,7 @@ import type { StatementSync, SQLInputValue } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { readableId } from "../shared/readable-id.ts";
 
 export type DB = DatabaseSync;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,7 +41,7 @@ export function isoPlus(ms: number, from = Date.now()): string {
 	return new Date(from + ms).toISOString();
 }
 export function newId(prefix: string): string {
-	return `${prefix}-${randomBytes(8).toString("hex")}`;
+	return prefix === "agent" || prefix === "run" ? readableId(prefix) : `${prefix}-${randomBytes(8).toString("hex")}`;
 }
 
 /** BEGIN IMMEDIATE transaction. Nested calls join the outer transaction. */

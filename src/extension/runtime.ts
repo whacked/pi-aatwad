@@ -192,7 +192,11 @@ export class TeamRuntime {
 		try {
 			const id = this.identity;
 			if (id?.role && ctx.mode === "tui") ctx.ui.setTitle?.((id.role === "root" ? "Team leader" : id.role).replace(/[\x00-\x1f\x7f-\x9f]/g, " "));
-			if (id) ctx.ui.setStatus(STATUS_KEY, `team ${id.role ?? "agent"} ${id.agent_id} · run ${id.run_id}${id.managed ? " · managed" : ""}`);
+			if (id) {
+				const raw = (id.role ?? "agent").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+				const name = ctx.mode === "tui" && ctx.ui.theme ? ctx.ui.theme.style(raw, { fg: "accent", bold: true }) : raw;
+				ctx.ui.setStatus(STATUS_KEY, `team ${name} ${id.agent_id} · run ${id.run_id}${id.managed ? " · managed" : ""}`);
+			}
 			else if (this.fenced) ctx.ui.setStatus(STATUS_KEY, "team: fenced (run /team resume)");
 			else if (this.notice) ctx.ui.setStatus(STATUS_KEY, "team: not attached (/team resume)");
 			else ctx.ui.setStatus(STATUS_KEY, undefined);

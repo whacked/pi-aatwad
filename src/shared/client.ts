@@ -553,7 +553,8 @@ export class TeamClient {
 	}
 	/** Resolve exact names within one run; IDs remain usable without a run. */
 	async resolveAgent(ref: string, runId?: string, o?: CallOptions): Promise<string> {
-		if (/^agent-[0-9a-f]{16}$/i.test(ref) || ref === "controller") return ref;
+		// Preserve exact-ID routing (including cross-team IDs) for both saved hex and new word IDs.
+		if (/^agent-(?:[0-9a-f]{16}|[a-z]+(?:-[a-z]+){5})$/i.test(ref) || ref === "controller") return ref;
 		if (!runId) throw new Error("Agent names require an attached team; use /team resume or an agent ID");
 		const t = await this.tree(runId, o);
 		const flat = (n: TreeResponse["root"]): TreeResponse["root"][] => [n, ...n.children.flatMap(flat)];

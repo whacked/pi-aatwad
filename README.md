@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.12, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.13, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -173,6 +173,7 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 
 - **The controller is auto-started** by the first command that needs it. It is a detached process, so it keeps running when your Pi exits, and it exits by itself once idle (no live workers or pending spawns). Its state dir is `~/Library/Application Support/pi-recursive-team/` on macOS and `${XDG_STATE_HOME:-~/.local/state}/pi-recursive-team/` on Linux, with mode 0700. The socket is per-user, never under `/tmp`.
 - **Workers** run as interactive Pi harnesses in tmux when `/team watch` is enabled, or detached `pi --mode json -p --session <file>` processes otherwise. Each enrolls with a one-time credential passed through a 0600 file (never argv) and works in its own git worktree under `<workspace>/.team-worktrees/<run>/<agent>`. Interactive workers stay at their Pi prompt between assignments. Headless workers exit when their prompt settles and are relaunched on the **same Pi transcript and the same agent ID** for new work.
+- **Readable IDs.** New agent and run IDs use six random English words, for example `agent-river-maple-orbit-silver-garden-cloud`. Each word is selected independently using cryptographic randomness from a bundled 2,048-word vocabulary: **66 bits of entropy**, compared with the old 64-bit hex suffix. Two Docker-style words would not preserve that collision resistance. Existing IDs remain valid and are never renamed; internal record IDs and authentication credentials are unchanged. The vocabulary is the MIT-licensed [BIP-0039 English word list](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt), not a wallet/secret format.
 - **Identity.** A logical agent ID is independent of the Pi session, process and model. If you close the root Pi, its reports keep working. Reopen Pi and use `/team resume` to choose a team. Pi's own `/resume` restores a previous conversation and automatically re-attaches its saved team identity when it is the same non-managed Pi session and the agent is still active. Running `/team resume <run>` afterward reports “Already attached” for that team; no second attach is needed. A forked or cloned Pi session is never silently adopted, and saved managed-worker identities require deliberate takeover.
 
 ### Configuration
@@ -383,6 +384,8 @@ Both legacy tmux layout strings and tmux 3.8 JSON layouts are supported.
 Install `tmux` and put it on PATH. Run `/team watch` or ask the leader to open the
 team terminals. **Each member pane runs a separate, interactive Pi harness** on a
 real tmux PTY: its own prompt, model, transcript, worktree and process identity.
+The agent name appears as a **bold, accent-colored label on the right of the input's top border** (the root shows “Team leader”), as well as highlighted in the footer. The label follows the active identity and theme, fits narrow terminals, and preserves existing custom editors, keyboard shortcuts, and border status indicators. If another editor leaves no spare border space, the footer still identifies the agent. Reload the extension with `/reload` to apply this to an already-open Pi.
+
 These are not log-tail panels. Type directly in a member's Pi prompt, or have the
 leader delegate tasks and send messages with `team_send_message` or
 `/team send <agent_id> <message>`. An idle interactive member automatically starts
