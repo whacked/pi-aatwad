@@ -23,7 +23,7 @@ test("friendly defaults, scoped names, ambiguity, and active replacements", asyn
 		await hs.call("POST", "/members", { token: other.token, body: { name: "Alpha", responsibility: "Another run" } });
 		assert.equal(await client.resolveAgent("Alpha", run_id), alpha);
 		const duplicate = (await client.post<any>("/members", { name: "Alpha", responsibility: "Duplicate" })).spawned_agent_ids[0];
-		await assert.rejects(client.resolveAgent("Alpha", run_id), /Ambiguous.*agent-/);
+		await assert.rejects(client.resolveAgent("Alpha", run_id), (error: Error) => error.message.includes("Ambiguous") && error.message.includes(alpha) && error.message.includes(duplicate));
 		await client.lifecycle(alpha, { action: "cancel", reason: "replace", children_policy: "cascade" });
 		assert.equal(await client.resolveAgent("Alpha", run_id), duplicate);
 	} finally { await hs.cleanup(); }

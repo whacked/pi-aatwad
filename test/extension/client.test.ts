@@ -190,6 +190,57 @@ describe("ensureController", () => {
 		}
 	});
 
+	test("replaces a controller older than this extension (missing routes) with a fresh one", async () => {
+		const { paths, cleanup } = makeState();
+		const m = await startMock(paths, { operatorToken: "op-old" });
+		let closed = false;
+		let pid: number | undefined;
+		try {
+			// pid 99999999 is never alive, so the old process counts as exited once its socket closes.
+			m.route("GET", "/health", () => ({ body: health({ package_version: "0.0.1", pid: 99_999_999 }) }));
+			m.route("POST", "/controller/shutdown", (_req, res) => {
+				res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ stopping: true }));
+				setTimeout(() => void m.close().then(() => (closed = true)), 10);
+				return undefined;
+			});
+			const before = spawnCount();
+			const r = await ensureController(paths, { entry: FAKE });
+			pid = r.health.pid;
+			assert.ok(closed, "old controller was asked to stop");
+			assert.equal(r.spawned, true);
+			assert.equal(spawnCount() - before, 1);
+			assert.equal(r.health.controller_id, "fake");
+			const shutdown = m.requests.find((x) => x.path === "/controller/shutdown");
+			assert.equal(shutdown?.headers.authorization, "Bearer op-old");
+		} finally {
+			if (pid) {
+				try {
+					process.kill(pid, "SIGTERM");
+				} catch {}
+				await sleep(100);
+			}
+			if (!closed) await m.close();
+			cleanup();
+		}
+	});
+
+	test("keeps controllers that are newer, or when replacement is disabled", async () => {
+		const { paths, cleanup } = makeState();
+		const m = await startMock(paths, { operatorToken: "op" });
+		try {
+			const before = spawnCount();
+			m.route("GET", "/health", () => ({ body: health({ package_version: "999.0.0" }) }));
+			assert.equal((await ensureController(paths, { entry: FAKE })).spawned, false);
+			m.route("GET", "/health", () => ({ body: health({ package_version: "0.0.1" }) }));
+			assert.equal((await ensureController(paths, { entry: FAKE, expectVersion: false })).spawned, false);
+			assert.equal(spawnCount(), before);
+			assert.ok(!m.requests.some((x) => x.path === "/controller/shutdown"));
+		} finally {
+			await m.close();
+			cleanup();
+		}
+	});
+
 	test("spawns a detached controller when none answers; concurrent callers share one spawn", async () => {
 		const { paths, cleanup } = makeState();
 		let pid: number | undefined;

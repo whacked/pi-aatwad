@@ -273,7 +273,7 @@ test("commands accept quoted member names, suggest names, and change budget/mode
 		const id = made.body.spawned_agent_ids[0];
 		await s.command.handler('budget "Senior Reviewer" 4', s.ctx);
 		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 4);
-		const words = id.slice("agent-".length).replaceAll("-", " ");
+		const words = id.split("-").slice(-5).join(" ");
 		await s.command.handler(`budget "${words}" 3`, s.ctx);
 		assert.equal((await s.rt.client.budget(id)).own_budget_usd, 3, "quoted multi-word IDs route to the selected member");
 		await s.command.handler(`budget "agent ${words}" 4`, s.ctx);
@@ -319,7 +319,10 @@ test("reporting commands connect, disconnect, transfer, show history and dismiss
   await project.command.handler("reporting wake on", project.ctx);
   assert.equal((await project.rt.client.reporting(pId)).wake_on_message, true);
   await project.command.handler("report-to none", project.ctx);
-  await project.command.handler(`report-to ${sId}`, project.ctx);
+  const joinCompletions = await project.command.getArgumentCompletions(`join ${sId.slice(0, 6)}`);
+  assert.ok(joinCompletions?.some((c: { value: string }) => c.value === `join ${sId}`), "join completes run ids like report-to");
+  await project.command.handler(`join ${sId}`, project.ctx); // alias for report-to
+  assert.equal((await project.rt.client.reporting(pId)).links[0].parent_run_id, sId);
   await parent.command.handler(`reporting transfer ${rId}`, parent.ctx);
   assert.equal((await project.rt.client.reporting(pId)).links[0].parent_run_id, rId);
   await project.command.handler("reporting --all", project.ctx);

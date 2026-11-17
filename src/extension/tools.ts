@@ -147,8 +147,8 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			task_id: Type.String({ description: "Your task that needs more agents" }),
 			reason: Type.String({ description: "Why the expansion is needed" }),
 			alternatives: Type.String({ description: "Alternatives considered (e.g. doing it yourself) and why they are worse" }),
-			estimated_cost_usd: Type.Number({ minimum: 0 }),
-			max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1 })),
+			estimated_cost_usd: Type.Number({ minimum: 0, description: "Informational estimate for the reviewer; it is not a spend ceiling" }),
+			max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 1, description: "Applies to every requested role. Only when the human asked for a time limit; omit otherwise" })),
 			roles: Type.Array(RoleSchema, { minItems: 1 }),
 		}),
 		async (p, id) => {

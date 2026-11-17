@@ -238,7 +238,7 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	roles.forEach((role, i) => {
 		const choice = choices[i];
 		for (let j = 0; j < role.count; j++) {
-			const agentId = newId("agent");
+			const agentId = newId("agent", getAgent(db, runRow.root_agent_id).cwd ?? cfg.workspace_root);
 			const parentMeta = JSON.parse(getAgent(db, requester).metadata_json);
 			const runtime = role.max_runtime_seconds ?? request.max_runtime_seconds ?? parentMeta.max_runtime_seconds ?? null;
 			const meta = { budget_pool_id: role.max_cost_usd === undefined ? (parentMeta.budget_pool_id ?? requester) : agentId, own_budget_usd: role.budget, budget_inherited: role.max_cost_usd === undefined, max_runtime_seconds: runtime, proposal_id: prop.id, responsibility: role.responsibility, capabilities: role.capabilities, requested_model_id: role.preferred_model_id ?? null, model_id: choice.entry.id, model_selection_reason: choice.reason, model_candidates: choice.candidates, cost_estimated: choice.cost_estimated };

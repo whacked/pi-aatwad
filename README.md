@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.19, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.21, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -25,7 +25,7 @@ pi
 Git installation clones the package outside `node_modules`, so it works with the
 current TypeScript controller. Pick one source above; if this package was already
 installed from a local path, remove that local source before switching to Git.
-Restart Pi or run `/reload` after installing. `/team version` reports the loaded extension and controller versions, source paths and controller state directory, even when this session is not enrolled; it does not start a stopped controller. `/team status` also reports the loaded extension version and controller PID. `/reload` reloads the extension, not an already-running controller; restart the controller separately to update its loaded code. Git refs can select a branch, tag or
+Restart Pi or run `/reload` after installing. `/team version` reports the loaded extension and controller versions, source paths and controller state directory, even when this session is not enrolled; it does not start a stopped controller. `/team status` also reports the loaded extension version and controller PID. `/reload` reloads the extension, not an already-running controller. The next `/team` command that needs the controller notices one running an older package version, asks it to shut down gracefully and starts a fresh one from the loaded code; members reconnect on their own. A newer controller is left alone. Git refs can select a branch, tag or
 commit; see [Pi package installation](https://pi.dev/docs/latest/packages).
 
 Requires Node ≥ 22.13 (for built-in `node:sqlite` and type stripping), Pi and `ps`
@@ -118,6 +118,7 @@ Inside Pi:
 | `/team list [all]` | List active teams, reporting relationships and member counts; `all` includes history. |
 | `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
 | `/team report-to [run_id\|none]` | Make this leader report to another team leader, or disconnect it. |
+| `/team join <run_id>` | Alias for `report-to <run_id>`: this team becomes a sub-team of that leader. It does not merge teams or take over that leader (that is `resume`). |
 | `/team reporting [--all\|dismiss\|transfer [run_id]\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
 | `/team admin [status\|limits\|clear-limits\|clear-deadlines\|unlimited\|bounded] [run_id]` | Human operator: list the limits in force, remove them all, or change resource policy. |
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
@@ -150,6 +151,8 @@ existing teams. In each old leader's session, run:
 ```text
 /team report-to <new_leader_run_id>
 ```
+
+(`/team join <new_leader_run_id>` is an alias.)
 
 Or tell that leader: “Report to the team leader for run `<new_leader_run_id>`.”
 It uses `team_reporting` with action `connect` and `parent_run_id`. The receiving
@@ -211,7 +214,7 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 
 - **The controller is auto-started** by the first command that needs it. It is a detached process, so it keeps running when your Pi exits, and it exits by itself once idle (no live workers or pending spawns). Its state dir is `~/Library/Application Support/pi-recursive-team/` on macOS and `${XDG_STATE_HOME:-~/.local/state}/pi-recursive-team/` on Linux, with mode 0700. The socket is per-user, never under `/tmp`.
 - **Workers** run as interactive Pi harnesses in tmux when `/team watch` is enabled, or detached `pi --mode json -p --session <file>` processes otherwise. Each enrolls with a one-time credential passed through a 0600 file (never argv) and works in its own git worktree under `<workspace>/.team-worktrees/<run>/<agent>`. Interactive workers stay at their Pi prompt between assignments. Headless workers exit when their prompt settles and are relaunched on the **same Pi transcript and the same agent ID** for new work.
-- **Readable IDs.** New agent and run IDs use six random English words, for example `agent-river-maple-orbit-silver-garden-cloud`. Each word is selected independently using cryptographic randomness from a bundled 2,048-word vocabulary: **66 bits of entropy**, compared with the old 64-bit hex suffix. Two Docker-style words would not preserve that collision resistance. Existing IDs remain valid and are never renamed; internal record IDs and authentication credentials are unchanged. The vocabulary is the MIT-licensed [BIP-0039 English word list](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt), not a wallet/secret format.
+- **Readable IDs.** New agent IDs use `<keyword>-<four random words>-<seven-digit number>`, for example `pi-aatwad-river-maple-orbit-cloud-5831042`. The keyword comes from the originating root session’s CWD basename (members share it, including when a workspace override is configured). The first-pass heuristic lowercases and ASCII-normalizes the basename, splits punctuation/whitespace into tokens, skips generic tokens (`a`, `an`, `the`, `project`, `repo`, `repository`) when other tokens remain, and takes the first one or two tokens. Only the keyword is truncated, to 19 characters with no trailing hyphen; empty results fall back to `project`. Full IDs are at most **63 characters**. Four words are selected independently with replacement from the bundled 2,048-word vocabulary, plus a uniform integer from 1,000,000 through 9,999,999, all using cryptographic randomness: **approximately 67.1 bits of entropy**, without counting the keyword (previous six-word IDs: 66 bits; old hex suffix: 64). Run IDs retain `run-<six random words>`. Existing IDs remain valid and are never renamed; internal record IDs and authentication credentials are unchanged. The vocabulary is the MIT-licensed [BIP-0039 English word list](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt), not a wallet/secret format.\n  - **Naming follow-up:** selecting the most important project words algorithmically will not work well for every directory name. This initial implementation uses only CWD; project metadata or backend-LLM keyword selection may be considered later.
 - **Identity.** A logical agent ID is independent of the Pi session, process and model. If you close the root Pi, its reports keep working. Reopen Pi and use `/team resume` to choose a team. Pi's own `/resume` restores a previous conversation and automatically re-attaches its saved team identity when it is the same non-managed Pi session and the agent is still active. Running `/team resume <run>` afterward reports “Already attached” for that team; no second attach is needed. A forked or cloned Pi session is never silently adopted, and saved managed-worker identities require deliberate takeover.
 
 ### Configuration
@@ -345,9 +348,9 @@ extension must also be made available to worker Pi processes. Discovery checks
 configured authentication, not a live API call or credit balance. Capability tags
 for discovered chat models are broad defaults, not verified performance claims.
 
-After upgrading an existing installation, reload/restart Pi and let any old controller
-exit (it exits when idle) before using the new runtime configuration tools. A controller
-already running older code will not have the new endpoints.
+After upgrading an existing installation, reload/restart Pi. The first `/team` command
+replaces a controller still running older code (which would lack new endpoints) with one
+running the loaded version.
 
 `/team init config.json` remains available for advanced initial policy settings.
 For lower-level expansion proposals without an explicit model preference, the
@@ -370,10 +373,12 @@ insensitive and scoped to the attached team; full IDs remain usable without an
 attached team and across linked teams. Exact names take precedence; an active
 member takes precedence over old closed members with the same exact name.
 
-For `agent-river-maple-orbit-silver-garden-cloud`, use `maple`, `agent maple`, or
-`river maple`. Words can occur anywhere in the ID; multi-word references must be
-adjacent and ordered. Spaces and hyphens are equivalent, but partial words do not
-match (`map` is not `maple`). If another ID starts `agent-river-egg-…`, `river` is
+For `pi-aatwad-river-maple-orbit-cloud-5831042`, use `maple`, `agent maple`, or
+`river maple`. Keyword tokens and the complete numeric suffix (`5831042`) also
+work; legacy `agent-…` IDs retain word matching. Tokens can occur anywhere in
+the ID; multi-token references must be adjacent and ordered. Spaces and hyphens
+are equivalent, but partial tokens do not match (`map` is not `maple`). If another
+ID starts `pi-aatwad-river-egg-…`, `river` is
 ambiguous, while `maple` and `egg` select their respective agents. Ambiguity lists
 full candidate IDs instead of guessing—even if one matching member is inactive.
 Use more words or a full ID to disambiguate. Quote references containing spaces

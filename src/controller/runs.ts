@@ -88,7 +88,7 @@ export function createRun(ctx: Ctx, p: Principal, body: unknown): CreateRunRespo
 	if (b.config !== undefined && (typeof b.config !== "object" || b.config === null)) fail("INVALID", "config must be an object");
 	const cfg: RunConfig = buildRunConfig(b.config as Partial<RunConfig> | undefined, { role, cwd, provider, model });
 	const runId = newId("run");
-	const agentId = newId("agent");
+	const agentId = newId("agent", cwd);
 	const ts = nowIso();
 	run(db, "INSERT INTO runs(id, created_at, status, config_json, topology_version) VALUES (?,?, 'RUNNING', ?, 0)", runId, ts, JSON.stringify(cfg));
 	run(

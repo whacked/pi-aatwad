@@ -8,6 +8,7 @@ import { statePaths, ensureStateDir } from "../../src/shared/paths.ts";
 import type { StatePaths } from "../../src/shared/paths.ts";
 import { PROTOCOL_VERSION, SCHEMA_VERSION } from "../../src/shared/protocol.ts";
 import type { HealthResponse } from "../../src/shared/protocol.ts";
+import { LOADED_VERSION } from "../../src/shared/version.ts";
 
 export function shortTmp(prefix = "prt-"): string {
 	const base = process.platform === "darwin" ? "/tmp" : tmpdir();
@@ -32,6 +33,7 @@ export type Handler = (req: Recorded, res: ServerResponse) => void | { status?: 
 export function health(over: Partial<HealthResponse> = {}): HealthResponse {
 	return {
 		ok: true,
+		package_version: LOADED_VERSION,
 		protocol: PROTOCOL_VERSION,
 		schema: SCHEMA_VERSION,
 		controller_id: "mock",

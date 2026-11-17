@@ -36,13 +36,13 @@ test("six-word production IDs accept internal words but never partial characters
 	}
 });
 
-test("full IDs bypass team lookups; short references require and remain scoped to attached team", async () => {
+test("full IDs work without a team and across teams; short references remain scoped", async () => {
 	const { client, calls } = fixture();
-	for (const id of ["agent-0123456789abcdef", "agent-river-maple-orbit-silver-garden-cloud", "controller"]) {
+	for (const id of ["agent-0123456789abcdef", "agent-river-maple-orbit-silver-garden-cloud", "pi-aatwad-river-maple-orbit-cloud-5831042", "123-river-maple-orbit-cloud-1000000", "controller"]) {
 		assert.equal(await client.resolveAgent(id), id);
-		assert.equal(await client.resolveAgent(id, "run-test"), id);
 	}
-	assert.equal(calls(), 0);
+	assert.equal(calls(), 0, "unattached exact IDs require no lookup");
+	assert.equal(await client.resolveAgent("pi-aatwad-river-maple-orbit-cloud-5831042", "run-test"), "pi-aatwad-river-maple-orbit-cloud-5831042", "foreign IDs still route exactly");
 	await assert.rejects(client.resolveAgent("maple"), /attached team/);
 	await assert.rejects(client.resolveAgent("maple", "run-test"), /No agent/);
 });
@@ -55,6 +55,30 @@ test("exact names retain priority and active-replacement semantics; ambiguous ID
 	assert.equal(await client.resolveAgent("Reviewer", "run-test"), "agent-A-D-E");
 	await assert.rejects(client.resolveAgent("A", "run-test"), /Ambiguous.*agent-A-B-C.*agent-A-D-E/);
 	assert.equal(await client.resolveAgent("B", "run-test"), "agent-A-B-C");
+});
+
+test("project IDs accept keyword, word and numeric tokens with unambiguous ordered matching", async () => {
+	const { client, root, node } = fixture();
+	const maple = "pi-aatwad-river-maple-orbit-cloud-5831042";
+	const egg = "pi-aatwad-river-egg-orbit-cloud-9999999";
+	root.children = [node(maple, "Reviewer"), node(egg, "Writer")];
+	for (const ref of ["maple", "agent maple", "river-maple", "pi aatwad river maple", "cloud 5831042", "5831042", "aatwad-river-maple-orbit-cloud-5831042"]) {
+		assert.equal(await client.resolveAgent(ref, "run-test"), maple);
+	}
+	for (const ref of ["pi", "pi-aatwad", "river", "orbit cloud"]) await assert.rejects(client.resolveAgent(ref, "run-test"), /Ambiguous/);
+	for (const ref of ["map", "aat", "831042", "maple river", "river cloud", "*", "maple/"]) await assert.rejects(client.resolveAgent(ref, "run-test"), /No agent/);
+	root.children.push(node("other-aatwad-river-maple-orbit-cloud-5831042", "Other"));
+	await assert.rejects(client.resolveAgent("aatwad-river-maple-orbit-cloud-5831042", "run-test"), /Ambiguous/);
+	root.children.push(node("aatwad-river-maple-orbit-cloud-5831042", "Exact"));
+	assert.equal(await client.resolveAgent("aatwad-river-maple-orbit-cloud-5831042", "run-test"), "aatwad-river-maple-orbit-cloud-5831042", "exact IDs take priority over aliases");
+});
+
+test("full IDs remain routable if the local tree is unavailable", async () => {
+	const { client } = fixture();
+	client.tree = async () => { throw new Error("unavailable"); };
+	const id = "pi-aatwad-river-maple-orbit-cloud-5831042";
+	assert.equal(await client.resolveAgent(id, "run-test"), id);
+	await assert.rejects(client.resolveAgent("maple", "run-test"), /unavailable/);
 });
 
 test("word matching cannot cross word boundaries or accidentally match legacy hex IDs", () => {

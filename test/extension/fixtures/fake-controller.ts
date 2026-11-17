@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { openSync, writeSync, closeSync, unlinkSync, writeFileSync, appendFileSync } from "node:fs";
 import { statePaths } from "../../../src/shared/paths.ts";
 import { PROTOCOL_VERSION, SCHEMA_VERSION } from "../../../src/shared/protocol.ts";
+import { LOADED_VERSION } from "../../../src/shared/version.ts";
 
 const p = statePaths();
 let fd: number;
@@ -25,6 +26,7 @@ const server = createServer((req, res) => {
 		res.end(
 			JSON.stringify({
 				ok: true,
+				package_version: process.env.FAKE_PACKAGE_VERSION ?? LOADED_VERSION,
 				protocol: PROTOCOL_VERSION,
 				schema: Number(process.env.FAKE_SCHEMA ?? SCHEMA_VERSION),
 				controller_id: "fake",

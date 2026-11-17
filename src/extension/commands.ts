@@ -16,6 +16,7 @@ import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 
 export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "report-to", args: "[run_id|none]", help: "make this leader report to another team leader, or disconnect it" },
+	{ name: "join", args: "<run_id>", help: "alias for report-to: this team becomes a sub-team reporting to that leader (no merge, no takeover)" },
 	{ name: "reporting", args: "[--all|dismiss|transfer [run_id]|wake on|off]", help: "inspect, dismiss or transfer reporting links; configure automatic inbox turns" },
 	{ name: "help", args: "", help: "show this help" },
 	{ name: "init", args: "[--unlimited] [config-json-path]", help: "create a new organization with this session as root" },
@@ -36,6 +37,9 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi team terminals in tmux" },
 	{ name: "send", args: "[name|agent_id] <message>", help: "send directions to a team member" },
 ];
+
+/** Subcommand aliases, resolved before dispatch, completion and --yes handling. */
+export const ALIASES: Record<string, string> = { join: "report-to" };
 
 export function helpText(pi: Pick<ExtensionAPI, "getAllTools">, rt: TeamRuntime): string {
 	const w = Math.max(...SUBCOMMANDS.map((s) => `${s.name} ${s.args}`.length));
@@ -466,14 +470,15 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, report-to, reporting, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
+		description: "Recursive agent team: init, resume, report-to/join, reporting, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
 				const items = SUBCOMMANDS.filter((s) => s.name.startsWith(parts[0] ?? "")).map((s) => ({ value: s.name, label: s.name, description: `${s.args} ${s.help}`.trim() }));
 				return items.length ? items : null;
 			}
-			const [sub, partial = ""] = parts;
+			const [typed, partial = ""] = parts;
+			const sub = ALIASES[typed] ?? typed;
 			if (["budget", "model", "inspect", "send"].includes(sub) && parts.length === 2) return await agentCompletions(sub, partial);
 			if (sub === "watch" && partial === "focus" && parts.length === 3) return await agentCompletions(sub, parts[2], "watch focus");
 			if (sub === "resume" && parts.length === 3) return await agentCompletions(sub, parts[2], `resume ${partial}`, partial);
@@ -481,7 +486,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				if (parts.length > 2) return null;
 				const runs = await runCompletions();
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&
-					((sub !== "stop" && sub !== "resume") || resumable(r)) && (sub !== "stop" || !r.stopped)).map((r) => ({ value: `${sub} ${r.run_id}`, label: r.run_id, description: `${r.status} · ${runLabel(r)}` }));
+					((sub !== "stop" && sub !== "resume") || resumable(r)) && (sub !== "stop" || !r.stopped)).map((r) => ({ value: `${typed} ${r.run_id}`, label: r.run_id, description: `${r.status} · ${runLabel(r)}` }));
 				return items.length ? items : null;
 			}
 			return null;
@@ -490,9 +495,10 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			rt.ctx = rt.ctx ?? ctx;
 			let sub = "help";
 			try {
-				const [command = "help", ...rest] = splitArgs(args);
-				sub = command;
-				const h = handlers[sub];
+				const [typed = "help", ...rest] = splitArgs(args);
+				const command = ALIASES[typed] ?? typed;
+				sub = typed;
+				const h = handlers[command];
 				if (!h) {
 					out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
 					return;

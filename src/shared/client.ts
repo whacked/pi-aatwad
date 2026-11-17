@@ -7,7 +7,7 @@ import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, fstatSync } from "node:fs";
 import { basename } from "node:path";
-import { matchesAgentWords } from "./agent-reference.ts";
+import { isFullAgentId, matchesAgentWords } from "./agent-reference.ts";
 import {
 	ENV_STATE_DIR,
 	HDR_IDEMPOTENCY,
@@ -56,6 +56,7 @@ import type {
 import { ensureStateDir } from "./paths.ts";
 import type { StatePaths } from "./paths.ts";
 import { controllerEntry } from "./paths.ts";
+import { LOADED_VERSION } from "./version.ts";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -241,6 +242,16 @@ export interface EnsureOptions {
 	pingTimeoutMs?: number;
 	/** Extra env for the spawned controller. */
 	env?: Record<string, string>;
+	/**
+	 * Package version this caller runs (default LOADED_VERSION). A running controller that reports an
+	 * older (or no) package version is gracefully shut down and replaced, because it may lack routes this
+	 * caller uses (e.g. POST /runs/:id/resume answering NOT_FOUND). Workers survive the restart: they
+	 * reconnect and the new controller recovers live sessions. Newer controllers are kept as-is so two
+	 * installs never fight over the singleton. false disables replacement.
+	 */
+	expectVersion?: string | false;
+	/** Total budget for an old controller to stop before replacement gives up. Default 10s. */
+	replaceTimeoutMs?: number;
 }
 
 export interface EnsureResult {
@@ -329,10 +340,70 @@ function tailFile(path: string, bytes = 2_000): string {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** Numeric x.y.z comparison; non-numeric parts compare as 0. */
+export function compareVersions(a: string, b: string): number {
+	const pa = a.split(/[.+-]/).slice(0, 3).map((x) => Number(x) || 0);
+	const pb = b.split(/[.+-]/).slice(0, 3).map((x) => Number(x) || 0);
+	for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
+	return 0;
+}
+
+/** True when a running controller predates `expected` (missing package_version = predates version reporting). */
+export function isStaleController(h: HealthResponse, expected: string | false | undefined): boolean {
+	if (!expected || expected === "unknown") return false;
+	if (!h.package_version || h.package_version === "unknown") return true;
+	return compareVersions(h.package_version, expected) < 0;
+}
+
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e) {
+		return (e as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** Ask a stale controller to shut down gracefully and wait until its socket stops answering as that pid. */
+async function retireStaleController(paths: StatePaths, h: HealthResponse, expected: string, opts: EnsureOptions): Promise<void> {
+	const label = `controller pid ${h.pid} (v${h.package_version ?? "unknown"}) at ${paths.socket}`;
+	try {
+		const token = await readOperatorToken(paths, 1_000);
+		await rawRequest(paths.socket, "POST", "/controller/shutdown", { token, body: { force: false }, timeoutMs: opts.pingTimeoutMs ?? 2_000 });
+	} catch (e) {
+		if (isUnavailable(e)) return; // Already gone.
+		throw new ControllerIncompatibleError(`${label} is older than this extension (v${expected}) and could not be restarted automatically: ${e instanceof Error ? e.message : String(e)}. Stop it (kill ${h.pid}) and retry.`);
+	}
+	// Wait for the process itself to exit, not just the socket: the singleton lock is released last,
+	// and a replacement spawned before that would lose the lock race and leave nobody serving.
+	const deadline = Date.now() + (opts.replaceTimeoutMs ?? 10_000);
+	while (Date.now() < deadline) {
+		await sleep(100);
+		if (!pidAlive(h.pid)) return;
+		try {
+			const now = await rawRequest<HealthResponse>(paths.socket, "GET", "/health", { timeoutMs: opts.pingTimeoutMs ?? 2_000 });
+			if (now.pid !== h.pid) return; // Another client already replaced it.
+		} catch {
+			/* Socket closed while the old process finishes releasing its lock. */
+		}
+	}
+	throw new ControllerIncompatibleError(`${label} is older than this extension (v${expected}); it was asked to shut down but is still running after ${opts.replaceTimeoutMs ?? 10_000}ms. Stop it (kill ${h.pid}) and retry.`);
+}
+
 async function ensureOnce(paths: StatePaths, opts: EnsureOptions): Promise<EnsureResult> {
 	const pingTimeout = opts.pingTimeoutMs ?? 2_000;
+	const expected = opts.expectVersion ?? LOADED_VERSION;
 	try {
-		return { health: await ping(paths, pingTimeout), spawned: false };
+		const h = await ping(paths, pingTimeout);
+		if (!expected || !isStaleController(h, expected)) return { health: h, spawned: false };
+		await retireStaleController(paths, h, expected, opts);
+		// A concurrent client may already have started the replacement.
+		try {
+			const fresh = await ping(paths, pingTimeout);
+			if (!isStaleController(fresh, expected)) return { health: fresh, spawned: false };
+		} catch (e) {
+			if (!isUnavailable(e)) throw e;
+		}
 	} catch (e) {
 		if (!isUnavailable(e)) throw e;
 	}
@@ -570,10 +641,19 @@ export class TeamClient {
 	}
 	/** Resolve exact names or unique whole-word ID references within a run; full IDs need no run. */
 	async resolveAgent(ref: string, runId?: string, o?: CallOptions): Promise<string> {
-		// Preserve exact-ID routing (including cross-team IDs) for both saved hex and new word IDs.
-		if (/^agent-(?:[0-9a-f]{16}|[a-z]+(?:-[a-z]+){5})$/i.test(ref) || ref === "controller") return ref;
-		if (!runId) throw new Error("Agent names and short IDs require an attached team; use /team resume or a full agent ID");
-		const t = await this.tree(runId, o);
+		// A two-token keyword's suffix can itself look like a full one-token ID.
+		// Prefer exact/local matches when attached; otherwise retain cross-team ID routing.
+		if (ref === "controller") return ref;
+		const fullId = isFullAgentId(ref);
+		if (!runId) {
+			if (fullId) return ref;
+			throw new Error("Agent names and short IDs require an attached team; use /team resume or a full agent ID");
+		}
+		const t = await this.tree(runId, o).catch((error) => {
+			if (fullId) return null; // Exact foreign IDs need not depend on a readable local tree.
+			throw error;
+		});
+		if (!t) return ref;
 		const flat = (n: TreeResponse["root"]): TreeResponse["root"][] => [n, ...n.children.flatMap(flat)];
 		const nodes = flat(t.root);
 		if (nodes.some((n) => n.agent_id === ref)) return ref;
@@ -584,6 +664,7 @@ export class TeamClient {
 		const candidates = matches.length ? (active.length ? active : matches) : nodes.filter((n) => matchesAgentWords(n.agent_id, ref));
 		if (candidates.length === 1) return candidates[0].agent_id;
 		if (candidates.length > 1) throw new Error(`Ambiguous agent reference '${ref}'; use more ID words or a full ID: ${candidates.map((n) => `${n.role} [${n.agent_id}]`).join(", ")}`);
+		if (fullId) return ref;
 		throw new Error(`No agent named '${ref}' or matching those ID words in this team. Use /team tree to see names and IDs.`);
 	}
 
