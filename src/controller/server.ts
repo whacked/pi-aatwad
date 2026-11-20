@@ -17,6 +17,8 @@ import { attach, budget, createRun, enroll, events, heartbeat, inspect, listRuns
 import { getRecoveryStatus, isTerminal } from "./queries.ts";
 import { assertLeaseHeld } from "./fence.ts";
 import { changeReporting, readReporting } from "./reporting.ts";
+import { agentAttentionRoute, runAttentionRoute } from "./attention.ts";
+import { joinTeam, leaveSession } from "./external.ts";
 import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
 
 type Auth = "none" | "any" | "operator" | "agent";
@@ -48,6 +50,8 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("GET", "/runs", "operator", ({ p }) => listRuns(ctx, p)),
 		R("GET", "/runs/:id/reporting", "any", ({ p, params, q }) => readReporting(ctx, p, params[0], q.get("history") === "1")),
 		R("POST", "/runs/:id/reporting", "any", ({ p, params, body }) => changeReporting(ctx, p, params[0], body)),
+		R("POST", "/runs/:id/join", "operator", ({ p, params, body }) => joinTeam(ctx, p, params[0], body)),
+		R("POST", "/sessions/leave", "agent", ({ p, body }) => leaveSession(ctx, p, body)),
 		R("POST", "/runs/:id/attach", "operator", ({ p, params, body }) => attach(ctx, p, params[0], body)),
 		R("POST", "/runs/:id/stop", "operator", ({ p, scope, params }) => stopTeam(ctx, p, scope, params[0])),
 		R("POST", "/runs/:id/resume", "operator", ({ p, scope, params }) => resumeTeam(ctx, p, scope, params[0])),
@@ -57,6 +61,10 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/runs/:id/admin", "operator", ({ p, scope, params, body }) => adminPolicy(ctx, p, scope, params[0], body ?? {})),
 		R("GET", "/runs/:id/terminal", "any", ({ p, params }) => terminalMode(ctx, p, params[0])),
 		R("POST", "/runs/:id/terminal", "any", ({ p, params, body }) => terminalMode(ctx, p, params[0], body ?? {})),
+		R("GET", "/runs/:id/attention", "any", ({ p, params }) => runAttentionRoute(ctx, p, params[0])),
+		R("POST", "/runs/:id/attention", "any", ({ p, params, body }) => runAttentionRoute(ctx, p, params[0], body ?? {})),
+		R("GET", "/agents/:id/attention", "any", ({ p, params }) => agentAttentionRoute(ctx, p, params[0])),
+		R("POST", "/agents/:id/attention", "any", ({ p, params, body }) => agentAttentionRoute(ctx, p, params[0], body ?? {})),
 		R("GET", "/runs/:id/tree", "any", ({ p, params, q }) => tree(ctx, p, params[0], q.get("active_only") === "1")),
 		R("GET", "/runs/:id/recovery", "operator", ({ params }) => getRecoveryStatus(ctx.db, params[0])),
 		R("POST", "/enroll", "none", ({ body }) => enroll(ctx, body)),

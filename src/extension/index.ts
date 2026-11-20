@@ -90,6 +90,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 			text = formatOrgContext(me);
 			if (me.is_root) text += "\nYou are the team leader. Configure the team through conversation; no config file is required. " +
 				"For a user task, decide the useful number and responsibilities of members, then use team_create_member once per member. " +
+				"Stay available to the human: dispatching is a handoff. Once team_create_member, team_delegate_task or team_send_message succeeds, the work is durably queued; do not poll team_get_tree or team_get_inbox, sleep, or wait for results. Summarize what you handed off and end your turn. Member reports wake you automatically (team_set_attention controls when). " +
 				"Default to the leader session's current model when no model is specified, including after session resume or model changes. You may briefly offer alternative models using team_get_models(source=available), without blocking work on a model-selection question. " +
 				"Honor explicit member names and model choices. Resolve exact models through Pi; ask on ambiguity and never guess or silently substitute. " +
 				"Check team_get_budget for your effective limits and grant authority. Runs never expire. No numeric limits are imposed by default; omitted member budgets and lifetimes inherit yours. Leave max_cost_usd and max_runtime_seconds out unless the human explicitly asks for a spend or time limit: never invent a default such as a few dollars or minutes, because an exhausted limit pauses or stops the member mid-work. You may change descendant budgets/models, remove a ceiling (team_set_budget with max_cost_usd null), resume through budget updates, or close members within your delegated authority. If a limit blocks you, do not work around it: report the exact limit and tell the human that /team admin limits lists them and /team admin clear-limits removes them. " +
@@ -119,6 +120,6 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 	// Interactive sessions: deliver pending messages as soon as Pi settles instead of waiting for the next heartbeat.
 	pi.on("agent_settled", () => {
 		rt.updateStatus();
-		if (rt.identity && (!rt.identity.managed || rt.ctx?.mode === "tui") && rt.lastInboxPending > 0) void rt.deliverInbox({ triggerTurn: rt.identity.managed });
+		rt.onSettled();
 	});
 }

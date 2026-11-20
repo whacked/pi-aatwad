@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.21, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.22, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -119,7 +119,8 @@ Inside Pi:
 | `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
 | `/team report-to [run_id\|none]` | Make this leader report to another team leader, or disconnect it. |
 | `/team join <run_id>` | Alias for `report-to <run_id>`: this team becomes a sub-team of that leader. It does not merge teams or take over that leader (that is `resume`). |
-| `/team reporting [--all\|dismiss\|transfer [run_id]\|wake on\|off]` | Inspect, dismiss or transfer reporting links; configure automatic inbox turns. |
+| `/team reporting [--all\|dismiss\|transfer [run_id]\|wake on\|off]` | Inspect, dismiss or transfer reporting links. `wake on\|off` is shorthand for `/team attention on-message wake\|next-turn`. |
+| `/team attention [team\|agent] [on-message wake\|next-turn] [batch 15s] [stall 3m\|off] [tick 10m\|off] [cap N] [reset]` | When idle sessions get automatic turns. See [Automatic turns](#automatic-turns-attention). |
 | `/team admin [status\|limits\|clear-limits\|clear-deadlines\|unlimited\|bounded] [run_id]` | Human operator: list the limits in force, remove them all, or change resource policy. |
 | `/team tree` / `status` / `budget [agent]` | Live logical hierarchy, controller and run status, limits and reservations. |
 | `/team inbox` / `proposals` / `events` | Durable messages, expansion reviews, audit log. |
@@ -170,16 +171,9 @@ Each team retains its own task delegation, recruitment, approvals, budget author
 and transcripts. Ordinary workers and sibling teams do not gain cross-team access.
 Use `causation_id` or `correlation_id` to link an answer to its question.
 
-Human leader inboxes are delivered for their next turn by default. To enable
-automatic inbox turns, run this separately in each participating leader session:
-
-```text
-/team reporting wake on
-```
-
-`/team reporting wake off` disables automatic turns. Open, idle, running leaders
-check their inbox on heartbeat (normally within 10 seconds); busy leaders wait
-until idle. Automatic turns can spend model credits. Closing a session preserves
+Leaders are woken automatically when reports arrive (see
+[Automatic turns](#automatic-turns-attention)); `/team reporting wake off` makes
+this leader's messages wait for your next prompt instead. Closing a session preserves
 links and queues reports; no replacement root process is launched. Leaders should
 report meaningful changes and decisions and avoid acknowledgement loops.
 
@@ -190,6 +184,34 @@ report meaningful changes and decisions and avoid acknowledgement loops.
 | Any leader | `/team reporting dismiss` | End all reporting links attached to this leader. Every team and session continues running. |
 | Any leader | `/team reporting --all` | Inspect active and closed links. |
 | Human operator | `/team stop [run_id]` | Suspend that team's own hierarchy (resumable). Separately linked teams continue running. |
+
+### Automatic turns (attention)
+
+There are two separate mechanisms. The **liveness heartbeat** runs every 10 seconds in
+the background. It renews the lease and polls the inbox count. It never sends anything
+to the model and never blocks the session. The **attention policy** decides when an idle
+session's model gets a turn without a human prompt. The controller makes these decisions,
+so every harness follows the same policy.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `on-message` | `wake` | `wake` starts a turn for new messages. `next-turn` holds them until you next type. |
+| `batch` | `15s` | Wait until the oldest undelivered message is this old, so several reports become one turn. |
+| `stall` | `3m` | Wake a manager whose direct reports have all been idle this long while tasks are open. Its status digest marks work that is "not yet picked up". |
+| `tick` | `off` | Periodic check-in with a status digest. Sent only if team status changed since the last one. |
+| `cap` | `20` | Maximum automatic turns per rolling hour. `0` disables automatic turns. |
+
+Busy sessions are never interrupted. Paused agents are never woken. An unchanged
+stalled team wakes its manager only once. If you type while messages are held, they
+are added to that turn. `/team attention` (no arguments) shows the team defaults;
+`/team attention <agent> stall off` overrides one agent; `reset` re-inherits. Leaders
+and agents use `team_set_attention`. Automatic turns spend model credits.
+
+Dispatching is a handoff. `team_create_member`, `team_delegate_task` and
+`team_send_message` return as soon as the controller has stored the work. The result
+says whether the owner is idle (picks it up within about 10 seconds), busy or not yet
+running. The leader is told not to poll or wait, and to return control to you. Reports
+then wake it under this policy.
 
 To remove the temporary reporting parent from the example, run `/team reporting
 dismiss` in its session. If you also want to stop its own team, follow with
@@ -537,6 +559,54 @@ real Pi processes during promotion; dedicated sessions still consolidate old mem
 windows into the leader window. If there is insufficient space, enlarge the terminal
 rather than creating more windows. Managed members cannot manage the team terminal session.
 
+
+## Claude Code interop
+
+Claude Code sessions join the same teams as Pi sessions. Both go through the same local controller
+and protocol. A Claude Code session is an ordinary team agent with harness `claude-code`, so
+everything else applies unchanged: tasks, messages, attention, reparenting, transfers,
+`report-to`/`join` and budgets. Leaders and members can be any mix of Pi and Claude Code.
+
+Install the plugin from this checkout (it supplies the MCP server and hooks):
+
+```text
+/plugin marketplace add /path/to/pi-aatwad
+/plugin install pi-team@pi-aatwad
+```
+
+Then ask Claude to use the `team_*` tools.
+
+| Goal | Tool call |
+|---|---|
+| Found a team and lead it | `team_join` mode `new_team` |
+| Lead an existing team (take over its root) | `team_join` mode `leader`, `run_id` |
+| Join an existing team as a new member | `team_join` mode `member`, `run_id`, optional `manager` |
+| Resume an existing agent identity | `team_join` mode `agent`, `run_id`, `agent` |
+| Make your team a sub-team of another leader | `team_report_to` `run_id` (`none` disconnects) |
+| Move a member under another manager | `team_reassign` |
+| Leave (identity and tasks remain; manager notified) | `team_leave` |
+
+Members a Claude Code leader creates with `team_create_member` run as Pi workers. A Claude Code
+member is never launched or relaunched by the controller; its session is the process. When
+Claude Code exits without `team_leave`, its lease lapses, the agent shows as lost, and nothing
+replaces it. Rejoin with `team_join` mode `agent`, or `/team resume <run_id> <agent>` from Pi.
+
+Delivery mirrors the Pi paths. The MCP server sends the 10-second liveness heartbeat. Hooks
+deliver messages:
+
+- `SessionStart` adds team context and keeps the identity across `/clear` and `--resume`.
+- `UserPromptSubmit` attaches pending messages to your prompt.
+- `Stop` continues with messages that arrived during the turn, at most 5 times per prompt.
+
+An idle Claude Code session cannot be prompted from outside, so the session runs a background
+waiter (`node src/claude/cli.ts wait`). It stays silent until the controller decides to wake this
+session under its attention policy, then exits with the messages and Claude takes a turn. The
+`Stop` hook asks Claude once to restart it if it is not running. Set `PI_TEAM_CLAUDE_WAITER=0` to
+rely on prompts and stops only. The `/team attention` settings apply to Claude Code agents too.
+
+Limits: Claude Code does not report per-message cost to the controller, so spend limits do not
+count its own usage, though they still count the Pi members it recruits. Model switching
+(`team_set_model`) does not apply to Claude Code sessions.
 
 ## Develop
 

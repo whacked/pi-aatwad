@@ -40,6 +40,9 @@ const PROPOSAL_WARNING =
 function text(s: string, details?: unknown) {
 	return { content: [{ type: "text" as const, text: s }], details };
 }
+export { handoffText } from "../shared/attention-format.ts";
+import { handoffText } from "../shared/attention-format.ts";
+
 function json(label: string, v: unknown) {
 	return text(`${label}\n${JSON.stringify(v, null, 2)}`, v);
 }
@@ -73,7 +76,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_reporting",
 		"Team: reporting relationships",
-		"Root only: manage generic reporting relationships between existing team leaders. Any active leader can receive reports; no role designation or setup is required. status lists linked root IDs (history optionally includes closed links). connect makes your leader report to another leader by parent_run_id. disconnect ends your own reporting-parent link. transfer moves all leaders reporting to you to another leader, with reference history, while retaining your own parent link. dismiss ends all reporting links attached to you; every team and session keeps running. Use team_close_member or the human /team stop command to stop team members. wake sets automatic inbox turns for your root; enable only when the human requests it. Closing a session keeps links and queues reports. Use team_send_message with linked root IDs for initial reports, meaningful progress and follow-up questions. Avoid acknowledgement loops. Cross-team budget, approval and delegation authority remains scoped to each team's own hierarchy.",
+		"Root only: manage generic reporting relationships between existing team leaders. Any active leader can receive reports; no role designation or setup is required. status lists linked root IDs (history optionally includes closed links). connect makes your leader report to another leader by parent_run_id. disconnect ends your own reporting-parent link. transfer moves all leaders reporting to you to another leader, with reference history, while retaining your own parent link. dismiss ends all reporting links attached to you; every team and session keeps running. Use team_close_member or the human /team stop command to stop team members. wake is a legacy toggle for your root's on_message attention policy; prefer team_set_attention. Closing a session keeps links and queues reports. Use team_send_message with linked root IDs for initial reports, meaningful progress and follow-up questions. Avoid acknowledgement loops. Cross-team budget, approval and delegation authority remains scoped to each team's own hierarchy.",
 		Type.Object({
 			action: StringEnum(["status", "connect", "disconnect", "dismiss", "transfer", "wake"] as const),
 			parent_run_id: Type.Optional(Type.String()),
@@ -89,6 +92,30 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 			return json("Team reporting", result);
 		},
+	);
+
+	reg(
+		"team_set_attention",
+		"Team: attention policy",
+		"View or change when an idle agent's model gets a turn without a human prompt. scope=team sets team defaults (root only); scope=agent sets one agent (yourself or someone you manage). on_message: wake starts a turn for new messages after batch_seconds; next_turn holds them until the next human turn. stall_seconds wakes a manager whose reports are all idle with open work (0 = off). tick_seconds sends a periodic status check-in only when status changed (0 = off). max_wakes_per_hour caps automatic turns. Omit every field to view. Change only when the human asks.",
+		Type.Object({
+			scope: Type.Optional(StringEnum(["team", "agent"] as const, { description: "Default agent (yourself unless agent_id is given)" })),
+			agent_id: Type.Optional(Type.String()),
+			on_message: Type.Optional(StringEnum(["wake", "next_turn"] as const)),
+			batch_seconds: Type.Optional(Type.Integer({ minimum: 0 })),
+			stall_seconds: Type.Optional(Type.Integer({ minimum: 0 })),
+			tick_seconds: Type.Optional(Type.Integer({ minimum: 0 })),
+			max_wakes_per_hour: Type.Optional(Type.Integer({ minimum: 0 })),
+			reset: Type.Optional(Type.Boolean({ description: "Clear settings at this level first (inherit again)" })),
+		}),
+		async (p, id) => {
+			const me = rt.identity!;
+			const target = p.scope === "team" ? { run_id: me.run_id } : { agent_id: p.agent_id ? await agent(p.agent_id) : me.agent_id };
+			const { scope: _s, agent_id: _a, ...patch } = p;
+			const r = Object.keys(patch).length ? await rt.client.setAttention(target, patch, { idempotencyKey: key("team_set_attention", id) }) : await rt.client.attention(target);
+			return json("Attention policy", r);
+		},
+		"View or change automatic turn (wake) policy",
 	);
 
 	reg(
@@ -113,7 +140,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 				{ to: await agent(p.to), type: p.type as MessageType, payload, correlation_id: p.correlation_id, causation_id: p.causation_id, deadline: p.deadline },
 				{ idempotencyKey: key("team_send_message", id) },
 			);
-			return text(`sent ${p.type} to ${p.to} (message ${r.message_id})`, r);
+			return text(`sent ${p.type} to ${p.to} (message ${r.message_id}). Delivery is durable; do not wait for a reply — replies arrive in your inbox and wake you.`, r);
 		},
 		"Send a durable message to another team agent",
 	);
@@ -133,7 +160,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 				{ owner_id: await agent(p.owner_id), title: p.title, spec: p.spec, parent_task_id: p.parent_task_id },
 				{ idempotencyKey: key("team_delegate_task", id) },
 			);
-			return text(`task ${r.task_id} assigned to ${p.owner_id} (message ${r.message_id})`, r);
+			return text(`${handoffText(`task ${r.task_id}`, p.owner_id, r.handoff)}`, r);
 		},
 		"Delegate a task to a direct report",
 	);

@@ -1,0 +1,14 @@
+{
+  "name": "pi-aatwad",
+  "description": "Claude Code plugin for joining pi-aatwad (pi-recursive-team) agent teams",
+  "owner": {
+    "name": "pi-aatwad"
+  },
+  "plugins": [
+    {
+      "name": "pi-team",
+      "source": "./",
+      "description": "pi-aatwad team interop for Claude Code"
+    }
+  ]
+}

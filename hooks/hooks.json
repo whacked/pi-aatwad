@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/claude/cli.ts\" hook SessionStart", "timeout": 20 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/claude/cli.ts\" hook UserPromptSubmit", "timeout": 15 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/claude/cli.ts\" hook Stop", "timeout": 15 }] }]
+  }
+}

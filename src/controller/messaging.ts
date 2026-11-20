@@ -8,6 +8,7 @@ import type { AckResponse, Envelope, MessageType, SendMessageResponse, InboxResp
 import { assertSchema, obj, str, oneOf, onlyKeys } from "./validate.ts";
 import { getAgent, getCurrentManager, getSubtree, isTerminal, runConfig } from "./queries.ts";
 import { coordinationLink } from "./reporting.ts";
+import { handoff } from "./attention.ts";
 
 export interface PostMessage {
 	run_id: string;
@@ -162,7 +163,7 @@ export function delegateTask(ctx: Ctx, p: Principal, body: unknown): DelegateTas
 	const taskId = createTask(ctx.db, { run_id: a.run_id, owner_id: ownerId, title, spec: (b.spec as Record<string, unknown>) ?? {}, parent_task_id: parentTaskId, assigned_by: a.actor_id });
 	const messageId = postMessage(ctx.db, { run_id: a.run_id, from: a.actor_id, to: ownerId, type: "task.assigned", payload: { task_id: taskId, title, spec: b.spec ?? {}, parent_task_id: parentTaskId }, correlation_id: taskId });
 	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.assigned", entity_id: taskId, payload: { owner_id: ownerId, title, parent_task_id: parentTaskId } });
-	return { task_id: taskId, message_id: messageId };
+	return { task_id: taskId, message_id: messageId, handoff: handoff(ctx.db, ownerId) };
 }
 
 function ownTask(db: DB, a: { actor_id: string; run_id: string }, taskId: string): Row {

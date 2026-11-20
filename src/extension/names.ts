@@ -17,5 +17,6 @@ export const TOOL_NAMES = [
 	"team_get_budget",
 	"team_set_budget",
 	"team_set_model",
+	"team_set_attention",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

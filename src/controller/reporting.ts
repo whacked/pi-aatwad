@@ -6,6 +6,7 @@ import { getRun, getAgent, isTerminal } from "./queries.ts";
 import { fail } from "./errors.ts";
 import { obj, str, oneOf, onlyKeys } from "./validate.ts";
 import { postMessage } from "./messaging.ts";
+import { effectiveAttention, setRunAttention } from "./attention.ts";
 
 function authorize(db: DB, p: Principal, runId: string): void {
 	const root = getRun(db, runId).root_agent_id;
@@ -20,11 +21,11 @@ function liveRoot(db: DB, runId: string): string {
 }
 
 export function reportingStatus(db: DB, runId: string, history = false): ReportingStatus {
-	const s = get(db, "SELECT * FROM team_reporting_settings WHERE run_id = ?", runId);
 	const links = all(db, `SELECT l.*, p.root_agent_id AS child_agent_id, s.root_agent_id AS parent_agent_id
 		FROM team_reporting_links l JOIN runs p ON p.id = l.child_run_id JOIN runs s ON s.id = l.parent_run_id
 		WHERE (l.child_run_id = ? OR l.parent_run_id = ?) ${history ? "" : "AND l.closed_at IS NULL"} ORDER BY l.rowid`, runId, runId) as ReportingLink[];
-	return { run_id: runId, wake_on_message: !!s?.wake_on_message, links };
+	// Legacy view of the attention policy: does this root's inbox start turns?
+	return { run_id: runId, wake_on_message: effectiveAttention(db, getRun(db, runId).root_agent_id).on_message === "wake", links };
 }
 
 export function readReporting(ctx: Ctx, p: Principal, runId: string, history = false): ReportingStatus {
@@ -117,6 +118,8 @@ export function changeReporting(ctx: Ctx, p: Principal, runId: string, body: unk
 		if (b.wake_on_message === undefined) fail("INVALID", "wake requires wake_on_message");
 		run(db, "INSERT OR IGNORE INTO team_reporting_settings(run_id) VALUES (?)", runId);
 		if (b.wake_on_message !== undefined) run(db, "UPDATE team_reporting_settings SET wake_on_message = ? WHERE run_id = ?", b.wake_on_message, runId);
+		// The toggle now writes the team attention default (see /team attention).
+		setRunAttention(db, runId, { on_message: b.wake_on_message ? "wake" : "next_turn" });
 		emit(db, { run_id: runId, actor_id: p.actor_id, type: `reporting.${action}`, payload: { wake_on_message: b.wake_on_message } });
 	} else if (action === "connect") connect(db, runId, str(b, "parent_run_id"), p.actor_id);
 	else if (action === "disconnect") {

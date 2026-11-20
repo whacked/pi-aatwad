@@ -17,7 +17,8 @@ import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "report-to", args: "[run_id|none]", help: "make this leader report to another team leader, or disconnect it" },
 	{ name: "join", args: "<run_id>", help: "alias for report-to: this team becomes a sub-team reporting to that leader (no merge, no takeover)" },
-	{ name: "reporting", args: "[--all|dismiss|transfer [run_id]|wake on|off]", help: "inspect, dismiss or transfer reporting links; configure automatic inbox turns" },
+	{ name: "reporting", args: "[--all|dismiss|transfer [run_id]|wake on|off]", help: "inspect, dismiss or transfer reporting links (wake on|off = /team attention on-message)" },
+	{ name: "attention", args: "[team|name|agent_id] [on-message wake|next-turn] [batch 15s] [stall 3m|off] [tick 10m|off] [cap N] [reset]", help: "when idle leaders/members get automatic turns (message wake, stall alerts, check-ins)" },
 	{ name: "help", args: "", help: "show this help" },
 	{ name: "init", args: "[--unlimited] [config-json-path]", help: "create a new organization with this session as root" },
 	{ name: "resume", args: "[run_id] [name|agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
@@ -37,6 +38,9 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi team terminals in tmux" },
 	{ name: "send", args: "[name|agent_id] <message>", help: "send directions to a team member" },
 ];
+
+export { formatAttention, parseAttention, parseDuration } from "../shared/attention-format.ts";
+import { formatAttention, parseAttention } from "../shared/attention-format.ts";
 
 /** Subcommand aliases, resolved before dispatch, completion and --yes handling. */
 export const ALIASES: Record<string, string> = { join: "report-to" };
@@ -136,6 +140,17 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			else throw new Error("usage: /team reporting [--all|dismiss|transfer <run_id>|wake on|off]");
 			if (request.action !== "wake" && !(await confirm(ctx, yes, `Change reporting links for ${id}: ${JSON.stringify(request)}?`))) return;
 			out(ctx, JSON.stringify(await rt.client.setReporting(id, request, { token }), null, 2));
+		},
+
+		attention: async (a, ctx) => {
+			await rt.requireIdentity();
+			const token = await rt.commandToken();
+			const keywords = new Set(["on-message", "batch", "stall", "tick", "cap", "reset"]);
+			const first = a[0] && !keywords.has(a[0]) ? a.shift()! : "team";
+			const target = first === "team" ? { run_id: await runId(ctx) } : { agent_id: await agent(first, ctx) };
+			const patch = parseAttention(a);
+			const view = Object.keys(patch).length ? await rt.client.setAttention(target, patch, { token }) : await rt.client.attention(target, { token });
+			out(ctx, formatAttention(view));
 		},
 
 		"report-to": async (a, ctx, yes) => {
@@ -470,7 +485,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, report-to/join, reporting, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
+		description: "Recursive agent team: init, resume, report-to/join, reporting, attention, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {

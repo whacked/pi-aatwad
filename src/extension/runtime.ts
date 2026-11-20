@@ -17,6 +17,7 @@ import { formatEnvelope } from "./format.ts";
 
 export const IDENTITY_ENTRY = "pi-recursive-team/identity";
 export const INBOX_MESSAGE = "pi-recursive-team/inbox";
+export const ATTENTION_MESSAGE = "pi-recursive-team/attention";
 export const STATUS_KEY = "team";
 export const MAX_SETTLE_CONTINUATIONS = 20;
 export const NOT_ENROLLED = "not enrolled: run /team init (new organization) or /team resume <run_id> (attach to an existing one)";
@@ -706,8 +707,17 @@ export class TeamRuntime {
 			}
 			if (r.desired_state !== "RUNNING") this.ctx?.abort?.();
 			this.lastInboxPending = r.inbox_pending;
+			this.onMessage = r.attention?.on_message;
 			// Managed one-shot workers pick messages up at run start / before settling instead.
-			if (r.inbox_pending > 0 && this.idle() && (!this.identity?.managed || this.ctx?.mode === "tui")) await this.deliverInbox({ triggerTurn: r.desired_state === "RUNNING" && (r.reporting_wake || (this.identity?.managed && this.ctx?.mode === "tui")) });
+			if (!this.interactive() || !this.idle()) return;
+			if (r.wake && r.desired_state === "RUNNING") await this.wakeTurn(r.wake);
+			else if (r.inbox_pending > 0) {
+				if (!r.attention) await this.deliverInbox({ triggerTurn: r.desired_state === "RUNNING" && (r.reporting_wake || this.managedTui()) }); // older controller
+				else if (this.managedTui()) await this.deliverInbox({ triggerTurn: r.desired_state === "RUNNING" && r.attention.on_message === "wake" });
+				else if (r.attention.on_message === "next_turn") await this.deliverInbox({ triggerTurn: false });
+				// on_message=wake: leave messages pending; the controller wakes this session once the batch window passes,
+				// and a human-started turn picks them up in before_agent_start.
+			}
 		} catch (e) {
 			if (this.identity !== identity) return;
 			if (this.handleAgentError(e, identity)) return;
@@ -717,6 +727,33 @@ export class TeamRuntime {
 				/* ignore */
 			}
 		}
+	}
+
+	/** Last effective on_message policy from the controller (undefined: older controller). */
+	onMessage: "wake" | "next_turn" | undefined;
+	private interactive(): boolean {
+		return !!this.identity && (!this.identity.managed || this.ctx?.mode === "tui");
+	}
+	private managedTui(): boolean {
+		return !!this.identity?.managed && this.ctx?.mode === "tui";
+	}
+
+	/**
+	 * Controller-requested turn. Inbox messages ride along; a stall/tick digest is its own message.
+	 * Nothing is sent to the model unless there is something new (the controller suppresses unchanged digests).
+	 */
+	async wakeTurn(wake: import("../shared/protocol.ts").Wake): Promise<void> {
+		const identity = this.identity;
+		if (this.lastInboxPending > 0) await this.deliverInbox({ triggerTurn: !wake.text });
+		if (this.identity !== identity || !wake.text) return;
+		this.pi.sendMessage({ customType: ATTENTION_MESSAGE, content: `Team ${wake.reason === "stall" ? "stall alert" : "check-in"} for ${identity?.agent_id}:\n${wake.text}`, display: true, details: { reason: wake.reason } }, this.idle() ? { triggerTurn: true } : { triggerTurn: true, deliverAs: "followUp" });
+	}
+
+	/** Pi settled: deliver queued messages unless the controller will wake this session after batching. */
+	onSettled(): void {
+		if (!this.interactive() || this.lastInboxPending <= 0) return;
+		if (this.managedTui()) void this.deliverInbox({ triggerTurn: this.onMessage !== "next_turn" });
+		else if (this.onMessage !== "wake") void this.deliverInbox({ triggerTurn: false });
 	}
 
 	seen(): Set<string> {
@@ -855,9 +892,10 @@ export class TeamRuntime {
 		}
 	}
 
-	/** Managed worker, before_agent_start: messages already pending when the run starts ride along with it. */
+	/** before_agent_start: messages already pending when a turn starts (human prompt, wake, or resume launch) ride along with it. */
 	async inboxForRunStart(): Promise<ReturnType<TeamRuntime["inboxMessage"]> | undefined> {
-		if (!this.identity?.managed || this.delivering) return undefined;
+		if (!this.identity || this.delivering) return undefined;
+		if (!this.identity.managed && this.lastInboxPending <= 0) return undefined;
 		const identity = this.identity;
 		this.delivering = true;
 		try {

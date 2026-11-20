@@ -480,3 +480,38 @@ test("root inbox turns require explicit wake setting and a RUNNING desired state
   } finally { rt.stop(); await m.close(); cleanup(); }
  }
 });
+
+test("attention: controller wakes start turns; wake policy leaves messages pending until then; digests are their own message", async () => {
+ const cases: { name: string; hb: Record<string, unknown>; expect: (pi: ReturnType<typeof fakePi>) => void }[] = [
+  { name: "batching", hb: { inbox_pending: 1, attention: { on_message: "wake" } }, expect: (pi) => assert.equal(pi.sent.length, 0, "held for the controller's batched wake") },
+  { name: "message", hb: { inbox_pending: 1, attention: { on_message: "wake" }, wake: { reason: "message" } }, expect: (pi) => assert.deepEqual(pi.sent.map((s) => s.options), [{ triggerTurn: true }]) },
+  { name: "next_turn", hb: { inbox_pending: 1, attention: { on_message: "next_turn" } }, expect: (pi) => assert.deepEqual(pi.sent.map((s) => s.options), [{ deliverAs: "nextTurn" }]) },
+  { name: "stall", hb: { inbox_pending: 0, attention: { on_message: "wake" }, wake: { reason: "stall", text: "- Alpha: idle 4m" } }, expect: (pi) => {
+   assert.equal(pi.sent.length, 1);
+   assert.equal(pi.sent[0].message.customType, "pi-recursive-team/attention");
+   assert.match(pi.sent[0].message.content, /stall alert[\s\S]*Alpha: idle 4m/);
+   assert.deepEqual(pi.sent[0].options, { triggerTurn: true });
+  } },
+  { name: "nothing", hb: { inbox_pending: 0, attention: { on_message: "wake" } }, expect: (pi) => assert.equal(pi.sent.length, 0, "no update, no model message") },
+ ];
+ for (const c of cases) {
+  __resetProcessStateForTests();
+  const { paths, cleanup } = makeState();
+  const m = await startMock(paths, { operatorToken: "op" });
+  m.route("POST", "/runs/run1/attach", () => ({ body: { run_id: "run1", agent_id: "ag-r", session_id: "s", token: "rt" } }));
+  m.route("GET", "/me", () => ({ body: me({ agent_id: "ag-r", role: "root" }) }));
+  let beats = 0;
+  m.route("POST", "/sessions/heartbeat", () => { beats++; return { body: { lease_until: "x", desired_state: "RUNNING", ...c.hb } }; });
+  m.route("GET", "/inbox", () => ({ body: { messages: [env1(`att-${c.name}`)] } }));
+  m.route("POST", /ack$/, () => ({ body: { acked: true } }));
+  const pi = fakePi();
+  pi.appendEntry(IDENTITY_ENTRY, { version: 1, run_id: "run1", agent_id: "ag-r", pi_session_id: `pis-${c.name}`, managed: false });
+  const rt = new TeamRuntime(pi as any, { paths, env: {}, heartbeatMs: 60_000 });
+  try {
+   await rt.start(fakeCtx(pi, `pis-${c.name}`));
+   await waitFor(() => beats >= 1, 3_000, "first heartbeat");
+   await new Promise((r) => setTimeout(r, 50));
+   c.expect(pi);
+  } finally { rt.stop(); await m.close(); cleanup(); }
+ }
+});

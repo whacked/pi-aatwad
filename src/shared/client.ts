@@ -37,7 +37,12 @@ import type {
 	ErrorCode,
 	EventView,
 	HealthResponse,
+	AttentionPolicy,
+	AttentionView,
 	HeartbeatRequest,
+	JoinRequest,
+	LeaveRequest,
+	LeaveResponse,
 	HeartbeatResponse,
 	InboxResponse,
 	InspectResponse,
@@ -63,6 +68,9 @@ import { LOADED_VERSION } from "./version.ts";
 // ---------------------------------------------------------------------------
 
 /** Controller answered with an ApiError body (or a non-JSON error). */
+/** Partial policy update; reset clears fields configured at that level first. */
+export type AttentionPatch = Partial<AttentionPolicy> & { reset?: boolean };
+
 export class TeamApiError extends Error {
 	code: ErrorCode;
 	status: number;
@@ -601,6 +609,14 @@ export class TeamClient {
 	attach(runId: string, req: AttachRequest, o: CallOptions): Promise<AttachResponse> {
 		return this.post(`/runs/${enc(runId)}/attach`, req, o);
 	}
+	/** Operator: an externally started session becomes a new member (see JoinRequest). */
+	join(runId: string, req: JoinRequest, o: CallOptions): Promise<AttachResponse> {
+		return this.post(`/runs/${enc(runId)}/join`, req, o);
+	}
+	/** Agent: end this session; the agent stays resumable and its manager is notified. */
+	leave(req: LeaveRequest = {}, o?: CallOptions): Promise<LeaveResponse> {
+		return this.post("/sessions/leave", req, o);
+	}
 	stopTeam(runId: string, o: CallOptions): Promise<TeamLifecycleResponse> {
 		return this.post(`/runs/${enc(runId)}/stop`, {}, o);
 	}
@@ -624,6 +640,13 @@ export class TeamClient {
 	}
 	setReporting(runId: string, req: ReportingRequest, o?: CallOptions): Promise<ReportingStatus> {
 		return this.post(`/runs/${enc(runId)}/reporting`, req, o);
+	}
+	/** Team-wide attention defaults (target "run") or one agent's override. */
+	attention(target: { run_id: string } | { agent_id: string }, o?: CallOptions): Promise<AttentionView> {
+		return this.get("run_id" in target ? `/runs/${enc(target.run_id)}/attention` : `/agents/${enc(target.agent_id)}/attention`, o);
+	}
+	setAttention(target: { run_id: string } | { agent_id: string }, patch: AttentionPatch, o?: CallOptions): Promise<AttentionView> {
+		return this.post("run_id" in target ? `/runs/${enc(target.run_id)}/attention` : `/agents/${enc(target.agent_id)}/attention`, patch, o);
 	}
 	// enrollment (no bearer)
 	enroll(req: EnrollRequest, o: CallOptions = {}): Promise<EnrollResponse> {

@@ -23,6 +23,7 @@ import type {
 import { obj, str, int, onlyKeys } from "./validate.ts";
 import { buildRunConfig, modelIneligibility } from "./config.ts";
 import { hashToken, issueSessionToken, revokeAgentCredentials } from "./auth.ts";
+import { decideWake, effectiveAttention, noteActivity } from "./attention.ts";
 import { getAgent, getAllocation, getAncestry, getChildren, getCurrentManager, getReportingHistory, getRun, getSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
 import { budgetPool, budgetView, ownBudgetUsd } from "./budgets.ts";
 import { inboxPending, postMessage, requireAgent } from "./messaging.ts";
@@ -45,7 +46,7 @@ function nextGeneration(db: DB, agentId: string): number {
 export function newSessionAttempt(
 	ctx: Ctx,
 	a: Row,
-	s: { status: string; provider?: string | null; model?: string | null; pi_session_id?: string | null; pi_session_path?: string | null; spawn_intent_id?: string | null },
+	s: { status: string; provider?: string | null; model?: string | null; pi_session_id?: string | null; pi_session_path?: string | null; spawn_intent_id?: string | null; harness?: string | null },
 ): { session_id: string; generation: number } {
 	const db = ctx.db;
 	const id = newId("ses");
@@ -56,9 +57,10 @@ export function newSessionAttempt(
 	run(
 		db,
 		`INSERT INTO sessions(id, agent_id, harness, provider, model, status, started_at, pi_session_path, pi_session_id, controller_epoch, generation, spawn_intent_id)
-		 VALUES (?,?, 'pi', ?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id,
 		a.id,
+		s.harness ?? "pi",
 		s.provider ?? a.provider ?? "default",
 		s.model ?? a.model ?? "default",
 		s.status,
@@ -79,7 +81,8 @@ export function createRun(ctx: Ctx, p: Principal, body: unknown): CreateRunRespo
 	const b = obj(body);
 	onlyKeys(b, ["config", "root"]);
 	const root = obj(b.root);
-	onlyKeys(root, ["role", "pi_session_id", "pi_session_path", "cwd", "provider", "model"]);
+	onlyKeys(root, ["role", "pi_session_id", "pi_session_path", "cwd", "provider", "model", "harness"]);
+	const harness = harnessName(root);
 	const role = str(root, "role");
 	const cwd = str(root, "cwd");
 	if (!isAbsolute(cwd)) fail("INVALID", "root.cwd must be absolute");
@@ -110,7 +113,7 @@ export function createRun(ctx: Ctx, p: Principal, body: unknown): CreateRunRespo
 	run(db, "UPDATE runs SET root_agent_id = ? WHERE id = ?", agentId, runId);
 	run(db, "INSERT INTO allocations(agent_id, limits_json) VALUES (?,?)", agentId, JSON.stringify(cfg.root_envelope));
 	const a = getAgent(db, agentId);
-	const s = newSessionAttempt(ctx, a, { status: "LIVE", pi_session_id: str(root, "pi_session_id", { optional: true }), pi_session_path: str(root, "pi_session_path", { optional: true }) });
+	const s = newSessionAttempt(ctx, a, { status: "LIVE", harness, pi_session_id: str(root, "pi_session_id", { optional: true }), pi_session_path: str(root, "pi_session_path", { optional: true }) });
 	run(db, "UPDATE sessions SET enrolled_at = ? WHERE id = ?", ts, s.session_id);
 	const token = issueSessionToken(db, { run_id: runId, agent_id: agentId, session_id: s.session_id, generation: s.generation });
 	emit(db, { run_id: runId, actor_id: "operator", type: "run.created", entity_id: runId, payload: { root_agent_id: agentId, limits: cfg.limits, models: cfg.models.map((m) => m.id) } });
@@ -135,7 +138,7 @@ export function attach(ctx: Ctx, p: Principal, runId: string, body: unknown): At
 	requireOperator(p);
 	const db = ctx.db;
 	const b = obj(body ?? {});
-	onlyKeys(b, ["agent_id", "pi_session_id", "pi_session_path", "mode"]);
+	onlyKeys(b, ["agent_id", "pi_session_id", "pi_session_path", "mode", "harness"]);
 	if (b.mode !== undefined && b.mode !== "attach") fail("FORBIDDEN", "only mode=attach is supported in v1 (fork requires approval)");
 	const runRow = getRun(db, runId);
 	assertAttachable(db, runId);
@@ -143,7 +146,7 @@ export function attach(ctx: Ctx, p: Principal, runId: string, body: unknown): At
 	const a = getAgent(db, agentId);
 	if (a.run_id !== runId) fail("NOT_FOUND", "agent not in run");
 	if (isTerminal(a.status)) fail("CONFLICT", `agent is ${a.status}`);
-	const s = newSessionAttempt(ctx, a, { status: "LIVE", pi_session_id: str(b, "pi_session_id", { optional: true }), pi_session_path: str(b, "pi_session_path", { optional: true }) });
+	const s = newSessionAttempt(ctx, a, { status: "LIVE", pi_session_id: str(b, "pi_session_id", { optional: true }), pi_session_path: str(b, "pi_session_path", { optional: true }), harness: harnessName(b) });
 	const ts = nowIso();
 	run(db, "UPDATE sessions SET enrolled_at = ? WHERE id = ?", ts, s.session_id);
 	run(
@@ -156,6 +159,13 @@ export function attach(ctx: Ctx, p: Principal, runId: string, body: unknown): At
 	const token = issueSessionToken(db, { run_id: runId, agent_id: agentId, session_id: s.session_id, generation: s.generation });
 	emit(db, { run_id: runId, actor_id: "operator", type: "session.attached", entity_id: agentId, payload: { session_id: s.session_id, generation: s.generation } });
 	return { run_id: runId, agent_id: agentId, session_id: s.session_id, token };
+}
+
+/** Session harness label: pi (default) or another agent harness such as claude-code. */
+export function harnessName(b: Record<string, unknown>): string {
+	const h = str(b, "harness", { optional: true }) ?? "pi";
+	if (!/^[a-z][a-z0-9-]{0,31}$/.test(h)) fail("INVALID", "harness must be a short lowercase name such as pi or claude-code");
+	return h;
 }
 
 export function enroll(ctx: Ctx, body: unknown): EnrollResponse {
@@ -235,7 +245,16 @@ export function heartbeat(ctx: Ctx, p: Principal, body: unknown): HeartbeatRespo
 	}
 	if (before.observed_state !== "LIVE") emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "agent.reconnected", entity_id: a.actor_id, payload: { from: before.observed_state, session_id: a.session_id } });
 	const change = parseJson<{ model_change?: import("../shared/protocol.ts").ModelChange }>(before.metadata_json, {}).model_change;
-	return { reporting_wake: getRun(db, a.run_id).root_agent_id === a.actor_id && reportingStatus(db, a.run_id).wake_on_message, lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state, ...(change ? { model_change: change } : {}) };
+	const busy = b.busy === true;
+	noteActivity(db, a.actor_id, busy);
+	const policy = effectiveAttention(db, a.actor_id);
+	const wake = decideWake(db, a.actor_id, busy);
+	return {
+		reporting_wake: getRun(db, a.run_id).root_agent_id === a.actor_id && policy.on_message === "wake",
+		attention: { on_message: policy.on_message },
+		...(wake ? { wake } : {}),
+		lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state, ...(change ? { model_change: change } : {}),
+	};
 }
 
 /** POST /sessions/usage (UsageReportRequest). */

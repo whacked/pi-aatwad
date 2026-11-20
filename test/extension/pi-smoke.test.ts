@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TOOL_NAMES } from "../../src/extension/names.ts";
+const TOOLS_ALL = new RegExp(`tools \\(${TOOL_NAMES.length}/${TOOL_NAMES.length}\\)`);
 import { IDENTITY_ENTRY } from "../../src/extension/runtime.ts";
 import { ENV_ENROLL_FILE } from "../../src/shared/protocol.ts";
 import { makeState, shortTmp, startMock } from "./helpers.ts";
@@ -125,7 +126,7 @@ describe("real Pi smoke", { skip }, () => {
 
 			run.send({ id: "help", type: "prompt", message: "/team help" });
 			const help = await run.waitFor(notify(/pi-recursive-team/), 10_000, "/team help notify");
-			assert.match(help.message, /tools \(17\/17\)/);
+			assert.match(help.message, TOOLS_ALL);
 			for (const t of TOOL_NAMES) assert.ok(help.message.includes(t), `tool ${t} registered`);
 			assert.match(help.message, /identity: not enrolled/);
 			const disp = await run.waitFor(response("help"));
@@ -255,7 +256,7 @@ describe("real Pi smoke", { skip }, () => {
 				assert.ok(team, "team command from installed package");
 				assert.equal(team.sourceInfo.origin, "package");
 				run.send({ id: "help", type: "prompt", message: "/team help" });
-				const help = await run.waitFor(notify(/tools \(17\/17\)/), 10_000, "help");
+				const help = await run.waitFor(notify(TOOLS_ALL), 10_000, "help");
 				assert.ok(help);
 				assertNoExtensionErrors(run);
 			} finally {
@@ -361,7 +362,7 @@ describe("real Pi smoke", { skip }, () => {
 			const cmds = await run.waitFor(response("cmds"), 20_000, "get_commands");
 			assert.equal(cmds.data.commands.filter((c: any) => c.name === "team").length, 1);
 			run.send({ id: "help", type: "prompt", message: "/team help" });
-			await run.waitFor(notify(/tools \(17\/17\)/), 10_000, "help");
+			await run.waitFor(notify(TOOLS_ALL), 10_000, "help");
 		} finally {
 			await run.close();
 			cleanup();

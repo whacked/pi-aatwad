@@ -257,6 +257,36 @@ export interface RunConfig {
 	deadline_policy?: DeadlinePolicy;
 	/** Latest whole-team operator operation (stop/resume/remove). Absent: never stopped. */
 	team_lifecycle?: TeamLifecycleState;
+	/** Run-wide attention defaults; agents may override in metadata.attention. Missing fields use DEFAULT_ATTENTION. */
+	attention?: Partial<AttentionPolicy>;
+}
+
+/**
+ * When an agent's model gets a turn without a human prompt. Liveness heartbeats are separate and never
+ * reach the model. The controller decides wakes so every harness (Pi, Claude Code) follows the same policy.
+ */
+export interface AttentionPolicy {
+	/** wake: start a turn for new messages; next_turn: hold them for the next human-started turn. */
+	on_message: "wake" | "next_turn";
+	/** Group messages: wake once the oldest undelivered message is at least this old. */
+	batch_seconds: number;
+	/** Wake a manager whose direct reports have all been idle this long while work is open. 0 = off. */
+	stall_seconds: number;
+	/** Periodic status check-in, sent only when the team status changed since the last one. 0 = off. */
+	tick_seconds: number;
+	/** Upper bound on automatic turns per rolling hour. 0 = no automatic turns. */
+	max_wakes_per_hour: number;
+}
+export const DEFAULT_ATTENTION: AttentionPolicy = { on_message: "wake", batch_seconds: 15, stall_seconds: 180, tick_seconds: 0, max_wakes_per_hour: 20 };
+export type WakeReason = "message" | "stall" | "tick";
+export interface Wake { reason: WakeReason; /** Status digest for stall/tick wakes. */ text?: string }
+/** GET|POST /runs/:id/attention and /agents/:id/attention */
+export interface AttentionView {
+	run_id: string;
+	agent_id?: string;
+	/** Fields explicitly set at this level. */
+	configured: Partial<AttentionPolicy>;
+	effective: AttentionPolicy;
 }
 /** Persisted with the run; `suspended` and `pending` are controller-internal. */
 export interface TeamLifecycleState {
@@ -293,7 +323,7 @@ export interface HealthResponse {
 /** POST /runs (operator). Explicit /team init. */
 export interface CreateRunRequest {
 	config?: Partial<RunConfig>; // merged over defaults
-	root: { role: string; pi_session_id?: string; pi_session_path?: string; cwd: string; provider?: string; model?: string };
+	root: { role: string; pi_session_id?: string; pi_session_path?: string; cwd: string; provider?: string; model?: string; harness?: string };
 }
 export interface CreateRunResponse {
 	run_id: string;
@@ -326,11 +356,31 @@ export interface RunSummary {
 /** POST /runs/:id/attach (operator). Explicit /team resume. New session attempt; fences the old one. */
 export interface AttachRequest {
 	agent_id?: string; // default: run root
+	/** Harness of the attaching session (default "pi"), e.g. "claude-code". */
+	harness?: string;
 	pi_session_id?: string;
 	pi_session_path?: string;
 	/** "attach" = become this agent; "fork" = create a new agent reporting to agent_id's manager (requires approval -> not in v1, returns FORBIDDEN) */
 	mode?: "attach";
 }
+/**
+ * POST /runs/:id/join (operator): an externally started session (e.g. Claude Code) becomes a NEW member
+ * under manager_id (default: root) with normal governance. The controller never launches or relaunches a
+ * process for it; when it leaves, the agent stays resumable via /runs/:id/attach.
+ */
+export interface JoinRequest {
+	manager_id?: string;
+	name?: string;
+	responsibility?: string;
+	harness: string;
+	provider: string;
+	model: string;
+	cwd?: string;
+	max_cost_usd?: number;
+}
+/** POST /sessions/leave (agent): end this session. The agent and its tasks remain; managers/humans decide closure. */
+export interface LeaveRequest { reason?: string }
+export interface LeaveResponse { agent_id: string; session_id: string; notified: string | null }
 export interface AttachResponse {
 	run_id: string;
 	agent_id: string;
@@ -368,7 +418,12 @@ export interface HeartbeatRequest {
 }
 export interface ModelChange { request_id: string; provider: string; model: string }
 export interface HeartbeatResponse {
+	/** Legacy: true when this root's messages should start turns. Superseded by `attention` + `wake`. */
 	reporting_wake?: boolean;
+	/** Effective message policy for this agent. */
+	attention?: { on_message: AttentionPolicy["on_message"] };
+	/** Present when the controller wants this (idle) agent to take a turn now. */
+	wake?: Wake;
 	model_change?: ModelChange;
 	lease_until: string;
 	inbox_pending: number;
@@ -467,7 +522,10 @@ export interface DelegateTaskRequest {
 export interface DelegateTaskResponse {
 	task_id: string;
 	message_id: string;
+	/** Handoff acknowledgement: the controller stored the task; the owner claims it on its next idle heartbeat. */
+	handoff?: Handoff;
 }
+export interface Handoff { owner_id: string; owner_live: boolean; owner_busy: boolean | null; desired_state: DesiredState }
 /** POST /tasks/:id/progress (agent; task owner). Sends task.progress to the owner's manager. */
 export interface TaskProgressRequest {
 	note: string;

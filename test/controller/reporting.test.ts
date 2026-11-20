@@ -37,7 +37,11 @@ test("five independent projects connect without identity or budget changes; root
   assert.equal((await h.call("GET", "/me", { token: parent.token })).body.reporting.links.length, 5);
   const heartbeat = await h.call("POST", "/sessions/heartbeat", { token: parent.token, body: {} });
   assert.equal(heartbeat.body.reporting_wake, true);
-  assert.equal((await h.call("POST", "/sessions/heartbeat", { token: projects[0].token, body: {} })).body.reporting_wake, false);
+  assert.equal((await h.call("POST", "/sessions/heartbeat", { token: projects[0].token, body: {} })).body.reporting_wake, true, "message wake is the default");
+  ok(await change(h, projects[0], { action: "wake", wake_on_message: false }));
+  const quiet = (await h.call("POST", "/sessions/heartbeat", { token: projects[0].token, body: {} })).body;
+  assert.equal(quiet.reporting_wake, false);
+  assert.deepEqual(quiet.attention, { on_message: "next_turn" });
   ok(await send(h, parent, projects[0]));
   const reply = (await inbox(h, projects[0])).find((m: any) => m.from === parent.root && m.type === "question");
   assert.equal(reply.payload.text, "Status?");
