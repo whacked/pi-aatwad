@@ -129,8 +129,8 @@ export function listRuns(ctx: Ctx, p: Principal): RunListResponse {
 		FROM runs r LEFT JOIN agents root ON root.id = r.root_agent_id ORDER BY r.created_at`);
 	return { runs: rows.filter((r) => !isRemoved(parseJson<RunConfig>(r.config_json, {} as RunConfig))).map((r) => ({
 		...(["STOPPED", "CLEANING"].includes(parseJson<RunConfig>(r.config_json, {} as RunConfig).team_lifecycle?.state ?? "") ? { stopped: true } : {}),
-		reports_to_run_id: get(ctx.db, "SELECT parent_run_id FROM team_reporting_links WHERE child_run_id = ? AND closed_at IS NULL", r.id)?.parent_run_id ?? null,
-		reporting_teams: Number(get(ctx.db, "SELECT COUNT(*) AS n FROM team_reporting_links WHERE parent_run_id = ? AND closed_at IS NULL", r.id)!.n),
+		reports_to_run_id: get(ctx.db, "SELECT parent_run_id FROM reporting_edges WHERE run_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL", r.id)?.parent_run_id ?? null,
+		reporting_teams: Number(get(ctx.db, "SELECT COUNT(*) AS n FROM reporting_edges WHERE parent_run_id = ? AND valid_to IS NULL", r.id)!.n),
 		run_id: r.id, status: r.root_status === "CANCELLED" ? "CANCELLED" : r.status, root_status: r.root_status, active_members: Number(r.active_members), live_members: Number(r.live_members), root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
 }
 
@@ -312,7 +312,7 @@ export function tree(ctx: Ctx, p: Principal, runId: string, activeOnly = false):
 	const db = ctx.db;
 	const r = getRun(db, runId);
 	const build = (id: string): TreeNode => ({ ...nodeOf(db, getAgent(db, id)), children: getChildren(db, id).filter((child) => !activeOnly || !isTerminal(getAgent(db, child).status)).map(build) });
-	const history = all(db, "SELECT child_id, parent_id, valid_from, valid_to FROM reporting_edges WHERE run_id = ? ORDER BY valid_from, rowid", runId) as TreeResponse["history"];
+	const history = all(db, "SELECT child_id, parent_id, valid_from, valid_to FROM reporting_edges WHERE run_id = ? AND parent_run_id IS NULL ORDER BY valid_from, rowid", runId) as TreeResponse["history"];
 	return { run_id: runId, topology_version: r.topology_version, root: build(r.root_agent_id), history };
 }
 

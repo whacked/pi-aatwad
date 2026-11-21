@@ -29,7 +29,7 @@ function assertCanTarget(db: DB, p: Principal, target: string): void {
 
 function moveEdge(db: DB, runId: string, child: string, newParent: string, version: number, reason: string): void {
 	const ts = nowIso();
-	run(db, "UPDATE reporting_edges SET valid_to = ?, to_version = ? WHERE child_id = ? AND valid_to IS NULL", ts, version, child);
+	run(db, "UPDATE reporting_edges SET valid_to = ?, to_version = ? WHERE child_id = ? AND parent_run_id IS NULL AND valid_to IS NULL", ts, version, child);
 	run(db, "INSERT INTO reporting_edges(id, run_id, parent_id, child_id, valid_from, from_version, reason) VALUES (?,?,?,?,?,?,?)", newId("edge"), runId, newParent, child, ts, version, reason);
 }
 

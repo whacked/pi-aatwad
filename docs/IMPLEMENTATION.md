@@ -355,3 +355,16 @@ refreshed from `/me` on heartbeat and after turns. Tests cover the daemon, the a
 client in a real PTY, a real Pi member, and a real leader Pi switching into a member and
 back.
 
+## Unified links, phase 1 (schema 5, v0.1.26)
+
+First step of docs/design/unified-team-links.md. `reporting_edges` is now the one link
+table: rows with `parent_run_id` NULL are links inside a team (manager edges, as before);
+rows with `parent_run_id` set link a team's agent under another team's agent. Each row
+records `origin` (`spawned` or `joined`) and `terminatable`. Migration 005 moves
+`team_reporting_links` into it as joined, non-terminatable links between the roots,
+marks members added by `POST /runs/:id/join` as joined and non-terminatable, rebuilds
+`team_reporting_messages` to reference the link rows, and leaves a read-only
+`team_reporting_links` view for compatibility. Behavior is unchanged: ancestry, subtree,
+manager and budget walks only follow in-team links, and cross-team links still grant
+coordination only. Reporting views now include `origin` and `terminatable`.
+

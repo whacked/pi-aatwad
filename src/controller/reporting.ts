@@ -1,4 +1,5 @@
-// Durable cross-run coordination. Never changes reporting_edges, grants or budgets.
+// Durable cross-team links: reporting_edges rows whose parent is another team's agent
+// (parent_run_id set). They never change in-team edges, grants or budgets.
 import { all, get, run, emit, newId, nowIso, type DB, type Row } from "./db.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type { ReportingLink, ReportingStatus } from "../shared/protocol.ts";
@@ -7,6 +8,9 @@ import { fail } from "./errors.ts";
 import { obj, str, oneOf, onlyKeys } from "./validate.ts";
 import { postMessage } from "./messaging.ts";
 import { effectiveAttention, setRunAttention } from "./attention.ts";
+
+const LINK_COLUMNS = `e.id, e.run_id AS child_run_id, e.child_id AS child_agent_id, e.parent_run_id, e.parent_id AS parent_agent_id,
+	e.valid_from AS created_at, e.valid_to AS closed_at, e.close_reason, e.origin, e.terminatable`;
 
 function authorize(db: DB, p: Principal, runId: string): void {
 	const root = getRun(db, runId).root_agent_id;
@@ -21,9 +25,8 @@ function liveRoot(db: DB, runId: string): string {
 }
 
 export function reportingStatus(db: DB, runId: string, history = false): ReportingStatus {
-	const links = all(db, `SELECT l.*, p.root_agent_id AS child_agent_id, s.root_agent_id AS parent_agent_id
-		FROM team_reporting_links l JOIN runs p ON p.id = l.child_run_id JOIN runs s ON s.id = l.parent_run_id
-		WHERE (l.child_run_id = ? OR l.parent_run_id = ?) ${history ? "" : "AND l.closed_at IS NULL"} ORDER BY l.rowid`, runId, runId) as ReportingLink[];
+	const links = all(db, `SELECT ${LINK_COLUMNS} FROM reporting_edges e
+		WHERE e.parent_run_id IS NOT NULL AND (e.run_id = ? OR e.parent_run_id = ?) ${history ? "" : "AND e.valid_to IS NULL"} ORDER BY e.rowid`, runId, runId).map((l) => ({ ...l, terminatable: !!l.terminatable })) as ReportingLink[];
 	// Legacy view of the attention policy: does this root's inbox start turns?
 	return { run_id: runId, wake_on_message: effectiveAttention(db, getRun(db, runId).root_agent_id).on_message === "wake", links };
 }
@@ -35,14 +38,18 @@ export function readReporting(ctx: Ctx, p: Principal, runId: string, history = f
 
 /** Only linked roots can exchange coordination messages; members receive no cross-run authority. */
 export function coordinationLink(db: DB, from: string, to: string): Row | undefined {
-	return get(db, `SELECT l.* FROM team_reporting_links l
-		JOIN runs p ON p.id = l.child_run_id JOIN runs s ON s.id = l.parent_run_id
-		WHERE l.closed_at IS NULL AND ((p.root_agent_id = ? AND s.root_agent_id = ?) OR (s.root_agent_id = ? AND p.root_agent_id = ?))`, from, to, from, to);
+	return get(db, `SELECT ${LINK_COLUMNS} FROM reporting_edges e
+		WHERE e.parent_run_id IS NOT NULL AND e.valid_to IS NULL AND ((e.child_id = ? AND e.parent_id = ?) OR (e.parent_id = ? AND e.child_id = ?))`, from, to, from, to);
+}
+
+/** The child team's active link to another team, if any. */
+function activeLink(db: DB, childRun: string): Row | undefined {
+	return get(db, `SELECT ${LINK_COLUMNS} FROM reporting_edges e WHERE e.run_id = ? AND e.parent_run_id IS NOT NULL AND e.valid_to IS NULL`, childRun);
 }
 
 function notice(db: DB, link: Row, kind: string, extra: Record<string, unknown> = {}, tracked = false): void {
-	const child = getRun(db, link.child_run_id).root_agent_id as string;
-	const parent = getRun(db, link.parent_run_id).root_agent_id as string;
+	const child = link.child_agent_id as string;
+	const parent = link.parent_agent_id as string;
 	for (const [to, from, runId] of [[child, parent, link.child_run_id], [parent, child, link.parent_run_id]]) {
 		if (isTerminal(getAgent(db, to).status)) continue;
 		const id = postMessage(db, { run_id: runId, from, to, type: "system.notice", payload: {
@@ -59,7 +66,7 @@ function audit(db: DB, link: Row, actor: string, type: string, extra: Record<str
 
 function closeLink(db: DB, link: Row, actor: string, reason: string): void {
 	const ts = nowIso();
-	run(db, "UPDATE team_reporting_links SET closed_at = ?, close_reason = ? WHERE id = ? AND closed_at IS NULL", ts, reason, link.id);
+	run(db, "UPDATE reporting_edges SET valid_to = ?, close_reason = ? WHERE id = ? AND valid_to IS NULL", ts, reason, link.id);
 	// History stays intact. Unconsumed coordination requests must not arrive as fresh instructions later.
 	const pending = all(db, `SELECT r.message_id FROM team_reporting_messages r
 		JOIN messages m ON m.id = r.message_id JOIN deliveries d ON d.message_id = m.id
@@ -91,13 +98,16 @@ function connect(db: DB, childRun: string, parentRun: string, actor: string): vo
 	while (cursor) {
 		if (cursor === childRun || seen.has(cursor)) fail("CONFLICT", "reporting link would create a cycle");
 		seen.add(cursor);
-		cursor = get(db, "SELECT parent_run_id FROM team_reporting_links WHERE child_run_id = ? AND closed_at IS NULL", cursor)?.parent_run_id;
+		cursor = activeLink(db, cursor)?.parent_run_id;
 	}
-	const current = get(db, "SELECT * FROM team_reporting_links WHERE child_run_id = ? AND closed_at IS NULL", childRun);
+	const current = activeLink(db, childRun);
 	if (current?.parent_run_id === parentRun) return;
 	if (current) fail("CONFLICT", "team already reports to another leader; disconnect it first");
-	const link = { id: newId("report"), child_run_id: childRun, parent_run_id: parentRun, created_at: nowIso() };
-	run(db, "INSERT INTO team_reporting_links(id, child_run_id, parent_run_id, created_at) VALUES (?,?,?,?)", link.id, childRun, parentRun, link.created_at);
+	const parent = getRun(db, parentRun).root_agent_id as string;
+	const link = { id: newId("report"), child_run_id: childRun, child_agent_id: child, parent_run_id: parentRun, parent_agent_id: parent, created_at: nowIso() };
+	// A join: dismissing the child only severs this link unless an operator marks it terminatable.
+	run(db, `INSERT INTO reporting_edges(id, run_id, parent_id, child_id, valid_from, reason, parent_run_id, origin, terminatable)
+		VALUES (?,?,?,?,?,?,?, 'joined', 0)`, link.id, childRun, parent, child, link.created_at, "reporting link", parentRun);
 	const tasks = all(db, "SELECT id AS task_id, title, status FROM tasks WHERE run_id = ? AND status NOT IN ('DONE','FAILED','CANCELLED') ORDER BY created_at LIMIT 30", childRun);
 	const members = all(db, "SELECT id AS agent_id, role, status, observed_state FROM agents WHERE run_id = ? AND status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') ORDER BY created_at LIMIT 30", childRun);
 	const latest = all(db, "SELECT type, payload_json, created_at FROM events WHERE run_id = ? AND type IN ('task.progress','task.completed') ORDER BY seq DESC LIMIT 5", childRun);
@@ -123,7 +133,7 @@ export function changeReporting(ctx: Ctx, p: Principal, runId: string, body: unk
 		emit(db, { run_id: runId, actor_id: p.actor_id, type: `reporting.${action}`, payload: { wake_on_message: b.wake_on_message } });
 	} else if (action === "connect") connect(db, runId, str(b, "parent_run_id"), p.actor_id);
 	else if (action === "disconnect") {
-		const link = get(db, "SELECT * FROM team_reporting_links WHERE child_run_id = ? AND closed_at IS NULL", runId);
+		const link = activeLink(db, runId);
 		if (link) closeLink(db, link, p.actor_id, reason);
 	} else if (action === "dismiss") {
 		for (const link of reportingStatus(db, runId).links) closeLink(db, link, p.actor_id, reason);
@@ -141,7 +151,7 @@ export function changeReporting(ctx: Ctx, p: Principal, runId: string, body: unk
 			connect(db, link.child_run_id, destination, p.actor_id);
 			const to = getRun(db, destination).root_agent_id;
 			const handoffId = postMessage(db, { run_id: destination, from: getRun(db, runId).root_agent_id, to, type: "system.notice", payload: { kind: "reporting.handoff", previous_parent_run_id: runId, child_run_id: link.child_run_id, reference_only: true, recent_messages: messages, instruction: "Reconstruct consolidated status and unresolved questions from this reference history, then confirm current facts with the reporting leader." } });
-			const newLink = get(db, "SELECT id FROM team_reporting_links WHERE child_run_id = ? AND closed_at IS NULL", link.child_run_id)!;
+			const newLink = activeLink(db, link.child_run_id)!;
 			run(db, "INSERT INTO team_reporting_messages(message_id, link_id) VALUES (?,?)", handoffId, newLink.id);
 		}
 		emit(db, { run_id: runId, actor_id: p.actor_id, type: "reporting.transferred", payload: { parent_run_id: destination, teams: links.map((l) => l.child_run_id) } });

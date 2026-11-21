@@ -68,9 +68,10 @@ export function getAllocation(db: DB, agentId: string): AllocationView {
 	};
 }
 
+/** Links inside a team. Links to another team (parent_run_id set) carry no in-team authority or budget. */
 function edgeFilter(atVersion?: number): { sql: string; params: unknown[] } {
-	if (atVersion === undefined) return { sql: "e.valid_to IS NULL", params: [] };
-	return { sql: "e.from_version <= ? AND (e.to_version IS NULL OR e.to_version > ?)", params: [atVersion, atVersion] };
+	if (atVersion === undefined) return { sql: "e.parent_run_id IS NULL AND e.valid_to IS NULL", params: [] };
+	return { sql: "e.parent_run_id IS NULL AND e.from_version <= ? AND (e.to_version IS NULL OR e.to_version > ?)", params: [atVersion, atVersion] };
 }
 
 /** Ancestors nearest-first (parent, grandparent, ..., root). Excludes the agent itself. */
@@ -101,15 +102,15 @@ export function getSubtree(db: DB, agentId: string, atVersion?: number): string[
 }
 
 export function getChildren(db: DB, agentId: string): string[] {
-	return all(db, "SELECT child_id FROM reporting_edges WHERE parent_id = ? AND valid_to IS NULL ORDER BY valid_from, child_id", agentId).map((r) => r.child_id);
+	return all(db, "SELECT child_id FROM reporting_edges WHERE parent_id = ? AND parent_run_id IS NULL AND valid_to IS NULL ORDER BY valid_from, child_id", agentId).map((r) => r.child_id);
 }
 
 export function getCurrentManager(db: DB, agentId: string): string | null {
-	return get(db, "SELECT parent_id FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", agentId)?.parent_id ?? null;
+	return get(db, "SELECT parent_id FROM reporting_edges WHERE child_id = ? AND parent_run_id IS NULL AND valid_to IS NULL", agentId)?.parent_id ?? null;
 }
 
 export function getReportingHistory(db: DB, agentId: string): { parent_id: string; valid_from: string; valid_to: string | null; from_version: number | null; to_version: number | null; reason: string | null }[] {
-	return all(db, "SELECT parent_id, valid_from, valid_to, from_version, to_version, reason FROM reporting_edges WHERE child_id = ? ORDER BY valid_from, rowid", agentId) as never;
+	return all(db, "SELECT parent_id, valid_from, valid_to, from_version, to_version, reason FROM reporting_edges WHERE child_id = ? AND parent_run_id IS NULL ORDER BY valid_from, rowid", agentId) as never;
 }
 
 export function getAgentSessions(db: DB, agentId: string): Row[] {

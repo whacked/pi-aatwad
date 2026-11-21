@@ -27,7 +27,8 @@ test("five independent projects connect without identity or budget changes; root
    assert.equal((await h.call("GET", "/me", { token: t.token })).body.reporting.links[0].parent_agent_id, parent.root);
   }
   assert.equal(sql(h, "SELECT * FROM team_reporting_links WHERE closed_at IS NULL").length, 5);
-  assert.equal(sql(h, "SELECT * FROM reporting_edges").length, 0);
+  assert.equal(sql(h, "SELECT * FROM reporting_edges WHERE parent_run_id IS NULL").length, 0, "no in-team edges change");
+  assert.equal(sql(h, "SELECT * FROM reporting_edges WHERE parent_run_id IS NOT NULL AND valid_to IS NULL AND origin = 'joined' AND terminatable = 0").length, 5, "each link is a joined, non-terminatable link");
   await h.restart({ crash: true });
   const messages = await inbox(h, parent);
   assert.equal(messages.length, 10);
@@ -132,13 +133,15 @@ test("migration from schema 3 preserves existing team identity and tasks", async
   const p = await newRun(h);
   const task = await ownTask(h, p.token, p.root);
   // Reconstruct the prior schema without touching any existing team records.
-  h.h.db.exec("DROP TABLE team_reporting_messages; DROP TABLE team_reporting_links; DROP TABLE team_reporting_settings; DELETE FROM schema_migrations WHERE version = 4;");
+  h.h.db.exec(`DROP VIEW team_reporting_links; DROP TABLE team_reporting_messages; DROP TABLE team_reporting_settings; DROP INDEX cross_team_links;
+   ALTER TABLE reporting_edges DROP COLUMN parent_run_id; ALTER TABLE reporting_edges DROP COLUMN origin; ALTER TABLE reporting_edges DROP COLUMN terminatable; ALTER TABLE reporting_edges DROP COLUMN close_reason;
+   DELETE FROM schema_migrations WHERE version >= 4;`);
   await h.restart({ crash: true });
   const me = await h.call("GET", "/me", { token: p.token });
   ok(me);
   assert.equal(me.body.tasks[0].task_id, task);
   assert.deepEqual(me.body.reporting.links, []);
-  assert.equal(sql(h, "SELECT MAX(version) AS v FROM schema_migrations")[0].v, 4);
+  assert.equal(sql(h, "SELECT MAX(version) AS v FROM schema_migrations")[0].v, 5);
  } finally { await h.cleanup(); }
 });
 

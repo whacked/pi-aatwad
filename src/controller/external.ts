@@ -53,6 +53,8 @@ export function joinTeam(ctx: Ctx, p: Principal, runId: string, body: unknown): 
 	// Never launched or relaunched by the controller: the external session is the process.
 	const intent = get(db, "SELECT id FROM spawn_intents WHERE agent_id = ?", agentId)!;
 	run(db, "UPDATE spawn_intents SET status = 'EXTERNAL', updated_at = ? WHERE id = ?", nowIso(), intent.id);
+	// An existing session attached itself: a join, which dismissal severs rather than stops.
+	run(db, "UPDATE reporting_edges SET origin = 'joined', terminatable = 0 WHERE child_id = ? AND parent_run_id IS NULL AND valid_to IS NULL", agentId);
 	const cwd = str(b, "cwd", { optional: true });
 	if (cwd) run(db, "UPDATE agents SET cwd = ? WHERE id = ?", cwd, agentId);
 	const a = getAgent(db, agentId);

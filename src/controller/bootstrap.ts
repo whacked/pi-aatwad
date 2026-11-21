@@ -17,7 +17,7 @@ import { Reconciler } from "./reconciler.ts";
 import { liveWorkerCount, pendingSpawnCount } from "./queries.ts";
 import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 
-/** Number of migrations this controller applies (db/001..004) = protocol SCHEMA_VERSION. */
+/** Number of migrations this controller applies (db/001..005) = protocol SCHEMA_VERSION. */
 export const CONTROLLER_SCHEMA_VERSION = SCHEMA_VERSION;
 const CONTROLLER_LEASE_MS = 30_000;
 

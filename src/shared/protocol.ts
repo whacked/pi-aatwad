@@ -4,7 +4,7 @@
 
 export const PROTOCOL_VERSION = 1;
 /** Number of applied SQL migrations (db/001, db/002, ...). */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 // ---------------------------------------------------------------------------
 // Transport
@@ -463,6 +463,10 @@ export interface ReportingLink {
 	created_at: string;
 	closed_at: string | null;
 	close_reason: string | null;
+	/** "joined" for links between teams; "spawned" links are a team's own recruits. */
+	origin?: "spawned" | "joined";
+	/** Whether dismissing the child may stop its team; otherwise dismissal only severs the link. */
+	terminatable?: boolean;
 }
 export interface ReportingStatus {
 	run_id: string;
