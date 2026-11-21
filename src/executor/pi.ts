@@ -1,8 +1,8 @@
-import { TmuxWatch } from "../watch/tmux.ts";
+import { terminalView } from "../terminal/view.ts";
 import type { TerminalOptions } from "../shared/protocol.ts";
 import { findExecutable } from "../shared/environment.ts";
 import { launchTerminal } from "./terminal.ts";
-// PiExecutor: interactive Pi in tmux for terminal-enabled runs; detached one-shot Pi otherwise.
+// PiExecutor: interactive Pi in tmux panes or Rex blocks for terminal-enabled runs; detached one-shot Pi otherwise.
 //
 // Verified against Pi 1.4.0 (see test/executor/pi-smoke.test.ts, which runs real `pi`
 // against a local fake OpenAI-compatible server, no paid credentials):
@@ -92,16 +92,18 @@ export class PiExecutor implements Executor {
 	}
 
 	async terminalProblem(stateDir: string, runId: string, terminal: TerminalOptions): Promise<string | undefined> {
-		const view = new TmuxWatch({ stateDir, runId, ...terminal });
+		// Saved by older versions that opened a detached tmux session; panes now live only beside the leader.
+		if (!terminal.location) return "detached tmux team sessions are no longer supported; open member panes from a leader Pi running inside tmux";
+		const view = await terminalView({ stateDir, runId, ...terminal });
 		try {
-			if (!await view.exists()) return "the saved tmux session or leader pane is no longer available";
+			if (!await view.exists()) return "the saved leader pane is no longer available";
 			await view.assertOwned();
 			return undefined;
 		} catch (e) { return (e as Error).message; }
 	}
 
 	async syncTerminal(stateDir: string, runId: string, terminal: TerminalOptions, members: TerminalMember[]): Promise<void> {
-		const view = new TmuxWatch({ stateDir, runId, ...terminal });
+		const view = await terminalView({ stateDir, runId, ...terminal });
 		if (!await view.exists()) return;
 		const panes = new Map((await view.panes()).map((p) => [p.agent, p]));
 		// Deadline/budget pauses can stop a harness while retaining its member and

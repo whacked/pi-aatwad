@@ -1,6 +1,8 @@
 // Decorate the existing editor instance, preserving custom editors and app keybindings.
 import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { headerText, planDecoration, type MemberDecor } from "../terminal/decor.ts";
+import { hostCapabilities, type DecorationMode } from "../terminal/host.ts";
 
 type UI = ExtensionContext["ui"];
 type Factory = NonNullable<ReturnType<UI["getEditorComponent"]>>;
@@ -43,4 +45,24 @@ export function installAgentLabel(ui: UI, name: () => string | undefined): void 
 	};
 	factory[BASE] = { factory: previous };
 	ui.setEditorComponent(factory);
+}
+
+export const MEMBER_HEADER_WIDGET = "pi-recursive-team.member-header";
+
+/** Width-safe, colored self-drawn header for hosts without richer native decoration. */
+export function renderMemberHeader(decor: MemberDecor, width: number): string[] {
+	if (width < 4) return [];
+	const text = headerText(decor);
+	const fitted = visibleWidth(text) > width ? truncateToWidth(text, width) : text;
+	return [`\x1b[1;38;5;15;48;5;${decor.color}m${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}\x1b[0m`];
+}
+
+/** Dispatch on what the host renders natively; draw a header only where the plan asks for one. */
+export function installMemberHeader(ui: UI, decor: () => MemberDecor | undefined, mode: DecorationMode = hostCapabilities().decoration): boolean {
+	if (!planDecoration(mode).selfHeader) { ui.setWidget(MEMBER_HEADER_WIDGET, undefined); return false; }
+	ui.setWidget(MEMBER_HEADER_WIDGET, () => ({
+		render: (width: number) => { const d = decor(); return d ? renderMemberHeader(d, width) : []; },
+		invalidate: () => {},
+	}), { placement: "aboveEditor" });
+	return true;
 }

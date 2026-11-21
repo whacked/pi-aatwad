@@ -18,9 +18,10 @@ test("tmux watcher discovers members, repairs closed panes, survives restart and
 		const { token, run_id } = await newRun(hs, { models: [] });
 		view = new TmuxWatch({ stateDir: hs.dir, runId: run_id, socket, debug: true });
 		assert.equal(await view.exists(), false);
-		await view.open();
-		await view.open(); // idempotent, no duplicate dashboard
-		assert.equal((await view.panes()).length, 1);
+		const leader = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "user-session", "-x", "200", "-y", "60", "/bin/sh");
+		await view.open(leader);
+		await view.open(leader); // idempotent, no duplicate dashboard
+		assert.equal((await view.panes()).length, 2, "leader and one debug dashboard");
 		const result = await hs.call("POST", "/members", { token, body: { name: "Adjudicator", responsibility: "Review the proposed solution" } });
 		assert.equal(result.status, 200, JSON.stringify(result.body));
 		const id = result.body.spawned_agent_ids[0];
@@ -45,29 +46,30 @@ test("tmux watcher discovers members, repairs closed panes, survives restart and
 			const extra = await hs.call("POST", "/members", { token, body: { name: `Extra ${i}`, responsibility: "Review an independent component", max_cost_usd: 0.1 } });
 			assert.equal(extra.status, 200, JSON.stringify(extra.body));
 		}
-		await waitFor(async () => (await view!.panes()).length === 6, "five members and dashboard", 10000);
-		const memberWindows = new Set((await view.panes()).filter((p) => p.agent !== "dashboard").map((p) => p.window));
+		await waitFor(async () => (await view!.panes()).length === 7, "leader, dashboard and five members", 10000);
+		const memberWindows = new Set((await view.panes()).map((p) => p.window));
 		assert.equal(memberWindows.size, 1, "all members share the leader window");
-		assert.equal((await view.tmux("list-windows", "-t", view.name, "-F", "#{window_id}")).split("\n").length, 1);
-		const dimensions = async () => (await view!.tmux("list-panes", "-s", "-t", view!.name, "-F", "#{@pi_team_agent} #{pane_width} #{pane_height}")).split("\n").map((line) => {
+		assert.equal((await view.tmux("list-windows", "-t", "user-session", "-F", "#{window_id}")).split("\n").length, 1);
+		assert.equal((await view.tmux("list-sessions", "-F", "#{session_name}")).trim(), "user-session", "no team session is created");
+		const labeled = (await view.panes()).find((p) => p.agent === id)!;
+		assert.equal(await view.tmux("display-message", "-p", "-t", labeled.id, "#{pane_title}"), `Adjudicator [${id}]`, "native label from the decoration plan");
+		const dimensions = async () => (await view!.tmux("list-panes", "-s", "-t", "user-session", "-F", "#{@pi_team_agent} #{pane_width} #{pane_height}")).split("\n").map((line) => {
 			const [agent, w, h] = line.split(" "); return { agent, area: Number(w) * Number(h) };
 		});
 		await waitFor(async () => {
 			const measured = await dimensions();
-			const main = measured.find((p) => p.agent === "dashboard")!.area;
-			return measured.filter((p) => p.agent !== "dashboard").every((p) => p.area < main);
-		}, "manager allocation after final pane is tagged", 10000);
+			const main = measured.find((p) => p.agent === "leader")!.area;
+			return measured.filter((p) => p.agent !== "leader").every((p) => p.area < main);
+		}, "leader allocation after final pane is tagged", 10000);
 		const areas = await dimensions();
-		const managerArea = areas.find((p) => p.agent === "dashboard")!.area;
-		assert.ok(areas.filter((p) => p.agent !== "dashboard").every((p) => p.area < managerArea));
-		await view.tmux("break-pane", "-d", "-s", pane.id, "-n", "legacy-members");
-		await waitFor(async () => new Set((await view!.panes()).map((p) => p.window)).size === 1, "legacy member window consolidated", 10000);
+		const leaderArea = areas.find((p) => p.agent === "leader")!.area;
+		assert.ok(areas.filter((p) => p.agent !== "leader").every((p) => p.area < leaderArea));
 		const initialLayout = await view.tmux("display-message", "-p", "-t", (await view.panes())[0].window, "#{window_layout}");
 		await view.tmux("resize-window", "-t", (await view.panes())[0].window, "-x", "70", "-y", "70");
 		await waitFor(async () => {
 			const layout = await view!.tmux("display-message", "-p", "-t", (await view!.panes())[0].window, "#{window_layout}");
 			const newAreas = await dimensions();
-			return layout !== initialLayout && newAreas.find((p) => p.agent === "dashboard")!.area > 70 * 70 * 0.5;
+			return layout !== initialLayout && newAreas.find((p) => p.agent === "leader")!.area > 70 * 70 * 0.5;
 		}, "adaptive leader allocation after terminal resize", 10000);
 		const dashboard = (await view.panes()).find((p) => p.agent === "dashboard")!;
 		await view.tmux("respawn-pane", "-k", "-t", dashboard.id, "/usr/bin/true");
@@ -77,7 +79,8 @@ test("tmux watcher discovers members, repairs closed panes, survives restart and
 		await view.focus(id);
 		const identity = hs.ex.launchesFor(id).at(-1)!.id;
 		await view.close();
-		assert.equal(await view.exists(), false);
+		assert.equal((await view.panes()).some((p) => p.agent === "dashboard"), false, "close hides only the debug dashboard");
+		assert.equal(await view.tmux("display-message", "-p", "-t", leader, "#{pane_id}"), leader, "the user's pane survives");
 		assert.equal(await hs.ex.probe(identity), "alive");
 		await view.close(); // idempotent
 	} finally {
@@ -86,13 +89,16 @@ test("tmux watcher discovers members, repairs closed panes, survives restart and
 	}
 });
 
-test("tmux refuses to change an unowned session", { skip: !haveTmux }, async () => {
+test("tmux refuses to change an unowned pane and never creates a detached team session", { skip: !haveTmux }, async () => {
 	const hs = await harness();
 	const view = new TmuxWatch({ stateDir: hs.dir, runId: "test", socket: join(hs.dir, "tmux.sock") });
 	try {
-		await view.tmux("new-session", "-d", "-s", view.name);
+		await assert.rejects(view.open(), /beside the leader/);
+		const leader = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "user-session", "/bin/sh");
+		view.opts.location = { window: await view.tmux("display-message", "-p", "-t", leader, "#{window_id}"), leader };
 		await assert.rejects(view.close(), /not owned/);
 		assert.equal(await view.exists(), true);
+		assert.equal((await view.tmux("list-sessions", "-F", "#{session_name}")).trim(), "user-session");
 	} finally {
 		try { await view.tmux("kill-server"); } catch {}
 		await hs.cleanup();

@@ -73,9 +73,9 @@ and a persisted terminal location direct the executor to split that pane's regio
 Custom layout replacement is confined to the team subtree (including tmux's
 flattened sibling groups); unrelated pane geometry and processes are preserved.
 A roughly 60% leader allocation and the remaining member grid adapt to
-region dimensions. Closing an in-place view hides optional debug controls. Outside tmux,
-the dedicated-session fallback remains, including detaching clients on close;
-controller lifecycle operations stop workers. Explicit tmux pane/server destruction
+region dimensions. Closing an in-place view hides optional debug controls;
+controller lifecycle operations stop workers. There is no dedicated/detached tmux
+session mode (removed in v0.1.23). Explicit tmux pane/server destruction
 has normal PTY hangup semantics and may trigger controller recovery.
 
 The layout codec accepts legacy checksummed strings and tmux 3.8's version 2
@@ -107,8 +107,7 @@ accounting continues, while resource/grant checks and deadlines are disabled.
 
 The controller invokes the Pi executor's terminal reconciliation hook on its
 normal tick. Default layouts contain only live harness panes; no visible control
-pane or separate coordinator process is needed. Dedicated sessions use a temporary
-placeholder until their first Pi starts. Explicit debug mode retains one diagnostic
+pane or separate coordinator process is needed. Explicit debug mode retains one diagnostic
 pane, with deterministic deduplication and cleanup of legacy controls.
 
 The extension sets the terminal title to the controller-assigned role/name and
@@ -211,8 +210,8 @@ Pi executable gives an actionable PATH/PI_TEAM_PI_BIN diagnostic. Its path is
 resolved before changing to a member's worktree.
 
 Herdr is a host for the root Pi, not a worker-pane backend. tmux commands clear
-outer tmux markers in Herdr; explicit watch opens a separate tmux session and does
-not change the Herdr pane or switch its outer client. Environment tests cover
+outer tmux markers in Herdr; explicit watch reports that Herdr cannot host member
+panes and does not touch tmux. Environment tests cover
 missing tmux, plain SSH, inherited markers, Herdr, headless opt-out, live mode
 changes, saved-terminal fallback, process launch without tmux and missing Pi.
 
@@ -261,7 +260,7 @@ Tmux uses `remain-on-exit` to retain process output, so a dead pane is a process
 exit, not evidence that its task was completed. The controller owns recovery of
 unexpected terminal exits, using the saved transcript and agent identity. Normal
 detached one-shot exits remain quiet (they settle after each prompt by design).
-Regression tests use both stub processes and real Pi in dedicated/in-place tmux:
+Regression tests use both stub processes and real Pi in in-place tmux:
 complete the actual task, age its session past the former default limits, send
 more work, deliberately kill it, observe a notice, and verify resumed communication.
 
@@ -285,3 +284,47 @@ owners remain protected. Low-level ownership checks remain in place.
 Tests cover saved, missing, disabled and moved terminal locations, protected
 foreign/worker/active-team panes, unchanged human PID, preservation of a different
 saved layout and the old run, plus the full fresh-session init/watch command path.
+
+## Host detection and member decoration (v0.1.23)
+
+`terminalHost()` names the innermost multiplexer: Herdr, then tmux (`TMUX` and a
+`%n` `TMUX_PANE`), then Rex (`REX_SERVER` and a `block:` `REX_BLOCK`), otherwise
+plain. `src/terminal/host.ts` maps each kind to capabilities: whether members can
+run in persistent, switchable sessions there today (only tmux), the richest native
+decoration it renders, and the reason shown when sessions are unavailable.
+`openTerminals` rejects with `NoSessionHostError` before contacting the controller
+or tmux when the host cannot hold member sessions. The dedicated tmux session mode
+is removed. A saved terminal configuration without a leader location is reported by
+`terminalProblem`, so the reconciler's existing fallback moves those teams to
+detached workers.
+
+`src/terminal/decor.ts` holds the per-member decoration (sanitized name, agent ID,
+stable xterm-256 color) and `planDecoration`, the single dispatch from a host's
+decoration mode to native rendering and/or a self-drawn header. tmux applies the
+native label as the pane title. Member Pis (managed identities in TUI mode) install
+a width-safe header widget above the editor when the plan asks for one. When Rex
+gains native components, only its capability entry changes.
+
+
+## Rex member blocks (v0.1.23)
+
+`src/terminal/view.ts` defines `TerminalView`, the backend-neutral interface for member
+terminals beside the leader; `terminalView()` picks the backend from the saved
+`terminal.backend` (absent means tmux). `TmuxWatch` and `RexView` implement it. The
+executor's gated launch, terminal preflight and sync, `openTerminals` (including stale
+leader-tag takeover) and `/team watch`/`team_watch` all go through it. Members start
+under `env -i` plus the backend's own markers (`TMUX`/`TMUX_PANE`, or `REX_*`), so a
+member's host detection, and therefore its decoration plan, matches its real terminal.
+
+`RexView` drives the `rex` CLI with `-S <server>` and `--autostart=false`, always with
+full IDs, and with `REX_SESSION`/`REX_BLOCK` removed from its environment: Rex scopes
+block lookups to `REX_SESSION`, which would hide blocks in other sessions. Members are
+created with `rex split --shell=none --keep-open --focus=false --label`; the block's
+`process` method supplies the PID for process identity, and a missing `child` marks a
+dead block. Rex has no respawn, so a relaunch splits the old block and closes it, letting
+the replacement take its exact place. Ownership tags are 0600 JSON files under
+`<state>/rex-tags/`, one per block; the leader's tag is the ownership check that tmux
+performs with `@pi_team_owner`. Saved Rex locations use `window:`/`block:` IDs, which the
+controller validates per backend; debug mode is rejected for Rex.
+Integration tests under `test/terminal/` run against the real Rex server, in throwaway
+sessions, when the suite runs inside Rex, including a real interactive Pi member.

@@ -47,7 +47,7 @@ for (const savedLocation of ["saved", "missing", "disabled", "moved"]) test(`pan
 		await assert.rejects(openTerminals(rt, current.run_id), /not its leader/);
 		assert.equal(await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid, "old member pane is not killed");
 		await view.tag(pane, "leader");
-		const fresh = await openTerminals(rt, current.run_id);
+		const fresh = await openTerminals(rt, current.run_id) as TmuxWatch;
 		assert.equal(await fresh.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), fresh.owner);
 		assert.equal(await fresh.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid);
 		assert.equal((await fresh.tmux("list-sessions", "-F", "#{session_name}")).trim(), "user-session");
@@ -118,7 +118,7 @@ test("the leader Pi occupying a pane takes over stale tags of an active or unkno
 		// An inherited pane marker alone proves nothing: the other team stays protected.
 		await assert.rejects(openTerminals(rt, current.run_id), /not running inside it/);
 		const seen: number[] = [];
-		const fresh = await openTerminals(rt, current.run_id, { occupiesPane: async (panePid) => { seen.push(panePid); return true; } });
+		const fresh = await openTerminals(rt, current.run_id, { occupiesPane: async (panePid) => { seen.push(panePid); return true; } }) as TmuxWatch;
 		assert.deepEqual(seen, [Number(pid)], "occupancy is checked against the pane's own process");
 		assert.match(fresh.reclaimedFrom!, new RegExp(`${old.run_id}.*1 active member.*team resume ${old.run_id}`));
 		assert.equal(await fresh.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), fresh.owner);
@@ -129,7 +129,7 @@ test("the leader Pi occupying a pane takes over stale tags of an active or unkno
 		assert.equal((await hs.call("GET", `/runs/${current.run_id}/terminal`, { token: hs.op })).body.enabled, true);
 		// Tags left by a different controller state directory are taken over the same way.
 		await new TmuxWatch({ stateDir: join(hs.dir, "another-controller"), runId: "run-x", socket }).tag(pane, "old-member");
-		const again = await openTerminals(rt, current.run_id, { occupiesPane: async () => true });
+		const again = await openTerminals(rt, current.run_id, { occupiesPane: async () => true }) as TmuxWatch;
 		assert.match(again.reclaimedFrom!, /another controller state directory/);
 		assert.equal(await again.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), again.owner);
 		assert.equal((await openTerminals(rt, current.run_id, { occupiesPane: async () => true })).reclaimedFrom, undefined, "own tags need no takeover");

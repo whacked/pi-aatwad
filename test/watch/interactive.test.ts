@@ -12,7 +12,8 @@ import { statePaths } from "../../src/shared/paths.ts";
 import { TmuxWatch } from "../../src/watch/tmux.ts";
 
 const available = spawnSync("tmux", ["-V"]).status === 0 && spawnSync("pi", ["--version"]).status === 0;
-for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "dedicated"} panes support names, input, close and replacement`, { skip: !available, timeout: 60000 }, async () => {
+const inPlace = true;
+test(`real Pi in-place panes support names, input, close and replacement`, { skip: !available, timeout: 60000 }, async () => {
 	const completed = new Set<string>();
 	const fake = await startFakeOpenAI((req) => {
 		const task = req.messages.map((m) => m.text).join("\n").match(/Your assigned task id: ([^.\s]+)\./)?.[1];
@@ -37,7 +38,7 @@ for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "ded
 		if (inPlace) {
 			const leader = await view.tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "existing-session", "-x", "160", "-y", "50", "/bin/sh");
 			await view.open(leader);
-		} else await view.open();
+		}
 		const enabled = await hs.call("POST", `/runs/${run_id}/terminal`, { token, body: { socket: view.opts.socket, location: view.opts.location } });
 		assert.equal(enabled.status, 200);
 		const created = await hs.call("POST", "/members", { token, body: { name: "Adjudicator", responsibility: "Review the proposed changes and remain available", preferred_model_id: "interactive" } });
@@ -50,10 +51,11 @@ for (const inPlace of [true, false]) test(`real Pi ${inPlace ? "in-place" : "ded
 		assert.ok(pane);
 		assert.equal((await view.panes()).length, inPlace ? 2 : 1, "only live harnesses, no control UI");
 		if (inPlace) assert.equal(pane.window, view.opts.location!.window);
-		assert.equal((await view.tmux("list-sessions", "-F", "#{session_name}")).trim(), inPlace ? "existing-session" : view.name);
+		assert.equal((await view.tmux("list-sessions", "-F", "#{session_name}")).trim(), "existing-session");
 		const capture = () => view!.tmux("capture-pane", "-p", "-t", pane.id);
 		await waitFor(async () => (await capture()).includes("INTERACTIVE-ANSWER"), "visible Pi answer", 15000);
-		await waitFor(() => sql(hs, "SELECT status FROM tasks WHERE owner_id=?", id)[0]?.status === "DONE", "worker really completes its assigned task");
+		await waitFor(() => sql(hs, "SELECT status FROM tasks WHERE owner_id=?", id)[0]?.status === "DONE", "worker really completes its assigned task")
+			.catch(async (e) => { throw new Error(`${e.message}\n${await capture()}\n${JSON.stringify(fake.requests.map((r) => r.messages.map((m) => m.text.slice(0, 300))))}`); });
 		// Simulate more idle time than the removed 600/3600s defaults without waiting an hour.
 		hs.h.db.prepare("UPDATE sessions SET started_at=? WHERE id=?").run(new Date(Date.now() - 7200_000).toISOString(), session.id);
 		await hs.h.reconciler.enforceDeadlines();

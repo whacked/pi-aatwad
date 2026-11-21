@@ -1,6 +1,7 @@
 import { probeIdentity, processStartTime } from "../executor/proc.ts";
 import { openTerminals, autoOpenTerminals } from "./terminals.ts";
-import { TmuxWatch } from "../watch/tmux.ts";
+import { terminalView } from "../terminal/view.ts";
+import { hostCapabilities } from "../terminal/host.ts";
 import { availableModels, resolveAvailableModel } from "./models.ts";
 // Organization tools. Identical set for every agent; the controller authorizes each action.
 // No tool accepts the caller's own identity: actor = the session credential held by the extension.
@@ -8,7 +9,7 @@ import { Type } from "typebox";
 import type { TSchema } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MESSAGE_TYPES } from "../shared/protocol.ts";
-import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageType, TerminalLocation } from "../shared/protocol.ts";
+import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageType, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import type { ToolName } from "./names.ts";
@@ -366,21 +367,21 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	);
 
 	reg(
-		"team_watch", "Team: tmux terminals",
-		"Root only: open, inspect, focus, close or disable the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Outside tmux, return the attach command to the user. Open/focus/debug require tmux and Node on PATH. Use action off for detached workers (no tmux required); live interactive workers restart on saved transcripts, interrupting any current turn. Closing only hides the view.",
+		"team_watch", "Team: member terminals",
+		"Root only: open, inspect, focus, close or disable the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Panes open beside this Pi in its own terminal; open/focus/debug fail with an explanation where the terminal cannot host them (tmux panes and Rex blocks are supported; relay any other reason to the user). focus switches the human's view to that member. Debug is tmux-only and requires Node on PATH. Use action off for detached workers (no multiplexer required); live interactive workers restart on saved transcripts, interrupting any current turn. Closing only hides the view.",
 		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug", "off"] as const), agent_id: Type.Optional(Type.String({ description: "Member name, full agent ID, or unique ID words; required for focus" })) }),
 		async (p) => {
-			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage the tmux monitor");
+			if (rt.managed || !(await rt.client.me()).is_root) throw new Error("Only the leader may manage member terminals");
 			if (p.action === "off") return json("Detached worker mode selected; existing workers restart on their saved transcripts", await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { enabled: false }));
-			const terminal = await rt.client.get<{ enabled?: boolean; socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
-			if (terminal.enabled === false && (p.action === "status" || p.action === "close")) return json("Detached workers; use /team watch open for interactive tmux panes", { mode: "headless", open: false });
+			const terminal = await rt.client.get<{ enabled?: boolean; backend?: TerminalBackend; socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`);
+			if (terminal.enabled === false && (p.action === "status" || p.action === "close")) return json("Detached workers; use /team watch open for interactive member panes", { mode: "headless", open: false });
 			const opening = p.action === "open" || p.action === "focus" || p.action === "debug";
-			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: rt.identity!.run_id,
+			let view = await terminalView({ stateDir: rt.paths.dir, runId: rt.identity!.run_id, backend: terminal.backend,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (p.action === "close") {
-				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { socket: terminal.socket, location: terminal.location, debug: false });
+				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(rt.identity!.run_id)}/terminal`, { backend: terminal.backend, socket: terminal.socket, location: terminal.location, debug: false });
 				await view.close();
-				return text("Team terminals left running; existing tmux sessions are unchanged", { open: await view.exists() });
+				return text("Member terminals left running; existing multiplexer sessions are unchanged", { open: await view.exists() });
 			}
 			if (p.action === "focus" && !p.agent_id) throw new Error("agent_id is required for focus");
 			if (p.action === "open" || p.action === "focus" || p.action === "debug") {
@@ -388,7 +389,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 				await view.focus(p.action === "focus" ? await agent(p.agent_id) : undefined);
 			}
 			const open = await view.exists();
-			return json("Tmux monitor", { open, session: view.opts.location ? undefined : view.name, window: view.opts.location?.window, panes: open ? await view.panes() : [], attach_command: view.opts.location ? undefined : `tmux attach-session -t ${view.name}` });
+			return json("Member terminals", { open, host: hostCapabilities().kind, backend: view.backend, window: view.opts.location?.window, panes: open ? await view.panes() : [], ...(open || hostCapabilities().sessions ? {} : { unavailable: hostCapabilities().unavailable }) });
 		},
 	);
 

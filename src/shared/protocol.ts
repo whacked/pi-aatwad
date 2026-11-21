@@ -233,15 +233,18 @@ export const DEFAULT_PROVIDER = "default";
 /** What happens to an agent whose runtime deadline expires (see RunConfig.deadline_policy). */
 export type DeadlinePolicy = "BLOCKED" | "FAILED";
 
+export type TerminalBackend = "tmux" | "rex";
+/** Multiplexer IDs of the leader's window and terminal (tmux @n/%n, or Rex window:/block: IDs). */
 export interface TerminalLocation { window: string; leader: string }
-export interface TerminalOptions { socket?: string; location?: TerminalLocation; debug?: boolean }
+/** `socket` is the multiplexer server address: a tmux socket path or a Rex server URL. Omitted backend means tmux. */
+export interface TerminalOptions { backend?: TerminalBackend; socket?: string; location?: TerminalLocation; debug?: boolean }
 
 export interface RunConfig {
 	/** Human opt-out from automatic tmux panes; /team watch open enables them again. */
 	terminal_disabled?: boolean;
 	/** Human operator authorization to remove numeric spend, runtime and recruitment caps. */
 	operator_unlimited?: boolean;
-	/** Interactive Pi workers hosted by tmux; socket is primarily for isolated deployments/tests. */
+	/** Interactive Pi workers hosted beside the leader in tmux or Rex. */
 	terminal?: TerminalOptions;
 	limits: GlobalLimits;
 	models: ModelCatalogEntry[];

@@ -1,12 +1,13 @@
 import { resolveAvailableModel } from "./models.ts";
 import { openTerminals } from "./terminals.ts";
-import { TmuxWatch } from "../watch/tmux.ts";
+import { terminalView } from "../terminal/view.ts";
+import { hostCapabilities } from "../terminal/host.ts";
 // `/team` command with subcommands. Human-facing; uses the operator token unless this is a managed worker.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { ReportingRequest, RunConfig, TerminalLocation } from "../shared/protocol.ts";
+import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
 import { formatBudget, formatEvents, formatInspect, formatProposal, formatTree } from "./format.ts";
@@ -35,7 +36,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "admin", args: "[status|limits|clear-limits|clear-deadlines|unlimited|bounded] [run_id]", help: "human operator resource policy: list or remove limits" },
 	{ name: "stop", args: "[run_id]", help: "stop a whole team resumably; preserve identities and transcripts" },
 	{ name: "remove", args: "[run_id] [--yes]", help: "permanently remove a whole team; preserve Pi and worktrees" },
-	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi team terminals in tmux" },
+	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi member terminals beside the leader (tmux panes or Rex blocks)" },
 	{ name: "send", args: "[name|agent_id] <message>", help: "send directions to a team member" },
 ];
 
@@ -164,7 +165,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 		watch: async (a, ctx, yes) => {
 			await rt.ready;
-			if (rt.managed) throw new Error("managed workers cannot manage tmux views; use the leader session");
+			if (rt.managed) throw new Error("managed workers cannot manage team terminals; use the leader session");
 			const action = a[0] ?? "open";
 			if (!["open", "status", "close", "focus", "debug", "off"].includes(action)) throw new Error("usage: /team watch [open|status|close|off|debug|focus <name|agent_id>] [run_id]");
 			// Missing focus target is selected from viable members below.
@@ -181,23 +182,23 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				out(ctx, "Detached worker mode selected. Existing workers restart on their saved transcripts; automatic panes stay off until /team watch open.");
 				return;
 			}
-			const terminal = await rt.client.get<{ enabled?: boolean; socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(id)}/terminal`, { token: await rt.commandToken() });
+			const terminal = await rt.client.get<{ enabled?: boolean; backend?: TerminalBackend; socket?: string; location?: TerminalLocation; debug?: boolean }>(`/runs/${encodeURIComponent(id)}/terminal`, { token: await rt.commandToken() });
 			if (terminal.enabled === false && (action === "status" || action === "close")) {
-				out(ctx, "Detached workers; use /team watch open for interactive tmux panes.");
+				out(ctx, "Detached workers; use /team watch open for interactive member panes.");
 				return;
 			}
 			const opening = action === "open" || action === "focus" || action === "debug";
-			let view = new TmuxWatch({ stateDir: rt.paths.dir, runId: id,
+			let view = await terminalView({ stateDir: rt.paths.dir, runId: id, backend: terminal.backend,
 				socket: opening ? undefined : terminal.socket, location: opening ? undefined : terminal.location });
 			if (action === "close") {
 				if (!(await confirm(ctx, yes, `Close the team view for ${id}? Workers remain running.`))) return;
-				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { socket: terminal.socket, location: terminal.location, debug: false }, { token: await rt.commandToken() });
+				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { backend: terminal.backend, socket: terminal.socket, location: terminal.location, debug: false }, { token: await rt.commandToken() });
 				await view.close();
-				out(ctx, `Team terminals left running for ${id}; your current tmux session is unchanged`);
+				out(ctx, `Member terminals left running for ${id}; your current ${view.backend} session is unchanged`);
 				return;
 			}
 			if (action === "status") {
-				out(ctx, await view.exists() ? `${view.opts.location?.window ?? view.name}: ${(await view.panes()).length} team panes` : `no tmux monitor for ${id}; use /team watch`);
+				out(ctx, await view.exists() ? `${view.backend} ${view.opts.location!.window}: ${(await view.panes()).length} team terminals` : `No member panes for ${id}. ${hostCapabilities().sessions ? "Use /team watch to open them beside this Pi." : hostCapabilities().unavailable}`);
 				return;
 			}
 			// Validate access and run existence before creating terminal resources.
@@ -208,8 +209,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				await view.focus(focusTarget === tree.root.agent_id ? "leader" : focusTarget);
 			}
 			else await view.focus();
-			if (view.reclaimedFrom) out(ctx, `This pane was still tagged for ${view.reclaimedFrom}. It now hosts ${id}; nothing was stopped or deleted.`);
-			out(ctx, view.opts.location ? `Team panes opened beside Pi in the current tmux window; interactive members appear automatically` : `tmux team terminal ${view.name} opened; interactive Pi members appear automatically. Attach from a terminal: tmux attach-session -t ${view.name}`);
+			if (view.reclaimedFrom) out(ctx, `This terminal was still tagged for ${view.reclaimedFrom}. It now hosts ${id}; nothing was stopped or deleted.`);
+			out(ctx, `Member ${view.backend === "rex" ? "blocks" : "panes"} open beside Pi in the current ${view.backend} window; interactive members appear automatically. /team watch focus <name> switches to one.`);
 		},
 
 		send: async (a, ctx) => {

@@ -94,7 +94,7 @@ test("fresh session init then watch reclaims stale leader tags after terminal me
 		assert.equal(fresh.rt.identity, undefined);
 		await fresh.command.handler("init", fresh.ctx);
 		await fresh.command.handler("watch", fresh.ctx);
-		assert.ok(fresh.notes.some((s) => s.includes("Team panes opened")), fresh.notes.join("\n"));
+		assert.ok(fresh.notes.some((s) => s.includes("Member panes open beside Pi")), fresh.notes.join("\n"));
 		assert.ok(!fresh.notes.some((s) => s.includes("Error:")), fresh.notes.join("\n"));
 		assert.equal(await view.tmux("show-options", "-p", "-qv", "-t", pane, "@pi_team_owner"), new TmuxWatch({ stateDir: hs.dir, runId: fresh.rt.identity!.run_id }).owner);
 		assert.equal(await view.tmux("display-message", "-p", "-t", pane, "#{pane_pid}"), pid);

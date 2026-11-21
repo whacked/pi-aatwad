@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.22, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.23, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -453,6 +453,7 @@ hosting environment and the team's saved terminal setting:
 |---|---|
 | Plain terminal or SSH, without tmux | Controller launches detached, one-shot Pi workers with durable inboxes and transcripts. |
 | Herdr | Pi stays in its Herdr pane; workers use detached execution. Inherited outer tmux markers are ignored when `HERDR_ENV=1`. |
+| Rex (Superlogical) | Detected from `REX_SERVER`/`REX_BLOCK`. Member creation automatically splits interactive member blocks beside the leader's block. tmux running inside Rex is treated as tmux. |
 | Valid tmux pane containing this Pi | Member creation automatically opens team panes beside Pi unless explicitly disabled. |
 | Missing tmux or stale inherited pane markers | Automatic pane setup cannot block recruitment; detached workers remain available. |
 | Saved tmux session/pane becomes unavailable | Controller records a fallback notice and switches workers to detached execution, preserving identities, tasks and transcripts. |
@@ -476,11 +477,12 @@ the same transcript for new assignments. The controller and detached workers sur
 an ordinary root-session exit or SSH disconnect; host shutdown or session cleanup
 policies can still stop processes. Resume with `/team resume` later.
 
-There is no native Herdr pane backend. `/team watch open` explicitly requests tmux;
-outside tmux it opens a separate, detached tmux session and prints an attach command
-for another terminal. If tmux is missing, that explicit request gives an actionable
-error while team work continues detached. It never nests or attaches tmux inside
-Herdr automatically. Herdr documents the limitations of nested tmux in its
+Member panes always open beside the leader Pi, in the terminal it already runs in.
+There is no detached tmux session mode: outside tmux and Rex, `/team watch open` explains
+why this terminal cannot host member panes yet, and team work continues detached.
+It never nests or attaches tmux inside Herdr or Rex automatically. Teams saved by
+older versions with a detached tmux session fall back to detached workers; reopen
+them from a leader Pi inside tmux. Herdr documents the limitations of nested tmux in its
 [agent hosting guide](https://herdr.dev/tui/docs/agents/).
 
 ### Interactive Pi teams in tmux
@@ -520,18 +522,12 @@ layout adapts to region dimensions and membership while preserving the position,
 size and processes of unrelated panes. The controller remembers this location so
 new and restarted members return to the same group.
 
-Outside tmux, the previous behavior remains: Pi stays in its original terminal,
-and `/team watch` creates a dedicated session for member Pis and prints an attach
-command for another terminal. A temporary readiness pane is replaced by the first
-member, so it does not occupy space while agents are working.
-
 Use tmux's default `Ctrl-b` then arrow keys to navigate panes, or `z` to zoom a
 pane temporarily. `/team watch focus <agent_id>` selects a member and
 `/team watch status` reports the session and panes. `Ctrl-b d` and
 `/team watch close` leave live Pi processes running. Inside an existing session,
 `/team watch close` hides any debug controls without detaching your client or
-changing session/window selection. In a dedicated
-session, close detaches its clients without destroying live terminals. Use
+changing session/window selection. Use
 `/team stop <run_id>` to suspend the team, `/team remove <run_id>` to end it permanently, or ask the leader to close a single member. Killing a tmux pane or server terminates the harnesses it hosts;
 the controller recovers eligible members within its retry policy, falling back to
 detached execution when the saved terminal location is unavailable.
@@ -542,6 +538,42 @@ coordinator process to watch. `/team watch debug` (or `team_watch` with action
 `debug`) opens one optional diagnostic pane. Normal view opening hides legacy
 control panes, including duplicates. Pane titles use the assigned member names
 rather than Pi's default `π` and worktree identifier.
+
+### Interactive Pi teams in Rex
+
+When the leader Pi runs in a [Rex](https://www.superlogical.com/rex/) terminal, the
+same commands work with Rex blocks instead of tmux panes. Members split **in place
+in the leader's window**: the first member takes about 40% beside the leader, and
+each later member splits the roomiest member block. Each member block is labeled
+`Name [agent-id]` and runs its own interactive Pi, so you can click into it or type
+directly. `/team watch focus <name>` (or the leader's `team_watch` focus action)
+switches Rex's focus to that member; Rex's own keys move between blocks.
+
+Member blocks are held by the Rex server, so they outlive the leader Pi, and
+`/team resume` plus `/team watch` returns to them. A member that exits unexpectedly
+keeps its block open until the controller relaunches it on its saved transcript in a
+replacement block in the same place. Closing a member closes its block; the leader's
+block is never closed or resized by the team.
+
+Rex blocks have no per-block metadata, so the team records which block hosts which
+member in `rex-tags/` under the controller state directory. The controller calls the
+`rex` CLI, which must be on its PATH (starting the controller from a Rex terminal
+does this, and Rex's `REX_BIN_DIR` is also checked). If it cannot reach Rex, workers
+fall back to detached execution as with tmux. The debug control pane is tmux-only.
+
+### Member decoration
+
+Each member has one decoration: its name, agent ID and a color that stays stable
+for that agent. How it is shown depends on what the hosting terminal can render:
+
+| Host capability | Shown as |
+|---|---|
+| Native components (planned for Rex) | The host's own rich decoration; no extra header |
+| Titled border or label (tmux pane title, Rex block label) | Host label `Name [agent-id]`, plus a colored header line drawn by the member Pi |
+| Nothing (plain terminals) | The colored header line drawn by the member Pi |
+
+The header line sits above the member's input box and reads
+`Name  team member · agent-id`. The leader keeps its "Team leader" input-border label.
 
 To close members, ask the leader to use `team_close_member` with their agent IDs.
 It cancels the member and descendants, revokes credentials, stops their Pi
@@ -555,8 +587,7 @@ Recruit replacements normally with `team_create_member`.
 To return later, `/team resume <run_id>` and `/team watch`. Interactive mode is
 persisted across controller restarts. Terminal panes survive controller outages
 and resume receiving assignments when it returns. Old log viewers are replaced by
-real Pi processes during promotion; dedicated sessions still consolidate old member
-windows into the leader window. If there is insufficient space, enlarge the terminal
+real Pi processes during promotion. If there is insufficient space, enlarge the terminal
 rather than creating more windows. Managed members cannot manage the team terminal session.
 
 

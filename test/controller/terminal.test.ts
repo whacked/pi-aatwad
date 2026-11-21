@@ -87,3 +87,23 @@ test("saved unavailable tmux falls back before launch attempts and existing inte
   assert.equal(hs.ex.launchesFor(next)[0].spec.terminal, undefined);
  } finally { await hs.cleanup(); }
 });
+
+test("terminal options validate per backend: Rex IDs for Rex, tmux IDs for tmux, debug only in tmux", async () => {
+	const hs = await harness();
+	try {
+		const { token, run_id } = await newRun(hs, { models: [] });
+		const post = (body: unknown) => hs.call("POST", `/runs/${run_id}/terminal`, { token, body });
+		const rexLocation = { window: "window:01a1fc1c-2d86-7dbf-9051-408df500a6e0", leader: "block:01a1fc1c-2d5d-74ab-97fe-f900d30e3203" };
+		assert.equal((await post({ backend: "rex", socket: "unix:///tmp/rex.sock", location: rexLocation })).status, 200);
+		const saved = (await hs.call("GET", `/runs/${run_id}/terminal`, { token: hs.op })).body;
+		assert.equal(saved.backend, "rex");
+		assert.deepEqual(saved.location, rexLocation);
+		assert.match((await post({ backend: "rex", location: { window: "@1", leader: "%1" } })).body.error.message, /Rex window\/block/);
+		assert.match((await post({ location: rexLocation })).body.error.message, /tmux window\/pane/);
+		assert.match((await post({ backend: "rex", location: rexLocation, debug: true })).body.error.message, /tmux-only/);
+		assert.match((await post({ backend: "screen" })).body.error.message, /tmux or rex/);
+		assert.match((await post({ enabled: false, backend: "rex" })).body.error.message, /cannot include terminal options/);
+		assert.equal((await post({ location: { window: "@1", leader: "%1" } })).status, 200);
+		assert.equal((await hs.call("GET", `/runs/${run_id}/terminal`, { token: hs.op })).body.backend, undefined, "tmux stays the implicit default");
+	} finally { await hs.cleanup(); }
+});
