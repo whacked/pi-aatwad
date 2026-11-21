@@ -9,6 +9,8 @@ export interface MemberDecor {
 	leader: boolean;
 	/** xterm-256 color index, stable per agent ID. */
 	color: number;
+	/** Short instruction shown after the identity, such as how to return to the leader. */
+	hint?: string;
 }
 
 export interface DecorationPlan {
@@ -52,5 +54,5 @@ export function nativeLabel(decor: MemberDecor, max = 80): string {
 
 /** Plain text of the self-drawn header; the renderer fits it to the width and colors it. */
 export function headerText(decor: MemberDecor): string {
-	return ` ${decor.name}  ${decor.leader ? "team leader" : `team member · ${decor.agent_id}`} `;
+	return ` ${decor.name}  ${decor.leader ? "team leader" : `team member · ${decor.agent_id}`}${decor.hint ? `  ·  ${decor.hint}` : ""} `;
 }

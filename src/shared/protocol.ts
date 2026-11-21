@@ -233,7 +233,7 @@ export const DEFAULT_PROVIDER = "default";
 /** What happens to an agent whose runtime deadline expires (see RunConfig.deadline_policy). */
 export type DeadlinePolicy = "BLOCKED" | "FAILED";
 
-export type TerminalBackend = "tmux" | "rex";
+export type TerminalBackend = "tmux" | "rex" | "native";
 /** Multiplexer IDs of the leader's window and terminal (tmux @n/%n, or Rex window:/block: IDs). */
 export interface TerminalLocation { window: string; leader: string }
 /** `socket` is the multiplexer server address: a tmux socket path or a Rex server URL. Omitted backend means tmux. */

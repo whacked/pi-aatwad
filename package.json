@@ -1,6 +1,6 @@
 {
   "name": "pi-recursive-team",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "description": "Recursive agent organizations for Pi: /team commands, org tools, and an auto-started local controller",
   "type": "module",
   "keywords": [
@@ -17,7 +17,8 @@
   },
   "bin": {
     "pi-team-controller": "./src/controller/main.ts",
-    "pi-team-claude": "./src/claude/cli.ts"
+    "pi-team-claude": "./src/claude/cli.ts",
+    "pi-team-attach": "./src/terminal/native/attach.ts"
   },
   "files": [
     "src",
@@ -41,5 +42,10 @@
   "devDependencies": {
     "@types/node": "^24.19.2",
     "typescript": "5.9"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.1.0",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0"
   }
 }

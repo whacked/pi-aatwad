@@ -88,7 +88,7 @@ test("saved unavailable tmux falls back before launch attempts and existing inte
  } finally { await hs.cleanup(); }
 });
 
-test("terminal options validate per backend: Rex IDs for Rex, tmux IDs for tmux, debug only in tmux", async () => {
+test("terminal options validate per backend: Rex IDs for Rex, tmux IDs for tmux, a fixed marker for native, debug only in tmux", async () => {
 	const hs = await harness();
 	try {
 		const { token, run_id } = await newRun(hs, { models: [] });
@@ -101,7 +101,11 @@ test("terminal options validate per backend: Rex IDs for Rex, tmux IDs for tmux,
 		assert.match((await post({ backend: "rex", location: { window: "@1", leader: "%1" } })).body.error.message, /Rex window\/block/);
 		assert.match((await post({ location: rexLocation })).body.error.message, /tmux window\/pane/);
 		assert.match((await post({ backend: "rex", location: rexLocation, debug: true })).body.error.message, /tmux-only/);
-		assert.match((await post({ backend: "screen" })).body.error.message, /tmux or rex/);
+		assert.match((await post({ backend: "screen" })).body.error.message, /tmux, rex or native/);
+		assert.match((await post({ backend: "native", location: { window: "@1", leader: "%1" } })).body.error.message, /native marker/);
+		assert.match((await post({ backend: "native", debug: true })).body.error.message, /tmux-only/);
+		assert.equal((await post({ backend: "native" })).status, 200);
+		assert.deepEqual((await hs.call("GET", `/runs/${run_id}/terminal`, { token: hs.op })).body.location, { window: "native", leader: "native" }, "native gets its fixed marker");
 		assert.match((await post({ enabled: false, backend: "rex" })).body.error.message, /cannot include terminal options/);
 		assert.equal((await post({ location: { window: "@1", leader: "%1" } })).status, 200);
 		assert.equal((await hs.call("GET", `/runs/${run_id}/terminal`, { token: hs.op })).body.backend, undefined, "tmux stays the implicit default");

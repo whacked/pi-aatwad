@@ -1,7 +1,7 @@
 // Decorate the existing editor instance, preserving custom editors and app keybindings.
 import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { headerText, planDecoration, type MemberDecor } from "../terminal/decor.ts";
+import { headerText, memberDecor, planDecoration, type MemberDecor } from "../terminal/decor.ts";
 import { hostCapabilities, type DecorationMode } from "../terminal/host.ts";
 
 type UI = ExtensionContext["ui"];
@@ -65,4 +65,23 @@ export function installMemberHeader(ui: UI, decor: () => MemberDecor | undefined
 		invalidate: () => {},
 	}), { placement: "aboveEditor" });
 	return true;
+}
+
+export const MEMBER_STRIP_WIDGET = "pi-recursive-team.members";
+export interface StripMember { agent_id: string; role: string; live: boolean }
+
+/** One line under the leader's editor: who is running and how to switch to them. */
+export function renderMemberStrip(members: StripMember[], width: number): string[] {
+	if (!members.length || width < 10) return [];
+	const parts = members.map((m) => {
+		const decor = memberDecor(m.agent_id, m.role);
+		const dot = m.live ? `\x1b[38;5;${decor.color}m●\x1b[39m` : "\x1b[2m○\x1b[22m";
+		return `${dot} ${m.live ? decor.name : `\x1b[2m${decor.name}\x1b[22m`}`;
+	});
+	const line = ` team: ${parts.join("  ")}  \x1b[2m· /team watch focus <name> switches\x1b[22m`;
+	return [visibleWidth(line) > width ? truncateToWidth(line, width) : line];
+}
+
+export function installMemberStrip(ui: UI, members: () => StripMember[]): void {
+	ui.setWidget(MEMBER_STRIP_WIDGET, () => ({ render: (width: number) => renderMemberStrip(members(), width), invalidate: () => {} }), { placement: "belowEditor" });
 }

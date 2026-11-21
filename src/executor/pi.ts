@@ -1,4 +1,5 @@
 import { terminalView } from "../terminal/view.ts";
+import { nativeHostSupport } from "../terminal/native/client.ts";
 import type { TerminalOptions } from "../shared/protocol.ts";
 import { findExecutable } from "../shared/environment.ts";
 import { launchTerminal } from "./terminal.ts";
@@ -92,6 +93,8 @@ export class PiExecutor implements Executor {
 	}
 
 	async terminalProblem(stateDir: string, runId: string, terminal: TerminalOptions): Promise<string | undefined> {
+		// The built-in host starts on demand; only platform support can rule it out.
+		if (terminal.backend === "native") return nativeHostSupport();
 		// Saved by older versions that opened a detached tmux session; panes now live only beside the leader.
 		if (!terminal.location) return "detached tmux team sessions are no longer supported; open member panes from a leader Pi running inside tmux";
 		const view = await terminalView({ stateDir, runId, ...terminal });

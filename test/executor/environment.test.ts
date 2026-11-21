@@ -4,6 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { currentTmuxPane, currentRexBlock, terminalHost, findExecutable } from "../../src/shared/environment.ts";
 import { hostCapabilities, NoSessionHostError } from "../../src/terminal/host.ts";
+import { nativeHostSupport } from "../../src/terminal/native/client.ts";
 import { PiExecutor } from "../../src/executor/pi.ts";
 import { tmp, makeSpec } from "./helpers.ts";
 
@@ -15,7 +16,7 @@ test("terminal hosting distinguishes plain SSH, tmux, incomplete markers and Her
  assert.equal(terminalHost({ HERDR_ENV: "1", TMUX_PANE: "%1" }), "herdr");
 });
 
-test("Rex is detected from its markers, tmux inside Rex stays tmux, and tmux and Rex host member sessions", () => {
+test("Rex is detected from its markers, tmux inside Rex stays tmux, and every host can hold member sessions", () => {
  const rex = { REX_SERVER: "unix:///tmp/rex.sock", REX_BLOCK: "block:01a1fc1c-2d5d-74ab-97fe-f900d30e3203", REX_SESSION: "session:01" };
  assert.equal(terminalHost(rex), "rex");
  assert.deepEqual(currentRexBlock(rex), { server: rex.REX_SERVER, block: rex.REX_BLOCK, session: "session:01" });
@@ -27,10 +28,14 @@ test("Rex is detected from its markers, tmux inside Rex stays tmux, and tmux and
  assert.equal(hostCapabilities("tmux").sessions, true);
  assert.equal(hostCapabilities("rex").sessions, true);
  assert.equal(hostCapabilities("rex").decoration, "label", "block labels until Rex ships components");
+ assert.equal(hostCapabilities("tmux").beside, true);
  for (const kind of ["herdr", "plain"] as const) {
   const caps = hostCapabilities(kind);
-  assert.equal(caps.sessions, false, kind);
-  assert.match(new NoSessionHostError(caps).message, /members run detached/);
+  assert.equal(caps.backend, "native", kind);
+  assert.equal(caps.beside, false, "members are switched into, not shown beside the leader");
+  assert.equal(caps.decoration, "self");
+  assert.equal(caps.sessions, !nativeHostSupport(), kind);
+  assert.match(new NoSessionHostError({ ...caps, sessions: false, unavailable: "no prebuilt terminal support, so members run detached" }).message, /members run detached/);
  }
 });
 
@@ -71,24 +76,33 @@ test("detached Pi launch does not need tmux or inherited terminal state", async 
  }
 });
 
-test("explicit member panes outside tmux and Rex fail with the host's reason and never start a multiplexer", async () => {
+test("plain terminals and Herdr open the built-in session host instead of a multiplexer", { skip: !!nativeHostSupport(), timeout: 30000 }, async () => {
  const { openTerminals } = await import("../../src/extension/terminals.ts");
- const keys = ["HERDR_ENV", "TMUX", "TMUX_PANE", "REX_SERVER", "REX_BLOCK"] as const;
+ const { harness, newRun } = await import("../controller/helpers.ts");
+ const { TeamClient } = await import("../../src/shared/client.ts");
+ const { statePaths } = await import("../../src/shared/paths.ts");
+ const { PtydClient } = await import("../../src/terminal/native/client.ts");
+ const keys = ["HERDR_ENV", "TMUX", "TMUX_PANE", "REX_SERVER", "REX_BLOCK", "PATH"] as const;
  const previous = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
- let contacted = false;
- const rt = { paths: { dir: "/tmp" }, commandToken: async () => { contacted = true; return "t"; }, client: {} } as any;
- const cases: Array<[Partial<Record<typeof keys[number], string>>, RegExp]> = [
-  [{ HERDR_ENV: "1", TMUX: "/outer,1,0", TMUX_PANE: "%2" }, /Herdr/],
-  [{}, /no multiplexer/],
- ];
+ const hs = await harness();
  try {
-  for (const [env, reason] of cases) {
-   for (const k of keys) delete process.env[k];
+  const rt = { paths: statePaths(hs.dir), commandToken: async () => hs.op, client: new TeamClient({ paths: statePaths(hs.dir), noReconnect: true }) } as any;
+  for (const env of [{ HERDR_ENV: "1", TMUX: "/outer,1,0", TMUX_PANE: "%2" }, {}]) {
+   for (const k of keys) if (k !== "PATH") delete process.env[k];
    Object.assign(process.env, env);
-   await assert.rejects(openTerminals(rt, "run"), (e: Error) => e instanceof NoSessionHostError && reason.test(e.message));
+   process.env.PATH = hs.dir; // no tmux or rex can be found or started
+   const { run_id } = await newRun(hs);
+   const view = await openTerminals(rt, run_id);
+   assert.equal(view.backend, "native");
+   const saved = (await hs.call("GET", `/runs/${run_id}/terminal`, { token: hs.op })).body;
+   assert.equal(saved.backend, "native");
+   assert.deepEqual(saved.location, { window: "native", leader: "native" });
+   await assert.rejects(view.focus("someone"), /\/team watch focus someone/, "switching needs the leader's terminal");
   }
-  assert.equal(contacted, false, "rejected before contacting the controller or tmux");
+  assert.equal(await new PtydClient(hs.dir).running(), true);
  } finally {
   for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  await new PtydClient(hs.dir).request({ op: "shutdown" }).catch(() => {});
+  await hs.cleanup();
  }
 });

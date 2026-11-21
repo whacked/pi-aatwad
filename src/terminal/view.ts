@@ -49,6 +49,7 @@ export function teamOwner(stateDir: string, runId: string): string {
 export async function terminalView(opts: WatchOptions & { backend?: TerminalBackend }): Promise<TerminalView> {
 	const { backend = "tmux", ...rest } = opts;
 	if (backend === "rex") return new (await import("./rex.ts")).RexView(rest);
+	if (backend === "native") return new (await import("./native.ts")).NativeView(rest);
 	return new (await import("../watch/tmux.ts")).TmuxWatch(rest);
 }
 

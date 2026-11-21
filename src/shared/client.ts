@@ -313,7 +313,7 @@ export async function ping(paths: StatePaths, timeoutMs = 2_000): Promise<Health
 	}
 }
 
-function resolveNode(override?: string): string {
+export function resolveNode(override?: string): string {
 	if (override) return override;
 	const exe = basename(process.execPath).toLowerCase();
 	// Inside Pi, execPath is node when Pi runs on Node; if Pi is a compiled/bun binary fall back to PATH.
@@ -321,7 +321,7 @@ function resolveNode(override?: string): string {
 	return "node";
 }
 
-function nodeArgsFor(entry: string): string[] {
+export function nodeArgsFor(entry: string): string[] {
 	const [maj, min] = process.versions.node.split(".").map(Number);
 	const args: string[] = [];
 	if (maj === 22 && min < 18) args.push("--experimental-strip-types");

@@ -1,6 +1,8 @@
 import { resolveAvailableModel } from "./models.ts";
-import { openTerminals } from "./terminals.ts";
+import { leaveToLeader, openTerminals } from "./terminals.ts";
 import { terminalView } from "../terminal/view.ts";
+import type { NativeView } from "../terminal/native.ts";
+import { attachMember } from "./attach.ts";
 import { hostCapabilities } from "../terminal/host.ts";
 // `/team` command with subcommands. Human-facing; uses the operator token unless this is a managed worker.
 import { readFileSync } from "node:fs";
@@ -36,8 +38,9 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "admin", args: "[status|limits|clear-limits|clear-deadlines|unlimited|bounded] [run_id]", help: "human operator resource policy: list or remove limits" },
 	{ name: "stop", args: "[run_id]", help: "stop a whole team resumably; preserve identities and transcripts" },
 	{ name: "remove", args: "[run_id] [--yes]", help: "permanently remove a whole team; preserve Pi and worktrees" },
-	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi member terminals beside the leader (tmux panes or Rex blocks)" },
+	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi member terminals (tmux panes, Rex blocks, or the built-in session host); focus switches to a member" },
 	{ name: "send", args: "[name|agent_id] <message>", help: "send directions to a team member" },
+	{ name: "leave", args: "", help: "in a member's terminal: return to the leader; the member keeps running" },
 ];
 
 export { formatAttention, parseAttention, parseDuration } from "../shared/attention-format.ts";
@@ -198,19 +201,29 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				return;
 			}
 			if (action === "status") {
-				out(ctx, await view.exists() ? `${view.backend} ${view.opts.location!.window}: ${(await view.panes()).length} team terminals` : `No member panes for ${id}. ${hostCapabilities().sessions ? "Use /team watch to open them beside this Pi." : hostCapabilities().unavailable}`);
+				out(ctx, await view.exists() ? `${view.backend === "native" ? "built-in session host" : `${view.backend} ${view.opts.location!.window}`}: ${(await view.panes()).length} member terminals` : `No member panes for ${id}. ${hostCapabilities().sessions ? "Use /team watch to open them beside this Pi." : hostCapabilities().unavailable}`);
 				return;
 			}
 			// Validate access and run existence before creating terminal resources.
 			await rt.client.tree(id, { token: await rt.commandToken() });
 			view = await openTerminals(rt, id, { debug: action === "debug" });
-			if (action === "focus") {
-				const tree = await rt.client.tree(id, { token: await rt.commandToken() });
-				await view.focus(focusTarget === tree.root.agent_id ? "leader" : focusTarget);
-			}
-			else await view.focus();
 			if (view.reclaimedFrom) out(ctx, `This terminal was still tagged for ${view.reclaimedFrom}. It now hosts ${id}; nothing was stopped or deleted.`);
-			out(ctx, `Member ${view.backend === "rex" ? "blocks" : "panes"} open beside Pi in the current ${view.backend} window; interactive members appear automatically. /team watch focus <name> switches to one.`);
+			const tree = action === "focus" ? await rt.client.tree(id, { token: await rt.commandToken() }) : undefined;
+			const target = tree && focusTarget !== tree.root.agent_id ? focusTarget : undefined;
+			if (view.backend === "native") {
+				// No on-screen panes: switching means handing this terminal to the member.
+				if (target) { out(ctx, await attachMember(ctx, view as NativeView, target)); return; }
+				out(ctx, "Members run in the built-in session host and keep running when you leave. /team watch focus <name> switches this terminal to one; type /team leave there to come back. From another terminal: pi-team-attach <name>.");
+				return;
+			}
+			await view.focus(target ?? "leader");
+			out(ctx, `Member ${view.backend === "rex" ? "blocks" : "panes"} open beside Pi in the current ${view.backend} window; interactive members appear automatically. /team watch focus <name> switches to one; /team leave in a member returns here.`);
+		},
+
+		leave: async (_a, ctx) => {
+			await rt.ready;
+			if (!rt.managed || !rt.identity) throw new Error("/team leave runs in a member's terminal and returns you to the leader; you are already in the leader");
+			out(ctx, await leaveToLeader(rt));
 		},
 
 		send: async (a, ctx) => {

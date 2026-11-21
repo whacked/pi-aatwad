@@ -14,6 +14,7 @@ import type { StatePaths } from "../shared/paths.ts";
 import { TeamApiError, TeamClient, ensureController, readOperatorToken, isUnavailable } from "../shared/client.ts";
 import type { CallOptions, EnsureOptions, EnsureResult } from "../shared/client.ts";
 import { formatEnvelope } from "./format.ts";
+import { installMemberStrip, MEMBER_STRIP_WIDGET, type StripMember } from "./agent-label.ts";
 
 export const IDENTITY_ENTRY = "pi-recursive-team/identity";
 export const INBOX_MESSAGE = "pi-recursive-team/inbox";
@@ -207,6 +208,27 @@ export class TeamRuntime {
 			else ctx.ui.setStatus(STATUS_KEY, undefined);
 		} catch {
 			/* ctx invalidated */
+		}
+	}
+
+	private stripKey = "";
+	/** Leaders see which members are running, wherever they are hosted, and how to switch. */
+	async refreshMemberStrip(identity = this.identity): Promise<void> {
+		const ctx = this.ctx;
+		if (!ctx || ctx.mode !== "tui" || !identity || this.managed) return;
+		try {
+			const me = await this.client.me({ timeoutMs: 3_000 });
+			if (this.identity !== identity || this.ctx !== ctx) return;
+			const members: StripMember[] = me.children
+				.filter((c) => !["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(c.status))
+				.map((c) => ({ agent_id: c.agent_id, role: c.role, live: c.observed_state === "LIVE" }));
+			const key = JSON.stringify(members);
+			if (key === this.stripKey) return;
+			this.stripKey = key;
+			if (members.length) installMemberStrip(ctx.ui, () => members);
+			else ctx.ui.setWidget(MEMBER_STRIP_WIDGET, undefined);
+		} catch {
+			/* best effort; the footer reports controller problems */
 		}
 	}
 
@@ -691,6 +713,7 @@ export class TeamRuntime {
 			await this.flushUsage();
 			if (this.identity !== identity) return;
 			this.updateStatus();
+			void this.refreshMemberStrip(identity);
 			const hadLocalSelection = !!this.localModel;
 			await this.flushLocalModel();
 			if (this.identity !== identity) return;

@@ -9,6 +9,8 @@ import { registerTeamCommand } from "./commands.ts";
 import { formatOrgContext } from "./format.ts";
 import { agentDisplayName, installAgentLabel, installMemberHeader } from "./agent-label.ts";
 import { memberDecor } from "../terminal/decor.ts";
+import { ENV_PTY_HANDLE } from "../terminal/native/protocol.ts";
+import { terminalHost } from "../shared/environment.ts";
 
 export const CONTEXT_SECTION = "team_org_context";
 
@@ -61,7 +63,9 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 		if (ctx.mode === "tui") {
 			installAgentLabel(ctx.ui, () => rt.identity ? agentDisplayName(rt.identity.role) : undefined);
 			// Member terminals get a decoration from the host's dispatch plan; the leader keeps its editor label.
-			installMemberHeader(ctx.ui, () => rt.identity && rt.managed ? memberDecor(rt.identity.agent_id, agentDisplayName(rt.identity.role)) : undefined);
+			// Members the human can switch into say how to get back.
+			const switchable = !!process.env[ENV_PTY_HANDLE] || ["tmux", "rex"].includes(terminalHost());
+			installMemberHeader(ctx.ui, () => rt.identity && rt.managed ? { ...memberDecor(rt.identity.agent_id, agentDisplayName(rt.identity.role)), ...(switchable ? { hint: "/team leave returns to the leader" } : {}) } : undefined);
 		}
 		// Managed one-shot worker: enroll before the first turn (Pi awaits session_start handlers).
 		// Interactive sessions: do not block startup; tools and before_agent_start wait with a bound.
@@ -102,7 +106,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 				"To close members when requested, use team_close_member. Completing tasks or zeroing a budget does not terminate a Pi process. Never claim a member is closed without a successful lifecycle result. " +
 				"Use team_set_budget and team_set_model to change existing members; agent arguments accept exact names, full IDs, or unique whole ID words (such as maple or river maple). Ambiguous short references require more words or a full ID; short references are scoped to this team. Model changes wait until idle and preserve the process/transcript. " +
 				"Members get separate worktrees. Report their actual IDs and provisioning state, and integrate results explicitly. " +
-				"When the user requests member panes, use team_watch to open or manage them beside this Pi; if the terminal cannot host them, relay the reason team_watch gives. " +
+				"When the user requests member panes, use team_watch to open or manage them; if the terminal cannot host them, relay the reason team_watch gives. To switch the human into a member, tell them to run /team watch focus <name> (and /team leave there to come back). " +
 				"Runtime model registrations persist in this run; existing members retain their selected models. Lifecycle notices report process loss, restart scheduling or failure: update your understanding of the team and use team_get_tree to verify current state; a completed task is not a closed worker.";
 			else text += "\nCompleting a task does not end your membership. Remain available for leader messages and new assignments. Do not exit Pi, kill your pane or retire yourself after finishing; your manager or the human decides when to close you.";
 		} catch (e) {
@@ -125,6 +129,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 	// Interactive sessions: deliver pending messages as soon as Pi settles instead of waiting for the next heartbeat.
 	pi.on("agent_settled", () => {
 		rt.updateStatus();
+		void rt.refreshMemberStrip();
 		rt.onSettled();
 	});
 }

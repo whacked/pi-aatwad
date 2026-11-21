@@ -2,6 +2,8 @@
 // Backends declare capabilities here; display and session code dispatch on them instead of
 // testing environment markers directly.
 import { terminalHost, type TerminalHostKind } from "../shared/environment.ts";
+import type { TerminalBackend } from "../shared/protocol.ts";
+import { nativeHostSupport } from "./native/client.ts";
 
 /**
  * How a host can label a member terminal, richest first.
@@ -14,34 +16,39 @@ export type DecorationMode = "components" | "border-title" | "label" | "self";
 
 export interface HostCapabilities {
 	kind: TerminalHostKind;
+	/** Backend that holds member sessions for this host. */
+	backend: TerminalBackend;
 	/** Members can run in persistent sessions the human can switch into on this host today. */
 	sessions: boolean;
+	/** Members appear on screen beside the leader (otherwise the human attaches to switch). */
+	beside: boolean;
 	decoration: DecorationMode;
 	/** Why member sessions are unavailable here; members then run detached. */
 	unavailable?: string;
 }
 
-const CAPABILITIES: Record<TerminalHostKind, Omit<HostCapabilities, "kind">> = {
-	// In-place panes never change the user's window options, so only pane titles are guaranteed.
-	tmux: { sessions: true, decoration: "label" },
-	// Block labels now; Rex components will move this to "components" when Rex ships them.
-	rex: { sessions: true, decoration: "label" },
-	herdr: { sessions: false, decoration: "self",
-		unavailable: "Herdr has no team pane backend, so members run detached." },
-	plain: { sessions: false, decoration: "self",
-		unavailable: "This terminal has no multiplexer, so members run detached. Start the leader Pi inside tmux for switchable member panes; a built-in session host is planned." },
-};
-
 export function hostCapabilities(kind: TerminalHostKind = terminalHost()): HostCapabilities {
-	return { kind, ...CAPABILITIES[kind] };
+	switch (kind) {
+		// In-place panes never change the user's window options, so only pane titles are guaranteed.
+		case "tmux": return { kind, backend: "tmux", sessions: true, beside: true, decoration: "label" };
+		// Block labels now; Rex components will move this to "components" when Rex ships them.
+		case "rex": return { kind, backend: "rex", sessions: true, beside: true, decoration: "label" };
+		// No multiplexer: the built-in session host keeps members; the leader attaches to switch.
+		case "herdr":
+		case "plain": {
+			const unsupported = nativeHostSupport();
+			return { kind, backend: "native", sessions: !unsupported, beside: false, decoration: "self",
+				...(unsupported ? { unavailable: `${unsupported}, so members run detached. Start the leader Pi inside tmux or Rex for member panes.` } : {}) };
+		}
+	}
 }
 
 /** Actionable error for an explicit request to open member sessions where none can live. */
 export class NoSessionHostError extends Error {
 	readonly caps: HostCapabilities;
 	constructor(caps: HostCapabilities) {
-		super(`Team member panes are unavailable: ${caps.unavailable ?? caps.kind}`);
-		this.caps = caps;
+		super(`Team member terminals are unavailable: ${caps.unavailable ?? caps.kind}`);
 		this.name = "NoSessionHostError";
+		this.caps = caps;
 	}
 }

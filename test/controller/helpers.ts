@@ -1,4 +1,5 @@
 // Test helpers: short state dirs, a stub Executor, and a tiny HTTP-over-unix-socket client.
+import { PtydClient } from "../../src/terminal/native/client.ts";
 import * as fsMod from "node:fs";
 import { mkdtempSync, readFileSync, unlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -125,6 +126,9 @@ export async function harness(opts: Partial<ControllerOptions> = {}, dir = short
 		},
 		cleanup: async () => {
 			await hs.h.close();
+			// Tests that open member terminals in a plain environment start the built-in host here.
+			const host = new PtydClient(dir);
+			if (await host.running()) await host.request({ op: "shutdown" }).catch(() => {});
 			rmSync(dir, { recursive: true, force: true });
 		},
 	};

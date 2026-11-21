@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.23, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.24, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -444,18 +444,19 @@ overflow recovery. Each member uses Pi's own compaction settings; `/compact` rem
 available in its pane. The plugin does not add a separate compactor. See
 [Pi compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md).
 
-### SSH, Herdr and execution without tmux
+### Where members run: tmux, Rex, or the built-in session host
 
-Team recruitment and reporting do not require tmux. Execution depends on the
-hosting environment and the team's saved terminal setting:
+Team recruitment and reporting do not require a multiplexer. Members are
+interactive Pi sessions you can switch into, wherever the leader runs:
 
 | Environment | Default behavior |
 |---|---|
-| Plain terminal or SSH, without tmux | Controller launches detached, one-shot Pi workers with durable inboxes and transcripts. |
-| Herdr | Pi stays in its Herdr pane; workers use detached execution. Inherited outer tmux markers are ignored when `HERDR_ENV=1`. |
+| Plain terminal or SSH, without tmux | Members run in the built-in session host. `/team watch focus <name>` switches this terminal into a member; `/team leave` there comes back. |
+| Herdr | Same built-in session host as a plain terminal. Inherited outer tmux markers are ignored when `HERDR_ENV=1`. |
 | Rex (Superlogical) | Detected from `REX_SERVER`/`REX_BLOCK`. Member creation automatically splits interactive member blocks beside the leader's block. tmux running inside Rex is treated as tmux. |
 | Valid tmux pane containing this Pi | Member creation automatically opens team panes beside Pi unless explicitly disabled. |
 | Missing tmux or stale inherited pane markers | Automatic pane setup cannot block recruitment; detached workers remain available. |
+| Platform without prebuilt terminal support (for example Alpine/musl, Windows) | Workers use detached, one-shot execution. |
 | Saved tmux session/pane becomes unavailable | Controller records a fallback notice and switches workers to detached execution, preserving identities, tasks and transcripts. |
 
 To force detached workers, including inside tmux:
@@ -470,20 +471,39 @@ and instructed to continue. Old tmux panes may remain as exited panes and can be
 closed. `/team watch close` only hides/detaches the view and leaves interactive
 workers running. `/team watch status` works without tmux in detached mode.
 
-Without tmux there are no live member panes or direct keyboard input to workers.
-Use the leader's team tools, `/team send`, `/team inbox`, `/team inspect`, and
-`/team reporting`. Detached workers exit when their prompt settles and relaunch on
+Detached workers (after `/team watch off`, or where no session host is available)
+have no terminal or direct keyboard input. Use the leader's team tools, `/team send`,
+`/team inbox`, `/team inspect`, and `/team reporting`. Detached workers exit when their prompt settles and relaunch on
 the same transcript for new assignments. The controller and detached workers survive
 an ordinary root-session exit or SSH disconnect; host shutdown or session cleanup
 policies can still stop processes. Resume with `/team resume` later.
 
-Member panes always open beside the leader Pi, in the terminal it already runs in.
-There is no detached tmux session mode: outside tmux and Rex, `/team watch open` explains
-why this terminal cannot host member panes yet, and team work continues detached.
-It never nests or attaches tmux inside Herdr or Rex automatically. Teams saved by
+Member panes open beside the leader Pi in tmux and Rex. There is no detached tmux
+session mode, and the team never nests or attaches tmux inside Herdr or Rex. Teams saved by
 older versions with a detached tmux session fall back to detached workers; reopen
 them from a leader Pi inside tmux. Herdr documents the limitations of nested tmux in its
 [agent hosting guide](https://herdr.dev/tui/docs/agents/).
+
+### Members in a plain terminal (built-in session host)
+
+Outside tmux and Rex, members run in **ptyd**, a small background process (one per
+controller state directory) that holds each member's terminal, in the spirit of
+Claude Code's background agents. Members keep running when the leader Pi exits or the
+SSH connection drops, and `/team resume` returns to them.
+
+- **Seeing them:** a line under the leader's input lists running members, for example
+  `team: ● Alpha  ● Beta · /team watch focus <name> switches`.
+- **Switching in:** `/team watch focus Alpha` hands this terminal to Alpha's live Pi,
+  exactly as Pi hands the terminal to an external editor. You see Alpha's screen and
+  type directly to it.
+- **Coming back:** type `/team leave` in the member. The member keeps running and the
+  leader redraws. If a member exits, you return to the leader automatically. No key is
+  bound by default; set `PI_TEAM_DETACH_KEY=ctrl-]` (any `ctrl-<key>`) to add one.
+- **From another terminal:** `pi-team-attach Alpha` attaches there instead.
+
+The host uses `@lydell/node-pty`, which ships prebuilt binaries for macOS (x64, arm64)
+and glibc Linux (x64, arm64; glibc 2.28 or newer), so nothing is compiled at install.
+Its log is `ptyd.log` in the state directory; it exits by itself when it hosts nothing.
 
 ### Interactive Pi teams in tmux
 

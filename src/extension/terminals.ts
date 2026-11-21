@@ -2,6 +2,7 @@ import type { TeamRuntime } from "./runtime.ts";
 import { currentRexBlock, currentTmuxPane } from "../shared/environment.ts";
 import { hostCapabilities, NoSessionHostError } from "../terminal/host.ts";
 import { savedOptions, teamOwner, terminalView, type TerminalView } from "../terminal/view.ts";
+import { DETACH_SEQUENCE, ENV_PTY_HANDLE } from "../terminal/native/protocol.ts";
 import type { TerminalBackend, TerminalOptions } from "../shared/protocol.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -22,6 +23,7 @@ async function containsCurrentProcess(panePid: number): Promise<boolean> {
 function leaderTerminal(): { backend: TerminalBackend; handle: string; noun: string } | undefined {
 	const caps = hostCapabilities();
 	if (!caps.sessions) return undefined;
+	if (caps.backend === "native") return { backend: "native", handle: "native", noun: "terminal" };
 	const pane = currentTmuxPane();
 	if (pane) return { backend: "tmux", handle: pane, noun: "pane" };
 	const rex = currentRexBlock();
@@ -37,6 +39,7 @@ export async function autoOpenTerminals(rt: TeamRuntime, runId: string): Promise
 	const cfg = await rt.client.get<{ auto_open?: boolean }>(`/runs/${encodeURIComponent(runId)}/terminal`, { token });
 	if (cfg.auto_open === false) return;
 	try {
+		if (leader.backend === "native") { await openTerminals(rt, runId); return; }
 		const view = await terminalView({ stateDir: rt.paths.dir, runId, backend: leader.backend });
 		const pid = await view.paneProcess(leader.handle);
 		if (!await containsCurrentProcess(pid)) return `Inherited ${leader.backend} ${leader.noun} does not contain this Pi; continuing without automatic member ${leader.noun}s.`;
@@ -53,7 +56,8 @@ export async function openTerminals(rt: TeamRuntime, runId: string, options: { d
 	const token = await rt.commandToken();
 	const cfg = await rt.client.get<TerminalOptions>(`/runs/${encodeURIComponent(runId)}/terminal`, { token });
 	const view = await terminalView({ stateDir: rt.paths.dir, runId, backend, debug: options.debug ?? cfg.debug ?? false });
-	const { owner } = await view.readTag(handle);
+	// The built-in host has no shared leader terminal to contest; teams are separated by owner.
+	const { owner } = backend === "native" ? {} : await view.readTag(handle);
 	if (owner && owner !== view.owner) {
 		const runs = (await rt.client.listRuns({ token })).runs;
 		const old = runs.find((r) => teamOwner(rt.paths.dir, r.run_id) === owner);
@@ -81,4 +85,16 @@ export async function openTerminals(rt: TeamRuntime, runId: string, options: { d
 	await view.open(handle);
 	await rt.client.post(`/runs/${encodeURIComponent(runId)}/terminal`, savedOptions(view, await view.serverAddress()), { token });
 	return view;
+}
+
+/** Member side of switching: hand the human back to the leader; the member keeps running. */
+export async function leaveToLeader(rt: TeamRuntime, write: (data: string) => void = (d) => { process.stdout.write(d); }): Promise<string> {
+	// Built-in host: the attached client watches for this sequence and returns to the leader.
+	if (process.env[ENV_PTY_HANDLE]) { write(DETACH_SEQUENCE); return "Returning to the leader; this member keeps running."; }
+	const runId = rt.identity!.run_id;
+	const terminal = await rt.client.get<TerminalOptions & { enabled?: boolean }>(`/runs/${encodeURIComponent(runId)}/terminal`);
+	if (!terminal.enabled || !terminal.location) return "This member is not in a switchable terminal; there is nothing to leave.";
+	const view = await terminalView({ stateDir: rt.paths.dir, runId, backend: terminal.backend, socket: terminal.socket, location: terminal.location });
+	await view.focus("leader");
+	return "Focused the leader; this member keeps running.";
 }

@@ -328,3 +328,30 @@ performs with `@pi_team_owner`. Saved Rex locations use `window:`/`block:` IDs, 
 controller validates per backend; debug mode is rejected for Rex.
 Integration tests under `test/terminal/` run against the real Rex server, in throwaway
 sessions, when the suite runs inside Rex, including a real interactive Pi member.
+
+## Built-in session host (v0.1.24)
+
+Hosts without a multiplexer (plain terminals, SSH, Herdr) map to the `native` backend.
+`src/terminal/native/daemon.ts` (ptyd) is a per-state-directory daemon on `ptyd.sock`
+(0600, in the 0700 state directory), with an O_EXCL pid lock. It spawns members through
+`@lydell/node-pty` (prebuilt, N-API) and mirrors each terminal into `@xterm/headless`.
+Requests and replies are length-prefixed frames (1 byte type, 4 byte length): JSON for
+control and raw data for terminal bytes. An attach request switches the connection to
+streaming: it sizes the PTY to the client, repaints with the serialized viewport, then
+relays bytes both ways. ptyd exits only when it hosts nothing and nobody is connected.
+
+`NativeView` implements `TerminalView` with a fixed `native` location (validated by
+the controller). Launches use the same startup gate, with `PI_TEAM_PTYD`/`PI_TEAM_PTY`
+kept through `env -i`; a relaunch replaces the member's terminal. Preflight only checks
+platform support, so idle teams never start the daemon.
+
+Switching happens in the leader: `/team watch focus` stops Pi's TUI inside a
+`ui.custom` placeholder, runs `native/attach.ts` with inherited stdio in the alternate
+screen, then restarts and force-renders the TUI. This is the same sequence Pi uses for its
+external editor. `/team leave` in a member writes a private OSC (`7726;pi-team;detach`),
+which ptyd turns into a detach event for attached clients; in tmux and Rex the same
+command focuses the leader instead. Leaders show a member strip below the editor,
+refreshed from `/me` on heartbeat and after turns. Tests cover the daemon, the attach
+client in a real PTY, a real Pi member, and a real leader Pi switching into a member and
+back.
+

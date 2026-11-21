@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { memberColor, memberDecor, nativeLabel, planDecoration } from "../../src/terminal/decor.ts";
-import { installMemberHeader, MEMBER_HEADER_WIDGET, renderMemberHeader } from "../../src/extension/agent-label.ts";
+import { installMemberHeader, MEMBER_HEADER_WIDGET, renderMemberHeader, renderMemberStrip } from "../../src/extension/agent-label.ts";
 import type { DecorationMode } from "../../src/terminal/host.ts";
 
 test("decoration dispatch: native components replace the self-drawn header; weaker hosts keep it", () => {
@@ -50,4 +50,18 @@ test("member header widget follows the dispatch plan and the current identity", 
 	}
 	assert.equal(installMemberHeader(ui, () => decor, "components"), false);
 	assert.equal(widgets.get(MEMBER_HEADER_WIDGET), undefined, "native components remove the self-drawn header");
+});
+
+test("leader member strip lists running members with their colors, dims stopped ones and fits the width", () => {
+	assert.deepEqual(renderMemberStrip([], 80), []);
+	const members = [{ agent_id: "a-1", role: "Alpha", live: true }, { agent_id: "b-2", role: "Beta", live: false }];
+	const [line] = renderMemberStrip(members, 120);
+	assert.equal(stripTerminalSequences(line), " team: ● Alpha  ○ Beta  · /team watch focus <name> switches");
+	assert.ok(line.includes(`\x1b[38;5;${memberColor("a-1")}m●`), "member color matches its header");
+	for (let width = 10; width < 80; width++) assert.ok(visibleWidth(renderMemberStrip(members, width)[0]) <= width, String(width));
+});
+
+test("member header can carry the way back to the leader", () => {
+	const [line] = renderMemberHeader({ ...memberDecor("m-1", "Alpha"), hint: "/team leave returns to the leader" }, 120);
+	assert.match(stripTerminalSequences(line), /Alpha {2}team member · m-1 {2}· {2}\/team leave returns to the leader/);
 });
