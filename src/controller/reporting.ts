@@ -3,7 +3,8 @@
 import { all, get, run, emit, newId, nowIso, type DB, type Row } from "./db.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type { ReportingLink, ReportingStatus } from "../shared/protocol.ts";
-import { getRun, getAgent, isTerminal } from "./queries.ts";
+import { getRun, getAgent, getAllocation, isTerminal, runConfig } from "./queries.ts";
+import { setLimits } from "./budgets.ts";
 import { fail } from "./errors.ts";
 import { obj, str, oneOf, onlyKeys } from "./validate.ts";
 import { postMessage } from "./messaging.ts";
@@ -116,8 +117,20 @@ function connect(db: DB, childRun: string, parentRun: string, actor: string): vo
 	const tasks = all(db, "SELECT id AS task_id, title, status FROM tasks WHERE run_id = ? AND status NOT IN ('DONE','FAILED','CANCELLED') ORDER BY created_at LIMIT 30", childRun);
 	const members = all(db, "SELECT id AS agent_id, role, status, observed_state FROM agents WHERE run_id = ? AND status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') ORDER BY created_at LIMIT 30", childRun);
 	const latest = all(db, "SELECT type, payload_json, created_at FROM events WHERE run_id = ? AND type IN ('task.progress','task.completed') ORDER BY seq DESC LIMIT 5", childRun);
+	joinGrant(db, childRun, parentRun, child, actor);
 	notice(db, link, "reporting.connected", { tasks, members, recent_progress: latest, instruction: `Team leader ${child}: send your reporting parent an initial report using team_send_message: goal, progress, active members, blockers, pending decisions and next action. Continue sending meaningful updates. Receiving leader: maintain consolidated status and follow up with the reporting leader. This link grants coordination only; budgets, recruitment, approvals and team control remain with each team.` }, true);
 	audit(db, link, actor, "reporting.connected", {});
+}
+
+/** A joined team keeps its budget; the lead's default member budget, if any, is added once. */
+function joinGrant(db: DB, childRun: string, parentRun: string, childRoot: string, actor: string): void {
+	const grant = runConfig(db, parentRun).member_default_usd;
+	if (!grant || grant <= 0 || runConfig(db, childRun).operator_unlimited) return;
+	const before = getAllocation(db, childRoot).limits;
+	if (before.max_subtree_usd === null) return;
+	const after = { ...before, max_subtree_usd: before.max_subtree_usd + grant };
+	setLimits(db, childRoot, after);
+	emit(db, { run_id: childRun, actor_id: actor, type: "budget.join_grant", entity_id: childRoot, payload: { lead_run_id: parentRun, added_usd: grant, before: before.max_subtree_usd, after: after.max_subtree_usd } });
 }
 
 export function changeReporting(ctx: Ctx, p: Principal, runId: string, body: unknown): ReportingStatus {

@@ -70,3 +70,27 @@ test("leads read their whole linked subtree, peers talk sideways, and severing t
 		assert.equal((await h.call("GET", `/runs/${deep.run_id}/tree`, { token: lead.token })).status, 403, "the subtree below a severed link is no longer readable");
 	} finally { await h.cleanup(); }
 });
+
+test("a joined team keeps its budget and receives the lead's default member budget once", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), bounded = await newRun(h), unlimited = await newRun(h), plain = await newRun(h);
+		const limitOf = (t: Team) => JSON.parse(sql(h, "SELECT limits_json FROM allocations WHERE agent_id = ?", t.root)[0].limits_json).max_subtree_usd;
+		// Give the joining team an explicit ceiling, and the lead a default member budget.
+		h.h.db.prepare("UPDATE allocations SET limits_json = json_set(limits_json, '$.max_subtree_usd', 10) WHERE agent_id = ?").run(bounded.root);
+		ok(await h.call("POST", `/runs/${unlimited.run_id}/admin`, { token: h.op, body: { mode: "unlimited" } }));
+		assert.equal(ok(await h.call("POST", `/runs/${lead.run_id}/admin`, { token: h.op, body: { mode: "member-default", usd: 5 } })).member_default_usd, 5);
+		assert.equal((await h.call("POST", `/runs/${lead.run_id}/admin`, { token: h.op, body: { mode: "member-default", usd: -1 } })).status, 400);
+		const before = limitOf(plain);
+
+		ok(await link(h, bounded, lead));
+		assert.equal(limitOf(bounded), 15, "the existing ceiling is kept and the default is added");
+		ok(await link(h, bounded, lead));
+		assert.equal(limitOf(bounded), 15, "reconnecting the same link grants nothing more");
+		ok(await link(h, unlimited, lead));
+		assert.equal(sql(h, "SELECT COUNT(*) AS n FROM events WHERE type = 'budget.join_grant' AND run_id = ?", unlimited.run_id)[0].n, 0, "unlimited teams need no grant");
+		ok(await h.call("POST", `/runs/${lead.run_id}/admin`, { token: h.op, body: { mode: "member-default", usd: null } }));
+		ok(await link(h, plain, lead));
+		assert.deepEqual(limitOf(plain), before, "no default, no change");
+	} finally { await h.cleanup(); }
+});

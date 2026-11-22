@@ -244,6 +244,8 @@ export interface RunConfig {
 	terminal_disabled?: boolean;
 	/** Human operator authorization to remove numeric spend, runtime and recruitment caps. */
 	operator_unlimited?: boolean;
+	/** Default budget (USD) this team gives a new member; added once to a team that links under it. */
+	member_default_usd?: number;
 	/** Interactive Pi workers hosted beside the leader in tmux or Rex. */
 	terminal?: TerminalOptions;
 	limits: GlobalLimits;

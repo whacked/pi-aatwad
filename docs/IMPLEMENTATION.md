@@ -397,3 +397,11 @@ keeps joined teams running and linked so their reports queue, and `/runs/:id/res
 resumes the teams it stopped. `POST /agents/:id/link` lets the operator set `terminatable`
 on any active link; a lead cannot cancel or retire an in-team joined member whose link is
 not terminatable.
+
+## Unified links, phase 4: budget on join (v0.1.29)
+
+A team that links under another keeps its allocation unchanged. The operator can give a
+team a default member budget (`POST /runs/:id/admin` `{mode: "member-default", usd}`;
+`null` removes it); when another team links under it, that amount is added once to the
+joining root's `max_subtree_usd` (event `budget.join_grant`). Unlimited teams and
+ceiling-free envelopes are left alone, and re-confirming an existing link grants nothing.

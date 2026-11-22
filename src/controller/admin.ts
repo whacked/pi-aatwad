@@ -76,8 +76,9 @@ export function adminPolicy(ctx: Ctx, p: Principal, scope: ReqScope, runId: stri
 	let cleared: { resumed: string[]; still_paused: string[] } | undefined;
 	if (body !== undefined) {
 		if (p.kind !== "operator") fail("FORBIDDEN", "only the human operator can change resource limits");
-		const b = obj(body); onlyKeys(b, ["mode"]);
-		const mode = oneOf(b, "mode", ["unlimited", "bounded", "clear-deadlines", "clear-limits"] as const);
+		const b = obj(body); onlyKeys(b, ["mode", "usd"]);
+		const mode = oneOf(b, "mode", ["unlimited", "bounded", "clear-deadlines", "clear-limits", "member-default"] as const);
+		if (mode === "member-default" && b.usd !== null && (typeof b.usd !== "number" || !Number.isFinite(b.usd) || b.usd < 0)) fail("INVALID", "member-default needs usd: a non-negative number, or null to remove it");
 		tx(ctx.db, () => {
 			if (mode === "clear-limits") cleared = clearLimits(ctx, p, scope, runId, cfg);
 			else if (mode === "clear-deadlines") {
@@ -94,11 +95,14 @@ export function adminPolicy(ctx: Ctx, p: Principal, scope: ReqScope, runId: stri
 					run(ctx.db, "UPDATE allocations SET limits_json=? WHERE agent_id=?", JSON.stringify(limits), a.id);
 					run(ctx.db, "UPDATE agents SET metadata_json=? WHERE id=?", JSON.stringify(meta), a.id);
 				}
+			} else if (mode === "member-default") {
+				if (b.usd === null || b.usd === 0) delete cfg.member_default_usd;
+				else cfg.member_default_usd = b.usd as number;
 			} else cfg.operator_unlimited = mode === "unlimited";
 			if (mode !== "clear-limits") run(ctx.db, "UPDATE runs SET config_json=? WHERE id=?", JSON.stringify(cfg), runId);
 			emit(ctx.db, { run_id: runId, actor_id: p.actor_id, type: "run.resource_policy_changed", entity_id: runId, payload: { unlimited: !!cfg.operator_unlimited, action: mode, ...(cleared ?? {}) } });
 		});
 		ctx.kick();
 	}
-	return { run_id: runId, mode: cfg.operator_unlimited ? "unlimited" : "bounded", unlimited: !!cfg.operator_unlimited, limits: activeLimits(ctx.db, runId), ...(cleared ?? {}) };
+	return { run_id: runId, mode: cfg.operator_unlimited ? "unlimited" : "bounded", unlimited: !!cfg.operator_unlimited, member_default_usd: cfg.member_default_usd ?? null, limits: activeLimits(ctx.db, runId), ...(cleared ?? {}) };
 }
