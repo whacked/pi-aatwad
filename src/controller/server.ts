@@ -20,6 +20,7 @@ import { changeReporting, readReporting } from "./reporting.ts";
 import { agentAttentionRoute, runAttentionRoute } from "./attention.ts";
 import { joinTeam, leaveSession } from "./external.ts";
 import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
+import { dismiss, setLinkPolicy } from "./links.ts";
 
 type Auth = "none" | "any" | "operator" | "agent";
 type Handler = (a: { p: Principal; scope: ReqScope; params: string[]; body: unknown; q: URLSearchParams }) => unknown;
@@ -82,6 +83,8 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("GET", "/proposals", "any", ({ p, q }) => listProposals(ctx, p, q)),
 		R("POST", "/agents/:id/reparent", "any", ({ p, scope, params, body }) => reparent(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/lifecycle", "any", ({ p, scope, params, body }) => lifecycle(ctx, p, scope, params[0], body)),
+		R("POST", "/agents/:id/dismiss", "any", ({ p, scope, params, body }) => dismiss(ctx, p, scope, params[0], body)),
+		R("POST", "/agents/:id/link", "operator", ({ p, params, body }) => setLinkPolicy(ctx, p, params[0], body)),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
 		R("POST", "/budgets/:id", "any", ({ p, scope, params, body }) => updateBudget(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/model", "any", ({ p, params, body }) => updateModel(ctx, p, params[0], body)),

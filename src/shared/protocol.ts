@@ -302,6 +302,22 @@ export interface TeamLifecycleState {
 	suspended?: string[];
 	/** Owned worker processes still to be stopped. */
 	pending?: { pid: number; process_started_at: string }[];
+	/** Set when this team stopped because the team it is linked under stopped or dismissed it. */
+	stopped_by_run_id?: string;
+}
+
+/** POST /agents/:id/dismiss */
+export interface DismissResponse {
+	agent_id: string;
+	run_id: string;
+	/** The link to the lead ended. */
+	severed: boolean;
+	/** The child's team was stopped (resumable), not just detached. */
+	stopped: boolean;
+	/** Teams stopped by the cascade, child first. */
+	stopped_run_ids: string[];
+	/** Links below that were severed instead of stopped because they are not terminatable. */
+	severed_below: string[];
 }
 
 // ---------------------------------------------------------------------------

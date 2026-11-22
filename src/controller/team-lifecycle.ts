@@ -56,6 +56,29 @@ function cleanup(ctx: Ctx, scope: ReqScope, runId: string, operationId: string, 
 
 export function stopTeam(ctx: Ctx, p: Principal, scope: ReqScope, runId: string): TeamLifecycleResponse {
 	operator(p);
+	const receiptOut = suspendTeam(ctx, scope, runId, p.actor_id);
+	// Teams linked under this one stop with it only when their links are terminatable.
+	cascadeStop(ctx, scope, runId, p.actor_id, new Set([runId]));
+	return receiptOut;
+}
+
+/** Stop every team linked under runId on a terminatable link; others keep running and queue reports. */
+export function cascadeStop(ctx: Ctx, scope: ReqScope, runId: string, actor: string, seen: Set<string>, out: { stopped: string[] } = { stopped: [] }): { stopped: string[] } {
+	for (const l of all(ctx.db, "SELECT run_id FROM reporting_edges WHERE parent_run_id = ? AND valid_to IS NULL AND terminatable = 1", runId)) {
+		if (seen.has(l.run_id)) continue;
+		seen.add(l.run_id);
+		const state = teamLifecycleState(ctx.db, l.run_id)?.state;
+		if (state === "STOPPED" || state === "CLEANING" || state === "REMOVED") continue;
+		if (isTerminal(get(ctx.db, "SELECT a.status FROM runs r JOIN agents a ON a.id = r.root_agent_id WHERE r.id = ?", l.run_id)?.status ?? "CANCELLED")) continue;
+		suspendTeam(ctx, scope, l.run_id, actor, runId);
+		out.stopped.push(l.run_id);
+		cascadeStop(ctx, scope, l.run_id, actor, seen, out);
+	}
+	return out;
+}
+
+/** Resumable whole-team suspension. stoppedBy records the lead team whose stop caused it. */
+export function suspendTeam(ctx: Ctx, scope: ReqScope, runId: string, actor: string, stoppedBy?: string): TeamLifecycleResponse {
 	const db = ctx.db, r = getRun(db, runId), cfg = liveConfig(db, runId), prev = cfg.team_lifecycle;
 	if (prev && (prev.state === "STOPPED" || prev.state === "CLEANING")) {
 		// Retry is how an interrupted or failed cleanup finishes.
@@ -74,16 +97,32 @@ export function stopTeam(ctx: Ctx, p: Principal, scope: ReqScope, runId: string)
 		// The root is the operator's own Pi: never a controller-owned process.
 		if (a.id !== r.root_agent_id && a.pid != null) procs.push({ pid: a.pid, process_started_at: a.process_started_at ?? "" });
 	}
-	const state: TeamLifecycleState = { operation_id: newId("teamop"), kind: "stop", state: procs.length ? "CLEANING" : "STOPPED", at: ts, suspended, ...(procs.length ? { pending: procs } : {}) };
+	const state: TeamLifecycleState = { operation_id: newId("teamop"), kind: "stop", state: procs.length ? "CLEANING" : "STOPPED", at: ts, suspended, ...(procs.length ? { pending: procs } : {}), ...(stoppedBy ? { stopped_by_run_id: stoppedBy } : {}) };
 	cfg.team_lifecycle = state;
 	save(db, runId, cfg);
-	emit(db, { run_id: runId, actor_id: p.actor_id, type: "run.stopped", entity_id: runId, payload: { operation_id: state.operation_id, suspended } });
+	emit(db, { run_id: runId, actor_id: actor, type: "run.stopped", entity_id: runId, payload: { operation_id: state.operation_id, suspended, ...(stoppedBy ? { stopped_by_run_id: stoppedBy } : {}) } });
 	if (procs.length) cleanup(ctx, scope, runId, state.operation_id, procs);
 	return receipt(runId, state);
 }
 
 export function resumeTeam(ctx: Ctx, p: Principal, scope: ReqScope, runId: string): TeamLifecycleResponse {
 	operator(p);
+	const out = resumeOne(ctx, scope, runId, p.actor_id);
+	// Teams that stopped because this one stopped come back with it.
+	const queue = [runId], seen = new Set(queue);
+	while (queue.length) {
+		const lead = queue.shift()!;
+		for (const l of all(ctx.db, "SELECT run_id FROM reporting_edges WHERE parent_run_id = ? AND valid_to IS NULL", lead)) {
+			if (seen.has(l.run_id) || teamLifecycleState(ctx.db, l.run_id)?.stopped_by_run_id !== lead) continue;
+			seen.add(l.run_id);
+			resumeOne(ctx, scope, l.run_id, p.actor_id);
+			queue.push(l.run_id);
+		}
+	}
+	return out;
+}
+
+function resumeOne(ctx: Ctx, scope: ReqScope, runId: string, actor: string): TeamLifecycleResponse {
 	const db = ctx.db;
 	getRun(db, runId);
 	const cfg = liveConfig(db, runId), s = cfg.team_lifecycle;
@@ -100,7 +139,7 @@ export function resumeTeam(ctx: Ctx, p: Principal, scope: ReqScope, runId: strin
 	}
 	cfg.team_lifecycle = { operation_id: s.operation_id, kind: "stop", state: "RESUMED", at: ts };
 	save(db, runId, cfg);
-	emit(db, { run_id: runId, actor_id: p.actor_id, type: "run.resumed", entity_id: runId, payload: { operation_id: s.operation_id, resumed: s.suspended ?? [] } });
+	emit(db, { run_id: runId, actor_id: actor, type: "run.resumed", entity_id: runId, payload: { operation_id: s.operation_id, resumed: s.suspended ?? [] } });
 	ctx.kick();
 	return receipt(runId, cfg.team_lifecycle);
 }

@@ -247,6 +247,9 @@ export function lifecycle(ctx: Ctx, p: Principal, scope: ReqScope, agentId: stri
 	const cpol = oneOf(b, "children_policy", ["cascade", "transfer_children_to", "pause_subtree"] as const, { optional: true });
 	const subject = getAgent(db, agentId);
 	assertManages(db, p, subject);
+	// A joined member is not the lead's to end unless the human made its link terminatable.
+	if (p.kind === "agent" && (action === "cancel" || action === "retire") && get(db, "SELECT terminatable FROM reporting_edges WHERE child_id = ? AND parent_run_id IS NULL AND valid_to IS NULL", agentId)?.terminatable === 0)
+		fail("FORBIDDEN", "this member joined the team and is not terminatable; only the human operator can end it or make its link terminatable");
 	if (isTerminal(subject.status) && !(action === "cancel" && subject.status === "CANCELLED")) fail("CONFLICT", `agent is already ${subject.status}`);
 	const runId = subject.run_id as string;
 	const from = senderFor(db, p, runId);

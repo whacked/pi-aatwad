@@ -384,3 +384,16 @@ teams under their leads with `run_id` on those nodes (the plain tree, used by th
 reconciler and terminal sync, is unchanged). `/me` reports the lead, linked subs and peers
 across teams with `run_id`; name resolution searches the linked tree. Severing a link
 removes all of this.
+
+## Unified links, phase 3: dismissal and stop cascade (v0.1.28)
+
+`POST /agents/:id/dismiss` (the agent's lead, or the operator) ends the link from another
+team. On a non-terminatable link that is all. On a terminatable link it first stops the
+child's team with the existing resumable whole-team stop, cascades through terminatable
+links below, and severs the non-terminatable links below the stopped teams so those teams
+carry on independently. The operator can force either outcome with `stop`. A plain
+`/runs/:id/stop` also stops terminatable linked teams (recording `stopped_by_run_id`),
+keeps joined teams running and linked so their reports queue, and `/runs/:id/resume`
+resumes the teams it stopped. `POST /agents/:id/link` lets the operator set `terminatable`
+on any active link; a lead cannot cancel or retire an in-team joined member whose link is
+not terminatable.

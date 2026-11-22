@@ -9,7 +9,7 @@ import { obj, str, oneOf, onlyKeys } from "./validate.ts";
 import { postMessage } from "./messaging.ts";
 import { effectiveAttention, setRunAttention } from "./attention.ts";
 
-const LINK_COLUMNS = `e.id, e.run_id AS child_run_id, e.child_id AS child_agent_id, e.parent_run_id, e.parent_id AS parent_agent_id,
+export const LINK_COLUMNS = `e.id, e.run_id AS child_run_id, e.child_id AS child_agent_id, e.parent_run_id, e.parent_id AS parent_agent_id,
 	e.valid_from AS created_at, e.valid_to AS closed_at, e.close_reason, e.origin, e.terminatable`;
 
 function authorize(db: DB, p: Principal, runId: string): void {
@@ -42,6 +42,11 @@ export function coordinationLink(db: DB, from: string, to: string): Row | undefi
 		WHERE e.parent_run_id IS NOT NULL AND e.valid_to IS NULL AND ((e.child_id = ? AND e.parent_id = ?) OR (e.parent_id = ? AND e.child_id = ?))`, from, to, from, to);
 }
 
+/** The active link of an agent to an agent in another team, if any. */
+export function linkOfChild(db: DB, childAgentId: string): Row | undefined {
+	return get(db, `SELECT ${LINK_COLUMNS} FROM reporting_edges e WHERE e.child_id = ? AND e.parent_run_id IS NOT NULL AND e.valid_to IS NULL`, childAgentId);
+}
+
 /** The child team's active link to another team, if any. */
 function activeLink(db: DB, childRun: string): Row | undefined {
 	return get(db, `SELECT ${LINK_COLUMNS} FROM reporting_edges e WHERE e.run_id = ? AND e.parent_run_id IS NOT NULL AND e.valid_to IS NULL`, childRun);
@@ -64,7 +69,7 @@ function audit(db: DB, link: Row, actor: string, type: string, extra: Record<str
 	for (const runId of [link.child_run_id, link.parent_run_id]) emit(db, { run_id: runId, actor_id: actor, type, entity_id: link.id, payload: { child_run_id: link.child_run_id, parent_run_id: link.parent_run_id, ...extra } });
 }
 
-function closeLink(db: DB, link: Row, actor: string, reason: string): void {
+export function closeLink(db: DB, link: Row, actor: string, reason: string): void {
 	const ts = nowIso();
 	run(db, "UPDATE reporting_edges SET valid_to = ?, close_reason = ? WHERE id = ? AND valid_to IS NULL", ts, reason, link.id);
 	// History stays intact. Unconsumed coordination requests must not arrive as fresh instructions later.
