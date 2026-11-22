@@ -449,3 +449,12 @@ root with a new credential. In Pi, `/team join none` in a member does this, and
 `/team join <target>` in a member does it and then links under the target. A managed worker
 that leaves keeps its managed status (no operator token), so operator-only actions stay with
 the human's own sessions.
+
+## Scheduled check-ins across linked teams (v0.1.35)
+
+The attention status digest (stall alerts, ticks) now covers a lead's direct subs across
+links and the tasks it assigned to them, so a secretary-style leader whose reports are
+linked team leaders gets meaningful digests. New `checkin_seconds` (`/team attention
+checkin 5m`) wakes an idle lead on a fixed schedule even when nothing changed, for scheduled
+status rounds; `tick` still fires only on change. The wake text points the model at its
+standing check-in instructions from the human.

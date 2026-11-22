@@ -279,11 +279,13 @@ export interface AttentionPolicy {
 	stall_seconds: number;
 	/** Periodic status check-in, sent only when the team status changed since the last one. 0 = off. */
 	tick_seconds: number;
+	/** Scheduled check-in on a fixed interval, sent even when nothing changed (still only while idle). 0 = off. */
+	checkin_seconds: number;
 	/** Upper bound on automatic turns per rolling hour. 0 = no automatic turns. */
 	max_wakes_per_hour: number;
 }
-export const DEFAULT_ATTENTION: AttentionPolicy = { on_message: "wake", batch_seconds: 15, stall_seconds: 180, tick_seconds: 0, max_wakes_per_hour: 20 };
-export type WakeReason = "message" | "stall" | "tick";
+export const DEFAULT_ATTENTION: AttentionPolicy = { on_message: "wake", batch_seconds: 15, stall_seconds: 180, tick_seconds: 0, checkin_seconds: 0, max_wakes_per_hour: 20 };
+export type WakeReason = "message" | "stall" | "tick" | "checkin";
 export interface Wake { reason: WakeReason; /** Status digest for stall/tick wakes. */ text?: string }
 /** GET|POST /runs/:id/attention and /agents/:id/attention */
 export interface AttentionView {

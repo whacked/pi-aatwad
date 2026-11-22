@@ -4,16 +4,16 @@
 import { all, get, run, emit, parseJson, type DB } from "./db.ts";
 import type { Ctx, Principal } from "./context.ts";
 import { DEFAULT_ATTENTION, type AttentionPolicy, type AttentionView, type Handoff, type Wake } from "../shared/protocol.ts";
-import { getAgent, getChildren, getRun, getSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
+import { getAgent, getDirectSubs, getLinkChildren, getRun, getSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
 import { fail } from "./errors.ts";
 import { obj, onlyKeys } from "./validate.ts";
 
-const KEYS = ["on_message", "batch_seconds", "stall_seconds", "tick_seconds", "max_wakes_per_hour"] as const;
+const KEYS = ["on_message", "batch_seconds", "stall_seconds", "tick_seconds", "checkin_seconds", "max_wakes_per_hour"] as const;
 const OPEN_TASKS = "('ASSIGNED','IN_PROGRESS','BLOCKED')";
 
 // ---- in-memory activity (resets with the controller; conservative after restart) ----------------
 interface Activity { busy: boolean; since: number }
-interface WakeState { wakes: number[]; stallSig?: string; tickAt?: number; tickSig?: string }
+interface WakeState { wakes: number[]; stallSig?: string; tickAt?: number; tickSig?: string; checkinAt?: number }
 interface Tracker { startedAt: number; activity: Map<string, Activity>; wakes: Map<string, WakeState> }
 const trackers = new WeakMap<DB, Tracker>();
 function tracker(db: DB): Tracker {
@@ -41,7 +41,7 @@ function validate(body: unknown): Partial<AttentionPolicy> {
 		if (b.on_message !== "wake" && b.on_message !== "next_turn") fail("INVALID", "on_message must be wake or next_turn");
 		out.on_message = b.on_message;
 	}
-	for (const k of ["batch_seconds", "stall_seconds", "tick_seconds", "max_wakes_per_hour"] as const) {
+	for (const k of ["batch_seconds", "stall_seconds", "tick_seconds", "checkin_seconds", "max_wakes_per_hour"] as const) {
 		if (b[k] === undefined) continue;
 		const v = b[k];
 		if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 7 * 86_400) fail("INVALID", `${k} must be a non-negative integer`);
@@ -140,7 +140,8 @@ interface ReportState { id: string; role: string; status: string; observed: stri
 
 function reportStates(db: DB, agentId: string, now: number): ReportState[] {
 	const t = tracker(db);
-	return getChildren(db, agentId).map((id) => getAgent(db, id)).filter((c) => !isTerminal(c.status)).map((c) => {
+	// Direct reports, including leads of teams linked under this agent.
+	return getDirectSubs(db, agentId).map((id) => getAgent(db, id)).filter((c) => !isTerminal(c.status)).map((c) => {
 		const act = t.activity.get(c.id);
 		const live = c.observed_state === "LIVE";
 		const busy = live && !!act?.busy;
@@ -150,7 +151,8 @@ function reportStates(db: DB, agentId: string, now: number): ReportState[] {
 }
 
 function openTasks(db: DB, agentId: string): { id: string; owner_id: string; title: string; status: string; received: boolean }[] {
-	const subtree = getSubtree(db, agentId).filter((id) => id !== agentId);
+	// This team's subtree, plus the agents linked directly under it (their tasks from this lead live here).
+	const subtree = [...getSubtree(db, agentId).filter((id) => id !== agentId), ...getLinkChildren(db, agentId)];
 	if (!subtree.length) return [];
 	const marks = subtree.map(() => "?").join(",");
 	return all(db, `SELECT t.id, t.owner_id, t.title, t.status,
@@ -200,7 +202,7 @@ export function decideWake(db: DB, agentId: string, busy: boolean, now = Date.no
 		const oldest = get(db, `SELECT MIN(m.created_at) AS at FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient_id = ? AND d.status = 'PENDING'`, agentId)?.at as string | null | undefined;
 		if (oldest && now - Date.parse(oldest) >= policy.batch_seconds * 1000) return fire({ reason: "message" });
 	}
-	const needsDigest = policy.stall_seconds > 0 || policy.tick_seconds > 0;
+	const needsDigest = policy.stall_seconds > 0 || policy.tick_seconds > 0 || policy.checkin_seconds > 0;
 	if (!needsDigest) return undefined;
 	const d = statusDigest(db, agentId, now);
 	if (policy.stall_seconds > 0 && d.reports.length && d.tasks.length) {
@@ -210,6 +212,14 @@ export function decideWake(db: DB, agentId: string, busy: boolean, now = Date.no
 			return fire({ reason: "stall", text: `Your team has been idle for at least ${fmtAge(policy.stall_seconds * 1000)} with open work. Decide the next step: reassign, unblock, message a member, or report to the human. If nothing is needed, say so briefly and stop.\n${d.text}` });
 		}
 		if (!stalled) st.stallSig = undefined;
+	}
+	if (policy.checkin_seconds > 0 && d.reports.length) {
+		// Fixed schedule, independent of change: the first check-in comes one interval after it starts.
+		if (st.checkinAt === undefined) st.checkinAt = now;
+		else if (now - st.checkinAt >= policy.checkin_seconds * 1000) {
+			st.checkinAt = now;
+			return fire({ reason: "checkin", text: `Scheduled check-in (every ${fmtAge(policy.checkin_seconds * 1000)}). Follow your standing check-in instructions from the human; if you have none, ask your direct reports for a brief status, keep your records current, and report anything that needs the human.\n${d.text}` });
+		}
 	}
 	if (policy.tick_seconds > 0 && d.reports.length) {
 		if (st.tickAt === undefined) st.tickAt = now;

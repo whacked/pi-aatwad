@@ -8,9 +8,10 @@ test("/team attention parses durations, policies and reset", () => {
 	assert.throws(() => parseDuration("5 minutes"));
 	assert.deepEqual(parseAttention(["on-message", "next-turn", "stall", "off", "tick", "10m", "cap", "6", "reset", "batch", "5s"]),
 		{ on_message: "next_turn", stall_seconds: 0, tick_seconds: 600, max_wakes_per_hour: 6, reset: true, batch_seconds: 5 });
+	assert.deepEqual(parseAttention(["checkin", "5m"]), { checkin_seconds: 300 });
 	assert.throws(() => parseAttention(["on-message", "maybe"]));
 	assert.throws(() => parseAttention(["cap", "lots"]));
 	assert.throws(() => parseAttention(["volume", "11"]), /usage/);
 	assert.equal(formatAttention({ run_id: "r", configured: {}, effective: DEFAULT_ATTENTION }),
-		"attention for team r (inherited defaults)\n  on-message wake · batch 15s · stall 3m · tick off · cap 20/h");
+		"attention for team r (inherited defaults)\n  on-message wake · batch 15s · stall 3m · tick off · check-in off · cap 20/h");
 });

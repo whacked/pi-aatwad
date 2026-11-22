@@ -90,3 +90,25 @@ test("attention authority: root sets team defaults; managers set reports; member
 		assert.equal(view.effective.stall_seconds, 180);
 	} finally { await h.cleanup(); }
 });
+
+test("scheduled check-ins wake a lead on a fixed interval, even unchanged, and see teams linked under it", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), sub = await newRun(h);
+		ok(await h.call("POST", `/runs/${sub.run_id}/reporting`, { token: sub.token, body: { action: "connect", parent_run_id: lead.run_id } }));
+		const task = ok(await h.call("POST", "/tasks", { token: lead.token, body: { owner_id: sub.root, title: "Port the parser" } }));
+		for (const m of ok(await h.call("GET", "/inbox", { token: lead.token })).messages) ok(await h.call("POST", `/messages/${m.message_id}/ack`, { token: lead.token, body: {} }));
+		await beat(h, sub.token, true);
+		ok(await setRun(h, lead.token, lead.run_id, { checkin_seconds: 1, stall_seconds: 0, batch_seconds: 3600 }));
+		assert.equal((await beat(h, lead.token)).wake, undefined, "the first check-in comes one interval after it starts");
+		await sleep(1100);
+		const first = (await beat(h, lead.token)).wake;
+		assert.equal(first?.reason, "checkin");
+		assert.match(first.text, new RegExp(`\\[${sub.root}\\]: working, RUNNING; "Port the parser" ASSIGNED`), "the linked sub-leader and its task from this lead are in the digest");
+		assert.equal((await beat(h, lead.token)).wake, undefined, "not before the next interval");
+		await sleep(1100);
+		assert.equal((await beat(h, lead.token)).wake?.reason, "checkin", "fires again although nothing changed");
+		assert.equal((await beat(h, lead.token, true)).wake, undefined, "never while the lead is busy");
+		void task;
+	} finally { await h.cleanup(); }
+});

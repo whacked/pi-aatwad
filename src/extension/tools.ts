@@ -104,7 +104,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_set_attention",
 		"Team: attention policy",
-		"View or change when an idle agent's model gets a turn without a human prompt. scope=team sets team defaults (root only); scope=agent sets one agent (yourself or someone you manage). on_message: wake starts a turn for new messages after batch_seconds; next_turn holds them until the next human turn. stall_seconds wakes a manager whose reports are all idle with open work (0 = off). tick_seconds sends a periodic status check-in only when status changed (0 = off). max_wakes_per_hour caps automatic turns. Omit every field to view. Change only when the human asks.",
+		"View or change when an idle agent's model gets a turn without a human prompt. scope=team sets team defaults (root only); scope=agent sets one agent (yourself or someone you manage). on_message: wake starts a turn for new messages after batch_seconds; next_turn holds them until the next human turn. stall_seconds wakes a manager whose reports are all idle with open work (0 = off). tick_seconds sends a periodic status check-in only when status changed (0 = off). checkin_seconds wakes you on a fixed schedule even when nothing changed, for scheduled status rounds (0 = off). max_wakes_per_hour caps automatic turns. Omit every field to view. Change only when the human asks.",
 		Type.Object({
 			scope: Type.Optional(StringEnum(["team", "agent"] as const, { description: "Default agent (yourself unless agent_id is given)" })),
 			agent_id: Type.Optional(Type.String()),
@@ -112,6 +112,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			batch_seconds: Type.Optional(Type.Integer({ minimum: 0 })),
 			stall_seconds: Type.Optional(Type.Integer({ minimum: 0 })),
 			tick_seconds: Type.Optional(Type.Integer({ minimum: 0 })),
+			checkin_seconds: Type.Optional(Type.Integer({ minimum: 0 })),
 			max_wakes_per_hour: Type.Optional(Type.Integer({ minimum: 0 })),
 			reset: Type.Optional(Type.Boolean({ description: "Clear settings at this level first (inherit again)" })),
 		}),

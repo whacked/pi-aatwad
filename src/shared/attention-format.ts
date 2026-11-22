@@ -23,10 +23,11 @@ export function parseAttention(a: string[]): AttentionPatch {
 		} else if (k === "batch") patch.batch_seconds = parseDuration(v);
 		else if (k === "stall") patch.stall_seconds = parseDuration(v);
 		else if (k === "tick") patch.tick_seconds = parseDuration(v);
+		else if (k === "checkin") patch.checkin_seconds = parseDuration(v);
 		else if (k === "cap") {
 			if (!v || !/^\d+$/.test(v)) throw new Error("cap takes a whole number of wakes per hour");
 			patch.max_wakes_per_hour = Number(v);
-		} else throw new Error("usage: /team attention [team|name|agent_id] [on-message wake|next-turn] [batch 15s] [stall 3m|off] [tick 10m|off] [cap N] [reset]");
+		} else throw new Error("usage: /team attention [team|name|agent_id] [on-message wake|next-turn] [batch 15s] [stall 3m|off] [tick 10m|off] [checkin 5m|off] [cap N] [reset]");
 	}
 	return patch;
 }
@@ -37,7 +38,7 @@ export function formatAttention(v: AttentionView): string {
 	const set = Object.keys(v.configured);
 	return [
 		`attention for ${v.agent_id ?? `team ${v.run_id}`}${set.length ? ` (set here: ${set.join(", ")})` : " (inherited defaults)"}`,
-		`  on-message ${e.on_message === "wake" ? "wake" : "next-turn"} · batch ${secs(e.batch_seconds)} · stall ${secs(e.stall_seconds)} · tick ${secs(e.tick_seconds)} · cap ${e.max_wakes_per_hour}/h`,
+		`  on-message ${e.on_message === "wake" ? "wake" : "next-turn"} · batch ${secs(e.batch_seconds)} · stall ${secs(e.stall_seconds)} · tick ${secs(e.tick_seconds)} · check-in ${secs(e.checkin_seconds ?? 0)} · cap ${e.max_wakes_per_hour}/h`,
 	].join("\n");
 }
 

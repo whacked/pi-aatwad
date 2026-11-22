@@ -271,8 +271,8 @@ export class ClaudeTeamServer {
 			},
 			{
 				name: "team_set_attention",
-				description: "View or change when idle agents get automatic turns: scope=team (leader) or agent. Fields: on_message wake|next_turn, batch_seconds, stall_seconds, tick_seconds, max_wakes_per_hour, reset. Omit fields to view. Change only when the human asks.",
-				inputSchema: obj({ scope: S("team | agent", { enum: ["team", "agent"] }), agent: S("Agent (default: you)"), on_message: S("wake | next_turn", { enum: ["wake", "next_turn"] }), batch_seconds: { type: "integer", minimum: 0 }, stall_seconds: { type: "integer", minimum: 0 }, tick_seconds: { type: "integer", minimum: 0 }, max_wakes_per_hour: { type: "integer", minimum: 0 }, reset: { type: "boolean" } }),
+				description: "View or change when idle agents get automatic turns: scope=team (leader) or agent. Fields: on_message wake|next_turn, batch_seconds, stall_seconds, tick_seconds, checkin_seconds (fixed-schedule check-ins), max_wakes_per_hour, reset. Omit fields to view. Change only when the human asks.",
+				inputSchema: obj({ scope: S("team | agent", { enum: ["team", "agent"] }), agent: S("Agent (default: you)"), on_message: S("wake | next_turn", { enum: ["wake", "next_turn"] }), batch_seconds: { type: "integer", minimum: 0 }, stall_seconds: { type: "integer", minimum: 0 }, tick_seconds: { type: "integer", minimum: 0 }, checkin_seconds: { type: "integer", minimum: 0 }, max_wakes_per_hour: { type: "integer", minimum: 0 }, reset: { type: "boolean" } }),
 				run: async (a) => {
 					const id = this.requireIdentity();
 					const target = a.scope === "team" ? { run_id: id.run_id } : { agent_id: a.agent ? await this.agentRef(String(a.agent)) : id.agent_id };

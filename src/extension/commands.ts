@@ -154,7 +154,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		attention: async (a, ctx) => {
 			await rt.requireIdentity();
 			const token = await rt.commandToken();
-			const keywords = new Set(["on-message", "batch", "stall", "tick", "cap", "reset"]);
+			const keywords = new Set(["on-message", "batch", "stall", "tick", "checkin", "cap", "reset"]);
 			const first = a[0] && !keywords.has(a[0]) ? a.shift()! : "team";
 			const target = first === "team" ? { run_id: await runId(ctx) } : { agent_id: await agent(first, ctx) };
 			const patch = parseAttention(a);
