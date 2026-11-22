@@ -224,6 +224,30 @@ describe("ensureController", () => {
 		}
 	});
 
+	test("replaces a controller with an older database schema, even with the same package version", async () => {
+		const { paths, cleanup } = makeState();
+		const m = await startMock(paths, { operatorToken: "op-schema" });
+		let closed = false;
+		let pid: number | undefined;
+		try {
+			m.route("GET", "/health", () => ({ body: health({ schema: SCHEMA_VERSION - 1, pid: 99_999_999 }) }));
+			m.route("POST", "/controller/shutdown", (_req, res) => {
+				res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ stopping: true }));
+				setTimeout(() => void m.close().then(() => (closed = true)), 10);
+				return undefined;
+			});
+			const r = await ensureController(paths, { entry: FAKE, expectVersion: false });
+			pid = r.health.pid;
+			assert.ok(closed, "the old-schema controller was asked to stop (its workers keep running)");
+			assert.equal(r.spawned, true);
+			assert.equal(r.health.schema, SCHEMA_VERSION);
+		} finally {
+			if (pid) { try { process.kill(pid, "SIGTERM"); } catch {} await sleep(100); }
+			if (!closed) await m.close();
+			cleanup();
+		}
+	});
+
 	test("keeps controllers that are newer, or when replacement is disabled", async () => {
 		const { paths, cleanup } = makeState();
 		const m = await startMock(paths, { operatorToken: "op" });

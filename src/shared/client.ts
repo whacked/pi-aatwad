@@ -294,7 +294,9 @@ function checkCompatible(h: HealthResponse, socket: string): HealthResponse {
 	if (h.protocol !== PROTOCOL_VERSION || h.schema !== SCHEMA_VERSION) {
 		throw new ControllerIncompatibleError(
 			`controller at ${socket} (pid ${h.pid}) speaks protocol ${h.protocol}/schema ${h.schema}, this extension needs protocol ${PROTOCOL_VERSION}/schema ${SCHEMA_VERSION}. ` +
-				`Stop the old controller (/team stop or POST /controller/shutdown) after its workers finish, or upgrade/downgrade the package so both match.`,
+				(h.protocol === PROTOCOL_VERSION && h.schema > SCHEMA_VERSION
+					? `A newer controller is running: update this Pi's pi-recursive-team package (then /reload), or stop that controller with \`kill ${h.pid}\` (its workers keep running).`
+					: `Stop the old controller with \`kill ${h.pid}\` (its workers keep running) and retry; the next /team command starts a matching one.`),
 		);
 	}
 	return h;
@@ -302,9 +304,13 @@ function checkCompatible(h: HealthResponse, socket: string): HealthResponse {
 
 /** GET /health. Resolves to health, throws ControllerUnavailableError if nothing answers, ControllerIncompatibleError on version mismatch. */
 export async function ping(paths: StatePaths, timeoutMs = 2_000): Promise<HealthResponse> {
+	return checkCompatible(await health(paths, timeoutMs), paths.socket);
+}
+
+/** GET /health without the version check; protocol rejections still throw ControllerIncompatibleError. */
+async function health(paths: StatePaths, timeoutMs: number): Promise<HealthResponse> {
 	try {
-		const h = await rawRequest<HealthResponse>(paths.socket, "GET", "/health", { timeoutMs });
-		return checkCompatible(h, paths.socket);
+		return await rawRequest<HealthResponse>(paths.socket, "GET", "/health", { timeoutMs });
 	} catch (e) {
 		if (e instanceof TeamApiError && e.code === "PROTOCOL_MISMATCH") {
 			throw new ControllerIncompatibleError(`controller at ${paths.socket} rejected protocol ${PROTOCOL_VERSION}: ${e.message}`);
@@ -402,9 +408,13 @@ async function ensureOnce(paths: StatePaths, opts: EnsureOptions): Promise<Ensur
 	const pingTimeout = opts.pingTimeoutMs ?? 2_000;
 	const expected = opts.expectVersion ?? LOADED_VERSION;
 	try {
-		const h = await ping(paths, pingTimeout);
-		if (!expected || !isStaleController(h, expected)) return { health: h, spawned: false };
-		await retireStaleController(paths, h, expected, opts);
+		const h = await health(paths, pingTimeout);
+		// An older database schema means an older controller: replace it like an older package
+		// (its workers keep running). Newer schemas and protocol mismatches are never replaced.
+		const olderSchema = h.protocol === PROTOCOL_VERSION && h.schema < SCHEMA_VERSION;
+		if (!olderSchema) checkCompatible(h, paths.socket);
+		if (!olderSchema && (!expected || !isStaleController(h, expected))) return { health: h, spawned: false };
+		await retireStaleController(paths, h, expected || LOADED_VERSION, opts);
 		// A concurrent client may already have started the replacement.
 		try {
 			const fresh = await ping(paths, pingTimeout);
