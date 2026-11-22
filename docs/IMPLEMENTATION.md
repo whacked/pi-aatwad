@@ -431,3 +431,10 @@ in place, so recall recruits a new member with the same name and responsibility 
 session path is the old transcript. `POST /roster/rehire` recruits a new member in the same
 position with a fresh context. Pi: `/team roster`, `/team recall`, `/team rehire` and the
 `team_roster` tool; Claude Code: `team_roster`.
+
+## Unified links, phase 7: display (v0.1.32)
+
+`/team tree` and `team_get_tree` request the linked tree, so teams linked under an agent
+appear beneath it, marked `⇢ team <run_id>`. The leader's member strip marks linked teams
+with `⇢` and offers `/team watch focus` only when it has its own members; focusing a linked
+team explains that it runs in its own session and terminal.

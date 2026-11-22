@@ -137,9 +137,18 @@ cross runs and carry `terminatable`.
 7. **Display:** the leader's member strip and tree show joined children as well as
    recruits; joined children are switched to in their own terminals or harness windows.
 
-## Open questions
+## Resolved questions
 
-- Can a lead **see** (read-only) deeper than one level, for example its children's
-  rosters and task progress, while only controlling one level down?
-- Names: what happens when a joining agent's name collides with an existing child name?
-- Recruiting a Claude Code worker from either harness remains out of scope.
+- **Visibility:** a lead reads its whole linked subtree (tree, agents) but controls only
+  one step down.
+- **Names:** names need not be unique across teams. Commands resolve exact names within the
+  linked tree and ask for an agent ID when a name is ambiguous; the roster does the same.
+- **Recalling a closed recruit:** a cancelled agent is not revived in place; recall creates a
+  new member in the same position that continues the old transcript. Linked teams keep their
+  identity.
+
+## Out of scope
+
+- Recruiting a Claude Code worker from either harness.
+- Moving a non-root member of one team under an agent of another team. Today only a
+  team's leader links (with its whole team); a session joins by leading its own team.

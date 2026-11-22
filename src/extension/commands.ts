@@ -272,6 +272,9 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (view.reclaimedFrom) out(ctx, `This terminal was still tagged for ${view.reclaimedFrom}. It now hosts ${id}; nothing was stopped or deleted.`);
 			const tree = action === "focus" ? await rt.client.tree(id, { token: await rt.commandToken() }) : undefined;
 			const target = tree && focusTarget !== tree.root.agent_id ? focusTarget : undefined;
+			// A linked team runs in its own session and terminal; there is nothing here to switch to.
+			const linkedRun = target ? (await rt.client.me().catch(() => undefined))?.children.find((c) => c.agent_id === target)?.run_id : undefined;
+			if (linkedRun) { out(ctx, `${a[1] ?? target} leads its own team ${linkedRun}, linked under you; it runs in its own session, so switch to that terminal or window. Message it with /team send.`); return; }
 			if (view.backend === "native") {
 				// No on-screen panes: switching means handing this terminal to the member.
 				if (target) { out(ctx, await attachMember(ctx, view as NativeView, target)); return; }
@@ -424,7 +427,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		},
 
 		tree: async (a, ctx) => {
-			const t = await rt.client.tree(await runId(ctx, a.find((arg) => arg !== "--all")), { token: await rt.commandToken() }, !a.includes("--all"));
+			const t = await rt.client.tree(await runId(ctx, a.find((arg) => arg !== "--all")), { token: await rt.commandToken() }, !a.includes("--all"), true);
 			out(ctx, formatTree(t, rt.identity?.agent_id));
 		},
 

@@ -221,7 +221,7 @@ export class TeamRuntime {
 			if (this.identity !== identity || this.ctx !== ctx) return;
 			const members: StripMember[] = me.children
 				.filter((c) => !["CANCELLED", "COMPLETED", "FAILED", "RETIRED"].includes(c.status))
-				.map((c) => ({ agent_id: c.agent_id, role: c.role, live: c.observed_state === "LIVE" }));
+				.map((c) => ({ agent_id: c.agent_id, role: c.role, live: c.observed_state === "LIVE", ...(c.run_id ? { linked: true } : {}) }));
 			const key = JSON.stringify(members);
 			if (key === this.stripKey) return;
 			this.stripKey = key;

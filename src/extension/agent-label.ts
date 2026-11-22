@@ -68,7 +68,8 @@ export function installMemberHeader(ui: UI, decor: () => MemberDecor | undefined
 }
 
 export const MEMBER_STRIP_WIDGET = "pi-recursive-team.members";
-export interface StripMember { agent_id: string; role: string; live: boolean }
+/** linked: leads its own team linked under you; switch to it in its own terminal, not with focus. */
+export interface StripMember { agent_id: string; role: string; live: boolean; linked?: boolean }
 
 /** One line under the leader's editor: who is running and how to switch to them. */
 export function renderMemberStrip(members: StripMember[], width: number): string[] {
@@ -76,9 +77,12 @@ export function renderMemberStrip(members: StripMember[], width: number): string
 	const parts = members.map((m) => {
 		const decor = memberDecor(m.agent_id, m.role);
 		const dot = m.live ? `\x1b[38;5;${decor.color}m●\x1b[39m` : "\x1b[2m○\x1b[22m";
-		return `${dot} ${m.live ? decor.name : `\x1b[2m${decor.name}\x1b[22m`}`;
+		const name = `${decor.name}${m.linked ? " ⇢" : ""}`;
+		return `${dot} ${m.live ? name : `\x1b[2m${name}\x1b[22m`}`;
 	});
-	const line = ` team: ${parts.join("  ")}  \x1b[2m· /team watch focus <name> switches\x1b[22m`;
+	const own = members.some((m) => !m.linked), linked = members.some((m) => m.linked);
+	const hint = [own ? "/team watch focus <name> switches" : "", linked ? "⇢ = linked team" : ""].filter(Boolean).join(" · ");
+	const line = ` team: ${parts.join("  ")}  \x1b[2m· ${hint}\x1b[22m`;
 	return [visibleWidth(line) > width ? truncateToWidth(line, width) : line];
 }
 

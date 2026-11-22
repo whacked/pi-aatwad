@@ -27,7 +27,9 @@ export function formatBudget(b: BudgetView): string {
 
 function nodeLine(n: TreeNode, me?: string): string {
 	const mark = n.agent_id === me ? " ← you" : "";
-	return `${n.role} [${n.agent_id}] ${n.status}/${n.observed_state}${n.desired_state !== "RUNNING" ? ` (desired ${n.desired_state})` : ""}${n.model ? ` · ${n.model}` : ""}${n.pending_model ? ` → ${n.pending_model} (pending)` : ""}${mark}`;
+	// Agents of other teams linked under their lead are shown with their team.
+	const team = n.run_id ? ` ⇢ team ${n.run_id}` : "";
+	return `${n.role} [${n.agent_id}]${team} ${n.status}/${n.observed_state}${n.desired_state !== "RUNNING" ? ` (desired ${n.desired_state})` : ""}${n.model ? ` · ${n.model}` : ""}${n.pending_model ? ` → ${n.pending_model} (pending)` : ""}${mark}`;
 }
 
 export function formatTree(t: TreeResponse, me?: string, maxLines = 200): string {

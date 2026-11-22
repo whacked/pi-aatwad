@@ -65,3 +65,18 @@ test("member header can carry the way back to the leader", () => {
 	const [line] = renderMemberHeader({ ...memberDecor("m-1", "Alpha"), hint: "/team leave returns to the leader" }, 120);
 	assert.match(stripTerminalSequences(line), /Alpha {2}team member · m-1 {2}· {2}\/team leave returns to the leader/);
 });
+
+test("the member strip marks linked teams and only offers focus for the leader's own members", () => {
+	const [mixed] = renderMemberStrip([{ agent_id: "a-1", role: "Alpha", live: true }, { agent_id: "t-9", role: "Contractor", live: true, linked: true }], 140);
+	assert.equal(stripTerminalSequences(mixed), " team: ● Alpha  ● Contractor ⇢  · /team watch focus <name> switches · ⇢ = linked team");
+	const [onlyLinked] = renderMemberStrip([{ agent_id: "t-9", role: "Contractor", live: false, linked: true }], 140);
+	assert.equal(stripTerminalSequences(onlyLinked), " team: ○ Contractor ⇢  · ⇢ = linked team");
+});
+
+test("trees show teams linked under their leads", async () => {
+	const { formatTree } = await import("../../src/extension/format.ts");
+	const node = (id: string, role: string, children: any[] = [], run_id?: string) => ({ agent_id: id, role, status: "RUNNING", desired_state: "RUNNING", observed_state: "LIVE", model: null, parent_id: null, children, ...(run_id ? { run_id } : {}) });
+	const out = formatTree({ run_id: "run-lead", topology_version: 1, root: node("lead", "root", [node("m-1", "Alpha"), node("sub", "Contractor", [], "run-sub")]), history: [] } as any, "lead");
+	assert.match(out, /├─ Alpha \[m-1\] RUNNING\/LIVE/);
+	assert.match(out, /└─ Contractor \[sub\] ⇢ team run-sub RUNNING\/LIVE/);
+});

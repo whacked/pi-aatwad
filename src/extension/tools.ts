@@ -240,11 +240,11 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_get_tree",
 		"Team: org tree",
-		"Show the active organization tree (roles, live status, models), fetched fresh from the controller. Closed agents are hidden unless include_closed=true.",
+		"Show the active organization tree (roles, live status, models), fetched fresh from the controller, including teams linked under its agents (marked ⇢ team; read-only beyond the agent linked directly under you). Closed agents are hidden unless include_closed=true.",
 		Type.Object({ include_closed: Type.Optional(Type.Boolean({ description: "Include cancelled/retired/completed history; default false" })) }),
 		async (p) => {
 			const id = rt.identity!;
-			const t = await rt.client.tree(id.run_id, undefined, !p.include_closed);
+			const t = await rt.client.tree(id.run_id, undefined, !p.include_closed, true);
 			return text(formatTree(t, id.agent_id), t);
 		},
 	);
