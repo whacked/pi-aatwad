@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ENV_ENROLL_FILE } from "../shared/protocol.ts";
 import { TeamRuntime } from "./runtime.ts";
 import { registerTools } from "./tools.ts";
-import { registerTeamCommand } from "./commands.ts";
+import { projectTeamsNotice, registerTeamCommand } from "./commands.ts";
 import { formatOrgContext } from "./format.ts";
 import { agentDisplayName, installAgentLabel, installMemberHeader } from "./agent-label.ts";
 import { memberDecor } from "../terminal/decor.ts";
@@ -61,7 +61,12 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 		const managedLaunch = !!process.env[ENV_ENROLL_FILE]; // read before start() consumes it
 		const p = rt.start(ctx);
 		if (ctx.mode === "tui") {
-			installAgentLabel(ctx.ui, () => rt.identity ? agentDisplayName(rt.identity.role) : undefined);
+			installAgentLabel(ctx.ui, () => rt.identity ? agentDisplayName(rt.identity.role) : undefined, {
+				check: () => rt.exitCheck(),
+				confirm: (title, detail) => ctx.ui.confirm(title, detail),
+				quit: () => ctx.shutdown(),
+				notify: (text) => ctx.ui.notify(text, "info"),
+			});
 			// Member terminals get a decoration from the host's dispatch plan; the leader keeps its editor label.
 			// Members the human can switch into say how to get back.
 			const switchable = !!process.env[ENV_PTY_HANDLE] || ["tmux", "rex"].includes(terminalHost());
@@ -70,6 +75,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 		// Managed one-shot worker: enroll before the first turn (Pi awaits session_start handlers).
 		// Interactive sessions: do not block startup; tools and before_agent_start wait with a bound.
 		if (managedLaunch) return waitBounded(p, 15_000).then(() => undefined);
+		if (ctx.mode === "tui") void p.then(() => projectTeamsNotice(rt, ctx));
 	});
 
 	pi.on("message_end", async (event) => {
@@ -82,7 +88,13 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 		if (event.source !== "restore") return rt.reportModel(event.model.provider, event.model.id);
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		// Quitting the harness applies the team's exit policy: stop it (resumable) unless it is set to keep running.
+		// One-shot print runs (pi -p) quit after every prompt; only interactive sessions apply the policy.
+		if (event?.reason === "quit" && (ctx?.mode === "tui" || ctx?.mode === "rpc")) {
+			const write = (text: string) => { (ctx.mode === "tui" ? process.stdout : process.stderr).write(text); };
+			await waitBounded(rt.onQuit(write), 6_000);
+		}
 		rt.stop();
 		releaseLoad(self);
 	});

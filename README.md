@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.38, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.39, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -115,11 +115,14 @@ Inside Pi:
 |---|---|
 | `/team init [--unlimited] [config.json]` | Makes this session the **root** of a new organization. This is the only way an org is created; installing the package creates nothing. |
 | `/team resume [run_id] [agent_id]` | Auto-resume the sole valid team, pick among multiple teams, or attach directly. Works without init. |
-| `/team list [all]` | List active teams, reporting relationships and member counts; `all` includes history. |
+| `/team list [all]` | Teams for this project: name, state, live/total members, open tasks, last activity, model and what each is doing; `all` adds other projects, empty, closed and old teams. |
 | `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
 | `/team join <run_id\|agent_id\|none> [--terminatable]` | Link this team under another team's leader (run ID) or any of its agents (agent ID); `none` detaches. That agent becomes your lead: it can assign you tasks and dismiss you. `--terminatable` (operator) lets dismissal stop your team. It does not merge teams or take over that leader (that is `resume`). |
 | `/team report-to ...` | Alias for `join`. |
 | `/team leave` | Alias for `/team join none`. |
+| `/team exit-policy [stop\|keep]` | What quitting Pi does to this team: stop it resumably (default) or keep it running in the background. |
+| `/team rename <name>` | Set the team's name. |
+| `/team prune` | Close this team's idle members that have no open tasks. |
 | `/team join none` *(in a member)* | Leave the team: this session and its conversation continue as the leader of a new, empty team. The old member identity is retired there (its manager is told). `/team join <target>` in a member leaves and then joins, which is how a member moves to another team. |
 | `/team dismiss <name\|agent_id> [--stop\|--keep] [reason]` | End a team linked under you: it detaches, or stops resumably when its link is terminatable. `--stop`/`--keep` override (operator). |
 | `/team roster` | Everyone ever linked under you: active, detached, dismissed or closed. |
@@ -139,6 +142,38 @@ Inside Pi:
 | `/team remove [run_id] [--yes]` | Permanently remove a whole team. Cannot be resumed; Pi, worktrees and project files are preserved. |
 
 Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, `team_set_budget`, `team_set_model`, plus root-only `team_reporting`, `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
+
+### Quitting Pi, finding teams again
+
+**Quitting stops your team by default.** When you quit the leader's Pi (`/quit`, Ctrl+D, a
+double Ctrl+C, or closing the terminal), the team is stopped resumably: members pause, and their
+transcripts and tasks are kept. `/team resume` brings it back and continues interrupted work.
+
+- If someone in the team tree is **working** when you quit, Pi asks first and you can cancel.
+- If everyone is **idle**, Pi quits immediately and prints a note saying what it stopped.
+- Closing the terminal cannot be confirmed, but the same policy runs.
+
+To leave a team **running in the background** after you quit, opt in per team with
+`/team exit-policy keep` (`/team exit-policy stop` restores the default). When you come back,
+`/team resume` prints what happened while you were away: completed tasks with summaries, the
+number of progress reports, and messages waiting for you. Queued messages arrive with your next
+turn, and scheduled check-ins resume.
+
+If a leader's harness disappears without quitting cleanly (a crash or a killed process), the
+controller pauses its team once every member has been idle for 15 minutes. Busy members are never
+interrupted, and teams set to `keep` are left alone.
+
+**Finding teams.**
+- **Names:** teams get a name, defaulting to the project folder. Set one with
+  `/team init --name <name>` or `/team rename <name>`.
+- **`/team list`:** shows the teams for the current project (its git top-level), newest
+  activity first. Each line gives the name, state, live/total members, open tasks, last
+  activity, the leader's model, and what the team is working on or finished last.
+- **Hidden by default:** empty teams, closed teams, teams from other projects, and teams stopped
+  more than a week ago. `/team list all` shows everything.
+- **Startup notice:** starting Pi in a project with teams prints a one-line reminder.
+- **`/team prune`:** closes this team's members that are idle and have no open tasks.
+  `/team recall` brings one back.
 
 ### Linking teams: join, lead, dismiss
 

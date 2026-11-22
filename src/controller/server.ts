@@ -13,7 +13,7 @@ import { resolvePrincipal, issueSessionToken } from "./auth.ts";
 import { ackMessage, completeTask, delegateTask, readInbox, sendMessage, taskProgress } from "./messaging.ts";
 import { createExpansion, decide, listProposals } from "./governance.ts";
 import { lifecycle, reparent } from "./topology.ts";
-import { attach, budget, createRun, enroll, events, heartbeat, inspect, listRuns, me, models, reportUsage, tree } from "./runs.ts";
+import { attach, awaySummary, budget, createRun, enroll, events, heartbeat, inspect, listRuns, me, models, reportUsage, teamActivity, teamSettings, tree } from "./runs.ts";
 import { getRecoveryStatus, isTerminal } from "./queries.ts";
 import { assertLeaseHeld } from "./fence.ts";
 import { changeReporting, readReporting } from "./reporting.ts";
@@ -90,6 +90,9 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/roster/recall", "any", ({ p, scope, body }) => recall(ctx, p, scope, body)),
 		R("POST", "/roster/rehire", "any", ({ p, body }) => rehire(ctx, p, body)),
 		R("POST", "/sessions/secede", "any", ({ p, scope, body }) => secede(ctx, p, scope, body)),
+		R("POST", "/runs/:id/settings", "any", ({ p, params, body }) => teamSettings(ctx, p, params[0], body)),
+		R("GET", "/runs/:id/activity", "any", ({ p, params }) => teamActivity(ctx, p, params[0])),
+		R("GET", "/runs/:id/away", "any", ({ p, params }) => awaySummary(ctx, p, params[0])),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
 		R("POST", "/budgets/:id", "any", ({ p, scope, params, body }) => updateBudget(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/model", "any", ({ p, params, body }) => updateModel(ctx, p, params[0], body)),

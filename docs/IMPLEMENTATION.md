@@ -458,3 +458,23 @@ linked team leaders gets meaningful digests. New `checkin_seconds` (`/team atten
 checkin 5m`) wakes an idle lead on a fixed schedule even when nothing changed, for scheduled
 status rounds; `tick` still fires only on change. The wake text points the model at its
 standing check-in instructions from the human.
+
+## Quitting, finding teams, and leaderless teams (v0.1.39)
+
+`RunSummary` carries a name (`RunConfig.name`, default the leader's folder), the leader's
+directory and model, last activity, open tasks, a one-line summary and an `empty` flag;
+`POST /runs/:id/settings` sets `name` and `on_leader_exit` (`stop` by default, or `keep`).
+`/team list` is scoped to the project (git top-level) and hides empty, closed, other-project and
+week-old stopped teams; Pi startup notes existing teams for the project.
+
+Pi has no cancellable quit event, so the extension's editor wrapper guards the three interactive
+quit paths (Ctrl+D on an empty editor, the second Ctrl+C within 500ms, a submitted `/quit`):
+`GET /runs/:id/activity` reports live and busy members across the linked tree, and a busy tree
+asks for confirmation. `session_shutdown` (reason quit, awaited by Pi, also on SIGTERM/SIGHUP) then
+applies the exit policy for interactive sessions: `stop` runs the resumable team stop (cascading
+to terminatable linked teams) and prints a note; `keep` leaves it running. Print-mode runs never
+apply it. `GET /runs/:id/away` summarizes completed tasks, progress and waiting messages since the
+leader's previous session ended, shown by `/team resume`. The reconciler pauses a team whose root
+is not LIVE and whose members have all been idle for `leaderlessIdleMs` (15 minutes), unless its
+policy is `keep`. `/team prune` closes idle members without open tasks.
+

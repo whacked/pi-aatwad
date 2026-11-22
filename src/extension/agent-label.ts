@@ -25,13 +25,59 @@ export function labelBorder(line: string, width: number, name: string, style: (t
 	return sliceByColumn(line, 0, cut) + style(` ${text} `) + sliceByColumn(line, width - 2, 2);
 }
 
+/** What the exit guard needs: who is working, and how to quit once the human agrees. */
+export interface ExitGuard {
+	/** Undefined when nothing could be working (no team, not its leader, or the controller is unreachable). */
+	check(): Promise<{ busy: number; title: string; detail: string } | undefined>;
+	confirm(title: string, detail: string): Promise<boolean>;
+	quit(): void;
+	notify(text: string): void;
+}
+
+/**
+ * Pi has no cancellable quit event, but every interactive quit goes through the editor:
+ * Ctrl+D on an empty editor, a second Ctrl+C within 500ms, and a submitted /quit.
+ * While members are working, those ask for confirmation first; otherwise they quit at once.
+ */
+function guardExits(editor: any, guard: ExitGuard): void {
+	const guarded = async (proceed: () => void) => {
+		let state: Awaited<ReturnType<ExitGuard["check"]>>;
+		try { state = await guard.check(); } catch { state = undefined; }
+		if (!state || state.busy === 0) { proceed(); return; }
+		if (await guard.confirm(state.title, state.detail)) proceed();
+		else guard.notify("Not quitting. The team keeps working; /team list shows its state.");
+	};
+	let ctrlD: (() => void) | undefined = editor.onCtrlD;
+	Object.defineProperty(editor, "onCtrlD", { configurable: true, enumerable: true,
+		get: () => ctrlD && (() => void guarded(() => ctrlD!())), set: (fn) => { ctrlD = fn; } });
+	let submit: ((text: string) => unknown) | undefined = editor.onSubmit;
+	Object.defineProperty(editor, "onSubmit", { configurable: true, enumerable: true,
+		get: () => submit && ((text: string) => text.trim() === "/quit" ? void guarded(() => void submit!(text)) : submit!(text)),
+		set: (fn) => { submit = fn; } });
+	if (typeof editor.onAction === "function") {
+		const onAction = editor.onAction.bind(editor);
+		editor.onAction = (action: string, handler: () => void) => {
+			if (action !== "app.clear") return onAction(action, handler);
+			let last = 0;
+			return onAction(action, () => {
+				const now = Date.now();
+				// Pi quits on the second clear within 500ms; ask first when members are working.
+				if (now - last < 500) { last = 0; void guarded(() => guard.quit()); return; }
+				last = now;
+				handler();
+			});
+		};
+	}
+}
+
 /** Install once per runtime/UI. Unwrap an earlier team wrapper after /reload. */
-export function installAgentLabel(ui: UI, name: () => string | undefined): void {
+export function installAgentLabel(ui: UI, name: () => string | undefined, exit?: ExitGuard): void {
 	const current = ui.getEditorComponent() as LabelFactory | undefined;
 	const wrapped = current?.[BASE];
 	const previous = wrapped ? wrapped.factory : current;
 	const factory: LabelFactory = (tui, theme, keybindings) => {
 		const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
+		if (exit) guardExits(editor, exit);
 		const render = editor.render.bind(editor);
 		editor.render = (width) => {
 			const lines = render(width);

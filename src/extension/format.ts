@@ -1,5 +1,5 @@
 // Pure text renderers for /team output and the bounded org-context prompt section.
-import type { BudgetView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, TreeNode, TreeResponse } from "../shared/protocol.ts";
+import type { BudgetView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, RunSummary, TreeNode, TreeResponse } from "../shared/protocol.ts";
 
 export const MAX_CONTEXT_CHARS = 2_000;
 const MAX_LIST = 8;
@@ -122,4 +122,76 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 		"Use the team_* tools to coordinate. Your identity comes from your session credential; the controller authorizes every action. Expansion proposals are requests, not guarantees.",
 	);
 	return clip(lines.join("\n"), maxChars);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Team listing: recognizable names, scoped to the current project, quiet about old and empty teams.
+
+const STALE_MS = 7 * 86_400_000;
+
+function ago(iso: string | null | undefined, now: number): string {
+	if (!iso) return "no activity";
+	const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+	return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86_400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86_400)}d ago`;
+}
+
+function shortPath(path: string | null | undefined, home = process.env.HOME): string {
+	if (!path) return "";
+	return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
+}
+
+/** One-line description of a team for lists and pickers. */
+export function teamLabel(r: RunSummary, now = Date.now()): string {
+	const state = r.status === "CANCELLED" ? "closed" : r.stopped ? "stopped" : (r.live_members ?? 0) > 0 ? "running" : "idle";
+	const members = `${r.live_members ?? 0}/${r.active_members ?? Math.max(0, r.agents - 1)} live`;
+	const bits = [`${r.name ?? r.run_id} [${state}]`, members, `${r.open_tasks ?? 0} open tasks`, `active ${ago(r.last_activity_at ?? r.created_at, now)}`];
+	if (r.reporting_teams) bits.push(`${r.reporting_teams} linked teams`);
+	if (r.reports_to_run_id) bits.push(`linked under ${r.reports_to_run_id}`);
+	if (r.model) bits.push(r.model);
+	return bits.join(" · ");
+}
+
+/** A team belongs to the project when either directory contains the other. */
+export function sameProject(teamCwd: string | null | undefined, project: string): boolean {
+	if (!teamCwd) return false;
+	const a = teamCwd.replace(/\/+$/, ""), b = project.replace(/\/+$/, "");
+	return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+export function listTeams(runs: RunSummary[], opts: { project?: string; all?: boolean; current?: string; now?: number }): { lines: string[]; shown: RunSummary[]; hidden: number } {
+	const now = opts.now ?? Date.now();
+	const visible = (r: RunSummary) => {
+		if (opts.all || r.run_id === opts.current) return true;
+		if (r.status === "CANCELLED") return false;
+		if (opts.project && !sameProject(r.cwd, opts.project)) return false;
+		if (r.empty && !r.open_tasks && r.run_id !== opts.current) return false;
+		if (r.stopped && now - Date.parse(r.last_activity_at ?? r.created_at) > STALE_MS) return false;
+		return true;
+	};
+	const shown = runs.filter(visible).sort((x, y) => Date.parse(y.last_activity_at ?? y.created_at) - Date.parse(x.last_activity_at ?? x.created_at));
+	const lines = shown.flatMap((r) => [
+		`${r.run_id === opts.current ? "▶" : "•"} ${teamLabel(r, now)}`,
+		`    ${r.run_id}${r.cwd ? ` · ${shortPath(r.cwd)}` : ""}${r.summary ? ` · ${r.summary}` : ""}`,
+	]);
+	return { lines, shown, hidden: runs.length - shown.length };
+}
+
+export interface AwaySummary {
+	since: string;
+	completed: { task_id: string; title: string; by: string; status: string; summary: string }[];
+	progress_reports: number;
+	messages_waiting: number;
+	auto_paused_at: string | null;
+}
+
+/** "While you were away": empty when nothing happened. */
+export function formatAway(a: AwaySummary): string {
+	if (!a.completed.length && !a.progress_reports && !a.messages_waiting && !a.auto_paused_at) return "";
+	const lines = [`While you were away (since ${a.since.slice(0, 16).replace("T", " ")} UTC):`];
+	for (const c of a.completed.slice(0, 8)) lines.push(`  ✓ ${c.title} — ${c.by}${c.status !== "DONE" ? ` (${c.status})` : ""}${c.summary ? `: ${clip(c.summary, 120)}` : ""}`);
+	if (a.completed.length > 8) lines.push(`  … ${a.completed.length - 8} more completed`);
+	if (a.progress_reports) lines.push(`  ${a.progress_reports} progress report(s)`);
+	if (a.messages_waiting) lines.push(`  ${a.messages_waiting} message(s) waiting for you; they arrive with your next turn (or /team inbox)`);
+	if (a.auto_paused_at) lines.push(`  The team was paused at ${a.auto_paused_at.slice(11, 16)} UTC because you were gone and everyone was idle; resuming brought it back.`);
+	return lines.join("\n");
 }

@@ -113,3 +113,78 @@ test("a member leaves its team to lead its own, keeping its process and transcri
 		assert.equal(sql(h, "SELECT parent_id FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", r.root_agent_id)[0].parent_id, other.root);
 	} finally { await h.cleanup(); }
 });
+
+test("teams have names, project directories and a summary line; settings and activity are scoped", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), sub = await newRun(h), stranger = await newRun(h);
+		await connect(h, sub, lead);
+		const member = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "Builder", responsibility: "Build" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(member), "recruit enrolled");
+		ok(await h.call("POST", "/tasks", { token: lead.token, body: { owner_id: member, title: "Write the parser" } }));
+		assert.equal((await h.call("POST", `/runs/${lead.run_id}/settings`, { token: sub.token, body: { name: "x" } })).status, 403);
+		assert.equal(ok(await h.call("POST", `/runs/${lead.run_id}/settings`, { token: lead.token, body: { name: "  Parser\nwork  ", on_leader_exit: "keep" } })).name, "Parser work");
+		assert.equal((await h.call("POST", `/runs/${lead.run_id}/settings`, { token: lead.token, body: { on_leader_exit: "maybe" } })).status, 400);
+		const runs = ok(await h.call("GET", "/runs", { token: h.op })).runs as any[];
+		const mine = runs.find((r) => r.run_id === lead.run_id), empty = runs.find((r) => r.run_id === stranger.run_id);
+		assert.deepEqual({ name: mine.name, open: mine.open_tasks, empty: mine.empty, exit: mine.on_leader_exit, cwd: mine.cwd }, { name: "Parser work", open: 2, empty: false, exit: "keep", cwd: h.dir });
+		assert.match(mine.summary, /working on: (Write the parser|Builder)/);
+		assert.ok(mine.last_activity_at);
+		assert.equal(empty.empty, true);
+		assert.equal(empty.name, h.dir.split("/").filter(Boolean).pop(), "default name is the project folder");
+
+		await h.call("POST", "/sessions/heartbeat", { token: h.ex.tokens.get(member)!, body: { busy: true } });
+		const act = ok(await h.call("GET", `/runs/${lead.run_id}/activity`, { token: lead.token }));
+		assert.deepEqual(new Set(act.members.map((m: any) => m.agent_id)), new Set([member, sub.root]), "the whole tree, across links");
+		assert.equal(act.busy, 1);
+		assert.equal(act.on_leader_exit, "keep");
+		assert.equal((await h.call("GET", `/runs/${lead.run_id}/activity`, { token: stranger.token })).status, 403);
+	} finally { await h.cleanup(); }
+});
+
+test("a team whose leader left is paused once every member is idle; busy members and keep teams are left alone", async () => {
+	const h = await harness({ tunables: { tickMs: 50, leaderlessIdleMs: 400 } as any });
+	try {
+		const gone = await newRun(h), working = await newRun(h), kept = await newRun(h);
+		ok(await h.call("POST", `/runs/${kept.run_id}/settings`, { token: kept.token, body: { on_leader_exit: "keep" } }));
+		const recruits: Record<string, string> = {};
+		for (const t of [gone, working, kept]) {
+			recruits[t.run_id] = ok(await h.call("POST", "/members", { token: t.token, body: { name: "Worker", responsibility: "Work" } })).spawned_agent_ids[0];
+			await waitFor(() => h.ex.tokens.has(recruits[t.run_id]));
+			await h.call("POST", "/sessions/heartbeat", { token: h.ex.tokens.get(recruits[t.run_id])!, body: { busy: t === working } });
+			// The leader's harness disappeared without running its exit policy.
+			h.h.db.prepare("UPDATE agents SET observed_state = 'LOST', last_heartbeat_at = ? WHERE id = ?").run(new Date(Date.now() - 60_000).toISOString(), t.root);
+		}
+		const state = (t: Team) => JSON.parse(sql(h, "SELECT config_json FROM runs WHERE id = ?", t.run_id)[0].config_json).team_lifecycle?.state ?? "RUNNING";
+		await waitFor(() => ["STOPPED", "CLEANING"].includes(state(gone)), "idle leaderless team paused", 5000);
+		assert.equal(sql(h, "SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = 'run.auto_paused'", gone.run_id)[0].n, 1);
+		await new Promise((r) => setTimeout(r, 600));
+		assert.equal(state(working), "RUNNING", "a working member is never interrupted");
+		assert.equal(state(kept), "RUNNING", "exit policy keep opts out");
+	} finally { await h.cleanup(); }
+});
+
+test("the away summary reports what happened since the leader's previous session ended", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), sub = await newRun(h);
+		await connect(h, sub, lead);
+		const member = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "Builder", responsibility: "Build" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(member));
+		const before = ok(await h.call("POST", "/tasks", { token: lead.token, body: { owner_id: member, title: "Before you left" } }));
+		ok(await h.call("POST", `/tasks/${before.task_id}/complete`, { token: h.ex.tokens.get(member)!, body: { summary: "old news" } }));
+		// The leader leaves; a new session attaches later (as /team resume does).
+		const back = ok(await h.call("POST", `/runs/${lead.run_id}/attach`, { token: h.op, body: {} }));
+		await new Promise((r) => setTimeout(r, 20));
+		const t1 = ok(await h.call("POST", "/tasks", { token: back.token, body: { owner_id: member, title: "Parser" } }));
+		ok(await h.call("POST", `/tasks/${t1.task_id}/progress`, { token: h.ex.tokens.get(member)!, body: { note: "half" } }));
+		ok(await h.call("POST", `/tasks/${t1.task_id}/complete`, { token: h.ex.tokens.get(member)!, body: { summary: "parser done" } }));
+		const t2 = ok(await h.call("POST", "/tasks", { token: back.token, body: { owner_id: sub.root, title: "Linked work" } }));
+		ok(await h.call("POST", `/tasks/${t2.task_id}/complete`, { token: sub.token, body: { summary: "linked done" } }));
+		const away = ok(await h.call("GET", `/runs/${lead.run_id}/away`, { token: back.token }));
+		assert.deepEqual(away.completed.map((c: any) => [c.title, c.summary]), [["Parser", "parser done"], ["Linked work", "linked done"]], "only what happened after the previous session, including linked teams");
+		assert.equal(away.progress_reports, 1);
+		assert.ok(away.messages_waiting >= 2);
+		assert.equal((await h.call("GET", `/runs/${lead.run_id}/away`, { token: sub.token })).status, 403);
+	} finally { await h.cleanup(); }
+});

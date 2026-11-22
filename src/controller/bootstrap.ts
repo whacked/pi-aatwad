@@ -251,6 +251,7 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 		maxRestarts: 3,
 		tickMs: 1000,
 		hungMs: 3 * HEARTBEAT_LEASE_MS,
+		leaderlessIdleMs: 15 * 60_000,
 		...(opts.tunables ?? {}),
 	};
 	const startedAt = nowIso();

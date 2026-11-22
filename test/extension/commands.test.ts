@@ -8,7 +8,7 @@ import { TmuxWatch } from "../../src/watch/tmux.ts";
 import { registerTeamCommand } from "../../src/extension/commands.ts";
 import { TeamRuntime, __resetProcessStateForTests } from "../../src/extension/runtime.ts";
 import { statePaths } from "../../src/shared/paths.ts";
-import { harness, newRun, sql } from "../controller/helpers.ts";
+import { harness, newRun, sql, waitFor } from "../controller/helpers.ts";
 
 test("stop own run, stop another, repeat stop, and refresh completion without false fencing", async () => {
 	__resetProcessStateForTests();
@@ -67,7 +67,7 @@ function commandSession(hs: Awaited<ReturnType<typeof harness>>, id: string, sel
 		registerCommand: (_name: string, definition: unknown) => { command = definition; } };
 	const ctx = { hasUI: true, mode: "rpc", cwd: hs.dir, isIdle: () => true, hasPendingMessages: () => false,
 		ui: { notify: (text: string) => notes.push(text), confirm: async (_title: string, detail: string) => { confirmations.push(detail); return true; }, setStatus: () => {},
-			select: async (_title: string, options: string[]) => { choices.push(options); return selectedRun ? options.find((s) => s.startsWith(selectedRun)) : undefined; } },
+			select: async (_title: string, options: string[]) => { choices.push(options); return selectedRun ? options.find((s) => s.includes(selectedRun)) : undefined; } },
 		sessionManager: { getSessionId: () => id, getSessionFile: () => undefined, getEntries: () => entries } } as any;
 	const rt = new TeamRuntime(pi as any, { paths, env: {}, heartbeatMs: 60000 });
 	registerTeamCommand(pi as any, rt);
@@ -137,7 +137,7 @@ test("resume auto-attaches the sole valid team; multiple teams show a picker and
 		assert.ok(initialized.notes.some((s) => s.includes("no active members")));
 		await initialized.command.handler("resume", initialized.ctx);
 		assert.equal(initialized.choices.length, 1, "multiple valid teams require selection");
-		assert.ok(initialized.choices[0].some((label) => label.includes("2 active members")));
+		assert.ok(initialized.choices[0].some((label) => label.includes("/2 live")), "picker labels show live/total members");
 		assert.ok(!initialized.choices[0].some((label) => label.includes(cancelled.run_id)));
 		assert.equal(initialized.rt.identity!.run_id, existing.run_id);
 		await initialized.rt.heartbeat();
@@ -557,4 +557,59 @@ test("a session working as a member moves to another team: /team join leaves its
 		assert.equal(sql(hs, "SELECT COUNT(*) AS n FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", solo.rt.identity!.agent_id)[0].n, 0, "an independent leader");
 		solo.rt.stop();
 	} finally { for (const s of [lead, worker, other]) s.rt.stop(); await hs.cleanup(); }
+});
+
+test("quitting Pi stops the team by default (resumable), keeps it running when the policy says so, and the guard sees working members", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const a = commandSession(hs, "quit-a", ""), b = commandSession(hs, "quit-b", "");
+	try {
+		for (const s of [a, b]) { await s.rt.start(s.ctx); await s.command.handler("init --name Alpha", s.ctx); }
+		const state = (run: string) => JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id = ?", run)[0].config_json).team_lifecycle?.state ?? "RUNNING";
+		assert.equal(JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id = ?", a.rt.identity!.run_id)[0].config_json).name, "Alpha");
+		assert.equal(await a.rt.exitCheck().then((c) => c?.busy), 0, "no members: nothing to guard");
+		const out: string[] = [];
+		await a.rt.onQuit((t) => out.push(t));
+		assert.equal(out.length, 0, "a team with no members is left alone");
+
+		const member = (await hs.call("POST", "/members", { token: (a.rt.identity as any).token, body: { name: "Builder", responsibility: "Build" } })).body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(member));
+		await hs.call("POST", "/sessions/heartbeat", { token: hs.ex.tokens.get(member)!, body: { busy: true } });
+		const check = await a.rt.exitCheck();
+		assert.equal(check?.busy, 1);
+		assert.match(check!.detail, /Builder[\s\S]*stops the team now \(resumable\)/);
+		await a.rt.onQuit((t) => out.push(t));
+		assert.match(out.join(""), new RegExp(`Team ${a.rt.identity!.run_id} stopped \\(resumable\\): 1 member\\(s\\) paused, 1 mid-task\\. /team resume`));
+		assert.equal(state(a.rt.identity!.run_id), "STOPPED");
+
+		await b.command.handler("exit-policy keep", b.ctx);
+		const other = (await hs.call("POST", "/members", { token: (b.rt.identity as any).token, body: { name: "Writer", responsibility: "Write" } })).body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(other));
+		const kept: string[] = [];
+		await b.rt.onQuit((t) => kept.push(t));
+		assert.match(kept.join(""), /keeps running in the background/);
+		assert.equal(state(b.rt.identity!.run_id), "RUNNING");
+	} finally { a.rt.stop(); b.rt.stop(); await hs.cleanup(); }
+});
+
+test("/team prune closes only idle members with no open tasks, after confirmation", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "prune-session", "");
+	try {
+		await s.rt.start(s.ctx);
+		await s.command.handler("init", s.ctx);
+		const token = (s.rt.identity as any).token;
+		const made = (await hs.call("POST", "/members", { token, body: { name: "Done", responsibility: "Finish fast" } })).body.spawned_agent_ids[0];
+		const busy = (await hs.call("POST", "/members", { token, body: { name: "Busy", responsibility: "Keep going" } })).body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(made) && hs.ex.tokens.has(busy));
+		const task = sql(hs, "SELECT id FROM tasks WHERE owner_id = ?", made)[0].id;
+		await hs.call("POST", `/tasks/${task}/complete`, { token: hs.ex.tokens.get(made)!, body: { summary: "done" } });
+		await s.command.handler("prune", s.ctx);
+		assert.ok(s.confirmations.some((c) => /Close 1 idle member\(s\) with no open tasks: Done\?/.test(c)), s.confirmations.join("\n"));
+		assert.equal(sql(hs, "SELECT status FROM agents WHERE id = ?", made)[0].status, "CANCELLED");
+		assert.notEqual(sql(hs, "SELECT status FROM agents WHERE id = ?", busy)[0].status, "CANCELLED", "a member with open work stays");
+		await s.command.handler("prune", s.ctx);
+		assert.ok(s.notes.some((n) => /Nothing to prune/.test(n)));
+	} finally { s.rt.stop(); await hs.cleanup(); }
 });

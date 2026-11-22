@@ -14,6 +14,8 @@ import { prepareWorkspace } from "../executor/workspace.ts";
 import { assertLeaseHeld, FencedError } from "./fence.ts";
 import { reconcileRootRunStatus, terminateAgent } from "./topology.ts";
 import { postMessage, releaseExpiredClaims } from "./messaging.ts";
+import { activity } from "./attention.ts";
+import { suspendTeam } from "./team-lifecycle.ts";
 
 export class Reconciler {
 	ctx: Ctx;
@@ -116,6 +118,41 @@ export class Reconciler {
 			await this.launch(r.id);
 		}
 		await this.syncTerminals();
+		this.pauseLeaderlessTeams();
+	}
+
+	/**
+	 * A team left behind by its leader (harness gone without the exit policy running, e.g. a crash
+	 * or a killed terminal) is stopped resumably once every member has been idle for
+	 * leaderlessIdleMs. Teams whose exit policy is keep are left alone. Nothing busy is interrupted.
+	 */
+	private readonly bornAt = Date.now();
+	private pauseLeaderlessTeams(): void {
+		const db = this.ctx.db, now = Date.now(), quiet = this.ctx.t.leaderlessIdleMs;
+		for (const r of all(db, "SELECT r.id, r.root_agent_id, a.observed_state, a.last_heartbeat_at, a.status FROM runs r JOIN agents a ON a.id = r.root_agent_id WHERE r.status = 'RUNNING'")) {
+			if (this.stopped) return;
+			if (r.observed_state === "LIVE" || isTerminal(r.status)) continue;
+			const cfg = runConfig(db, r.id);
+			if (cfg.on_leader_exit === "keep" || ["STOPPED", "CLEANING", "REMOVED"].includes(cfg.team_lifecycle?.state ?? "")) continue;
+			if (r.last_heartbeat_at && now - Date.parse(r.last_heartbeat_at) < quiet) continue;
+			const members = all(db, `SELECT id, observed_state FROM agents WHERE run_id = ? AND id <> ? AND status NOT IN ${TERMINAL_SQL}`, r.id, r.root_agent_id);
+			if (!members.length) continue;
+			const quietSince = (id: string, live: boolean) => {
+				if (!live) return 0;
+				const act = activity(db, id);
+				// Unknown activity (no heartbeat since this controller started): idle since it started.
+				if (!act) return this.bornAt;
+				return act.busy ? now : act.since;
+			};
+			if (members.some((m) => now - quietSince(m.id, m.observed_state === "LIVE") < quiet)) continue;
+			try {
+				this.wtx(() => {
+					suspendTeam(this.ctx, { after: (fn) => { setImmediate(() => void fn()); }, idemKey: null }, r.id, "controller");
+					emit(db, { run_id: r.id, actor_id: "controller", type: "run.auto_paused", entity_id: r.id, payload: { reason: "leader gone and all members idle", idle_ms: quiet } });
+				});
+				this.ctx.log("info", "paused a team whose leader left while every member was idle", { run_id: r.id });
+			} catch (e) { this.ctx.log("warn", "could not pause leaderless team", { run_id: r.id, error: String(e) }); }
+		}
 	}
 
 	/** Saved terminal locations may disappear between root sessions or after a tmux/server outage. */

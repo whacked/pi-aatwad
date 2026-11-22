@@ -5,14 +5,15 @@ import type { NativeView } from "../terminal/native.ts";
 import { attachMember } from "./attach.ts";
 import { hostCapabilities } from "../terminal/host.ts";
 // `/team` command with subcommands. Human-facing; uses the operator token unless this is a managed worker.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
-import { formatBudget, formatEvents, formatInspect, formatProposal, formatTree } from "./format.ts";
+import { formatAway, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, teamLabel, type AwaySummary } from "./format.ts";
+import { execFileSync } from "node:child_process";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
@@ -28,7 +29,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "reporting", args: "[--all|dismiss|transfer [run_id]|wake on|off]", help: "inspect, dismiss or transfer reporting links (wake on|off = /team attention on-message)" },
 	{ name: "attention", args: "[team|name|agent_id] [on-message wake|next-turn] [batch 15s] [stall 3m|off] [tick 10m|off] [cap N] [reset]", help: "when idle leaders/members get automatic turns (message wake, stall alerts, check-ins)" },
 	{ name: "help", args: "", help: "show this help" },
-	{ name: "init", args: "[--unlimited] [config-json-path]", help: "create a new organization with this session as root" },
+	{ name: "init", args: "[--unlimited] [--name <name>] [config-json-path]", help: "create a new organization with this session as root" },
 	{ name: "resume", args: "[run_id] [name|agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
 	{ name: "tree", args: "[run_id] [--all]", help: "live logical hierarchy" },
 	{ name: "status", args: "", help: "controller, run, agent and pending work" },
@@ -39,7 +40,10 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "events", args: "[run_id]", help: "recent audit events" },
 	{ name: "model", args: "[name|agent_id] <provider/model>", help: "switch an existing member model when idle" },
 	{ name: "inspect", args: "[name|agent_id]", help: "tasks, sessions, history, budget of an agent" },
-	{ name: "list", args: "[all]", help: "list active teams, or include historical teams with all" },
+	{ name: "list", args: "[all]", help: "teams for this project with what they did last; all includes other projects, empty, closed and old teams" },
+	{ name: "prune", args: "[--yes]", help: "close this team's idle members that have no open tasks (history kept; /team recall brings one back)" },
+	{ name: "rename", args: "<name>", help: "set this team's name (default: the project folder)" },
+	{ name: "exit-policy", args: "[stop|keep]", help: "what quitting Pi does to this team: stop it resumably (default) or keep it running in the background" },
 	{ name: "admin", args: "[status|limits|clear-limits|clear-deadlines|unlimited|bounded] [run_id]", help: "human operator resource policy: list or remove limits" },
 	{ name: "stop", args: "[run_id]", help: "stop a whole team resumably; preserve identities and transcripts" },
 	{ name: "remove", args: "[run_id] [--yes]", help: "permanently remove a whole team; preserve Pi and worktrees" },
@@ -88,7 +92,13 @@ function resumable(run: RunSummary): boolean {
 	return !TERMINAL_STATUSES.has(run.status) && !TERMINAL_STATUSES.has(run.root_status ?? "");
 }
 function runLabel(run: RunSummary): string {
-	return `${run.run_id} · ${run.active_members ?? Math.max(0, run.agents - 1)} active members · ${run.live_members ?? "?"} running${run.reporting_teams ? ` · ${run.reporting_teams} reporting teams` : ""}${run.reports_to_run_id ? ` · reports to ${run.reports_to_run_id}` : ""} · ${run.created_at}`;
+	return `${teamLabel(run)} · ${run.run_id}`;
+}
+
+/** The project a session works in: its git top-level, else its working directory. */
+export function projectRoot(cwd: string): string {
+	try { return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 }).trim() || cwd; }
+	catch { return cwd; }
 }
 
 export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
@@ -322,7 +332,11 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (rt.managed) throw new Error("managed workers cannot run /team init; they are enrolled by the controller");
 			if (rt.identity) throw new Error(`already enrolled as ${rt.identity.agent_id} in run ${rt.identity.run_id}`);
 			let config: Partial<RunConfig> | undefined;
-			const configPath = a.find((value) => value !== "--unlimited");
+			// --name <name>: how the team appears in /team list (default: the project folder).
+			const nameAt = a.indexOf("--name");
+			const name = nameAt >= 0 ? a[nameAt + 1] : undefined;
+			if (nameAt >= 0 && !name) throw new Error("usage: /team init [--unlimited] [--name <name>] [config-json-path]");
+			const configPath = a.find((value, i) => value !== "--unlimited" && value !== "--name" && i !== nameAt + 1);
 			if (configPath) {
 				const p = resolve(ctx.cwd, configPath);
 				config = JSON.parse(readFileSync(p, "utf8")) as Partial<RunConfig>;
@@ -339,6 +353,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				{ token: op, idempotencyKey: `init:${pis.id}:${randomUUID()}` },
 			);
 			initializedRunId = r.run_id;
+			if (name) await rt.client.post(`/runs/${encodeURIComponent(r.run_id)}/settings`, { name }, { token: op }).catch(() => {});
 			rt.adoptNew({ run_id: r.run_id, agent_id: r.root_agent_id, session_id: r.session_id, token: r.token, managed: false, role: "root", pi_session_id: pis.id });
 			await rt.refreshRole();
 			const e = r.envelope;
@@ -350,10 +365,50 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			);
 		},
 
+		prune: async (_a, ctx, yes) => {
+			await rt.requireIdentity();
+			if (rt.managed) throw new Error("only the human operator can prune a team");
+			const id = await runId(ctx);
+			const token = await rt.commandToken();
+			type Activity = { members: { agent_id: string; role: string; run_id: string; live: boolean; busy: boolean; open_tasks: number }[] };
+			const act = await rt.client.get<Activity>(`/runs/${encodeURIComponent(id)}/activity`, { token });
+			// Only this team's own members: linked teams are independent (dismiss them instead).
+			const idle = act.members.filter((m) => m.run_id === id && !m.busy && m.open_tasks === 0);
+			if (!idle.length) { out(ctx, "Nothing to prune: every member of this team is working or has open tasks."); return; }
+			if (!(await confirm(ctx, yes, `Close ${idle.length} idle member(s) with no open tasks: ${idle.map((m) => m.role).join(", ")}? Their history stays; /team recall brings one back.`))) return;
+			for (const m of idle) await rt.client.lifecycle(m.agent_id, { action: "cancel", reason: "pruned: idle with no open tasks", children_policy: "cascade" }, { token });
+			out(ctx, `Closed ${idle.length} idle member(s): ${idle.map((m) => m.role).join(", ")}.`);
+		},
+
+		rename: async (a, ctx) => {
+			await rt.requireIdentity();
+			if (!a.length) throw new Error("usage: /team rename <name>");
+			const id = await runId(ctx);
+			const r = await rt.client.post<{ name: string }>(`/runs/${encodeURIComponent(id)}/settings`, { name: a.join(" ") }, { token: await rt.commandToken() });
+			out(ctx, `Team ${id} is now "${r.name}".`);
+		},
+
+		"exit-policy": async (a, ctx) => {
+			await rt.requireIdentity();
+			if (a.length > 1 || (a[0] && !["stop", "keep"].includes(a[0]))) throw new Error("usage: /team exit-policy [stop|keep]");
+			const id = await runId(ctx);
+			const token = await rt.commandToken();
+			const r = a[0] ? await rt.client.post<{ on_leader_exit: string }>(`/runs/${encodeURIComponent(id)}/settings`, { on_leader_exit: a[0] }, { token })
+				: await rt.client.get<{ on_leader_exit: string }>(`/runs/${encodeURIComponent(id)}/activity`, { token });
+			out(ctx, r.on_leader_exit === "keep"
+				? "When you quit Pi, this team keeps running in the background. /team resume picks it up later, with a summary of what happened."
+				: "When you quit Pi, this team stops (resumably): members finish nothing in the background. /team resume brings it back. /team exit-policy keep changes this.");
+		},
+
 		list: async (a, ctx) => {
 			if (rt.managed) throw new Error("managed workers can inspect their own team with /team tree");
-			const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs.filter((r) => a[0] === "all" || resumable(r));
-			out(ctx, runs.length ? runs.map((r) => `${runLabel(r)} · ${r.stopped ? "STOPPED (resumable)" : r.status}${r.run_id === rt.identity?.run_id ? " · current" : ""}`).join("\n") : "No active teams. /team init creates one; /team list all shows history.");
+			const all = a[0] === "all";
+			const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs;
+			const project = projectRoot(ctx.cwd);
+			const { lines, hidden } = listTeams(runs, { project, all, current: rt.identity?.run_id });
+			const head = all ? "All teams:" : `Teams for ${project}:`;
+			const tail = hidden ? `${hidden} more (other projects, empty, closed or stopped over a week ago): /team list all` : "";
+			out(ctx, lines.length ? [head, ...lines, ...(tail ? [tail] : [])].join("\n") : `No teams for this project. /team init [--name <name>] creates one${tail ? `; ${tail}` : "."}`);
 		},
 
 		admin: async (a, ctx, yes) => {
@@ -439,6 +494,11 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			// Teams created before limits became opt-in still carry their saved caps: say so up front.
 			const saved = await rt.client.get<{ limits?: string[] }>(`/runs/${target}/admin`, { token: op }).then((r) => r.limits ?? [], () => []);
 			out(ctx, `Resumed ${runLabel(run)}. Use /team tree to inspect members, then /team watch to open their Pi panes.${saved.length ? `\nThis team has ${saved.length} saved limit(s) that can block or pause members. /team admin limits lists them; /team admin clear-limits removes them all.` : ""}`);
+			if (!member) {
+				const away = await rt.client.get<AwaySummary>(`/runs/${encodeURIComponent(target)}/away`, { token: await rt.commandToken() }).catch(() => undefined);
+				const text = away && formatAway(away);
+				if (text) out(ctx, text);
+			}
 		},
 
 		tree: async (a, ctx) => {
@@ -620,7 +680,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
 					return;
 				}
-				const supportsYes = ["stop", "remove", "admin", "budget", "join", "leave", "dismiss", "reporting", "watch", "resume"].includes(command);
+				const supportsYes = ["stop", "remove", "admin", "budget", "join", "leave", "dismiss", "prune", "reporting", "watch", "resume"].includes(command);
 				const yes = supportsYes && rest.includes("--yes");
 				await h(yes ? rest.filter((arg) => arg !== "--yes") : rest, ctx, yes);
 			} catch (e) {
@@ -629,4 +689,18 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			}
 		},
 	});
+}
+
+/** On startup in a project that already has teams, say so once (never blocks, never creates state). */
+export async function projectTeamsNotice(rt: TeamRuntime, ctx: { cwd: string; hasUI: boolean; ui: { notify(text: string, level?: "info" | "warning" | "error"): void } }): Promise<void> {
+	try {
+		if (rt.managed || rt.identity || !ctx.hasUI || !existsSync(rt.paths.db)) return;
+		const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs;
+		const { shown } = listTeams(runs, { project: projectRoot(ctx.cwd) });
+		if (!shown.length) return;
+		const names = shown.slice(0, 3).map((r) => `${r.name ?? r.run_id} (${r.stopped ? "stopped" : (r.live_members ?? 0) > 0 ? `${r.live_members} live` : "idle"})`).join(", ");
+		ctx.ui.notify(`${shown.length} team${shown.length > 1 ? "s" : ""} for this project: ${names}${shown.length > 3 ? ", …" : ""}. /team list shows what each did; /team resume picks one up.`, "info");
+	} catch {
+		/* best effort */
+	}
 }

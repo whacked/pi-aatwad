@@ -246,6 +246,10 @@ export interface RunConfig {
 	operator_unlimited?: boolean;
 	/** Default budget (USD) this team gives a new member; added once to a team that links under it. */
 	member_default_usd?: number;
+	/** Human-readable team name (default: the project folder). */
+	name?: string;
+	/** What happens to this team when its leader's harness exits: stop it resumably (default) or keep it running. */
+	on_leader_exit?: "stop" | "keep";
 	/** Interactive Pi workers hosted beside the leader in tmux or Rex. */
 	terminal?: TerminalOptions;
 	limits: GlobalLimits;
@@ -368,6 +372,20 @@ export interface RunSummary {
 	live_members?: number;
 	/** Suspended by /team stop; identities and transcripts are kept for /team resume. */
 	stopped?: boolean;
+	/** Team name, defaulting to the project folder. */
+	name?: string;
+	/** The leader's working directory (the project). */
+	cwd?: string | null;
+	/** The leader's model, provider/model. */
+	model?: string | null;
+	/** Latest recorded activity anywhere in the team. */
+	last_activity_at?: string | null;
+	open_tasks?: number;
+	/** One line on what the team did last: the latest completed task summary or open task. */
+	summary?: string | null;
+	/** Nobody was ever recruited or linked under the leader. */
+	empty?: boolean;
+	on_leader_exit?: "stop" | "keep";
 	run_id: string;
 	status: RunStatus;
 	root_agent_id: string;

@@ -16,6 +16,7 @@ import type {
 	OrgContext,
 	RunConfig,
 	RunListResponse,
+	RunSummary,
 	TreeNode,
 	TreeResponse,
 	UsageReportResponse,
@@ -23,7 +24,7 @@ import type {
 import { obj, str, int, onlyKeys } from "./validate.ts";
 import { buildRunConfig, modelIneligibility } from "./config.ts";
 import { hashToken, issueSessionToken, revokeAgentCredentials } from "./auth.ts";
-import { decideWake, effectiveAttention, noteActivity } from "./attention.ts";
+import { activity, decideWake, effectiveAttention, noteActivity } from "./attention.ts";
 import { getAgent, getAllocation, getAncestry, getChildren, getCurrentManager, getDirectSubs, getLinkParent, getReportingHistory, getRun, getSubtree, inLinkedSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
 import { budgetPool, budgetView, ownBudgetUsd } from "./budgets.ts";
 import { inboxPending, postMessage, requireAgent } from "./messaging.ts";
@@ -129,10 +130,113 @@ export function listRuns(ctx: Ctx, p: Principal): RunListResponse {
 		(SELECT COUNT(*) FROM agents a WHERE a.run_id = r.id AND a.id <> r.root_agent_id AND a.status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') AND a.observed_state = 'LIVE' AND a.desired_state = 'RUNNING') AS live_members
 		FROM runs r LEFT JOIN agents root ON root.id = r.root_agent_id ORDER BY r.created_at`);
 	return { runs: rows.filter((r) => !isRemoved(parseJson<RunConfig>(r.config_json, {} as RunConfig))).map((r) => ({
+		...teamIdentity(ctx.db, r),
 		...(["STOPPED", "CLEANING"].includes(parseJson<RunConfig>(r.config_json, {} as RunConfig).team_lifecycle?.state ?? "") ? { stopped: true } : {}),
 		reports_to_run_id: get(ctx.db, "SELECT parent_run_id FROM reporting_edges WHERE run_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL", r.id)?.parent_run_id ?? null,
 		reporting_teams: Number(get(ctx.db, "SELECT COUNT(*) AS n FROM reporting_edges WHERE parent_run_id = ? AND valid_to IS NULL", r.id)!.n),
 		run_id: r.id, status: r.root_status === "CANCELLED" ? "CANCELLED" : r.status, root_status: r.root_status, active_members: Number(r.active_members), live_members: Number(r.live_members), root_agent_id: r.root_agent_id, created_at: r.created_at, topology_version: r.topology_version, agents: Number(r.n) })) };
+}
+
+/** What a human needs to recognize a team in a list. */
+function teamIdentity(db: DB, r: Row): Partial<RunSummary> {
+	const cfg = parseJson<RunConfig>(r.config_json, {} as RunConfig);
+	const root = get(db, "SELECT cwd, provider, model, metadata_json FROM agents WHERE id = ?", r.root_agent_id);
+	const actual = parseJson<{ actual_model?: { provider: string; model: string } }>(root?.metadata_json ?? "{}", {}).actual_model;
+	const model = actual ? `${actual.provider}/${actual.model}` : root?.model && root.model !== "default" ? `${root.provider}/${root.model}` : null;
+	const cwd = root?.cwd ?? cfg.workspace_root ?? null;
+	const last = get(db, "SELECT MAX(created_at) AS at FROM events WHERE run_id = ?", r.id)?.at ?? null;
+	const open = Number(get(db, "SELECT COUNT(*) AS n FROM tasks WHERE run_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS','BLOCKED')", r.id)!.n);
+	const done = get(db, "SELECT json_extract(payload_json, '$.summary') AS s FROM events WHERE run_id = ? AND type = 'task.completed' ORDER BY seq DESC LIMIT 1", r.id)?.s;
+	const pending = get(db, "SELECT title FROM tasks WHERE run_id = ? AND status IN ('ASSIGNED','IN_PROGRESS','BLOCKED') AND title NOT LIKE 'Recruit %' ORDER BY updated_at DESC LIMIT 1", r.id)?.title;
+	const linked = Number(get(db, "SELECT COUNT(*) AS n FROM reporting_edges WHERE parent_run_id = ?", r.id)!.n);
+	const summary = pending ? `working on: ${pending}` : done ? `last done: ${String(done)}` : null;
+	return {
+		name: cfg.name ?? (cwd ? cwd.split("/").filter(Boolean).pop() : undefined) ?? r.id,
+		cwd, model, last_activity_at: last, open_tasks: open,
+		summary: summary ? (summary.length > 140 ? `${summary.slice(0, 139)}…` : summary) : null,
+		empty: Number(r.n) <= 1 && linked === 0,
+		on_leader_exit: cfg.on_leader_exit ?? "stop",
+	};
+}
+
+/** Team settings: name and what happens when the leader's harness exits. Operator or the team's root. */
+export function teamSettings(ctx: Ctx, p: Principal, runId: string, body: unknown): { run_id: string; name: string | null; on_leader_exit: "stop" | "keep" } {
+	const db = ctx.db;
+	const r = getRun(db, runId);
+	if (p.kind === "agent" && (p.run_id !== runId || p.actor_id !== r.root_agent_id)) fail("FORBIDDEN", "only the team's leader or the operator may change team settings");
+	const b = obj(body);
+	onlyKeys(b, ["name", "on_leader_exit"]);
+	const cfg = runConfig(db, runId);
+	if (b.name !== undefined) {
+		const name = str(b, "name").replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, 80);
+		if (!name) fail("INVALID", "name must not be empty");
+		cfg.name = name;
+	}
+	if (b.on_leader_exit !== undefined) {
+		if (b.on_leader_exit !== "stop" && b.on_leader_exit !== "keep") fail("INVALID", "on_leader_exit must be stop or keep");
+		cfg.on_leader_exit = b.on_leader_exit;
+	}
+	run(db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), runId);
+	emit(db, { run_id: runId, actor_id: p.actor_id, type: "run.settings", entity_id: runId, payload: { name: cfg.name ?? null, on_leader_exit: cfg.on_leader_exit ?? "stop" } });
+	return { run_id: runId, name: cfg.name ?? null, on_leader_exit: cfg.on_leader_exit ?? "stop" };
+}
+
+export interface TeamActivity {
+	run_id: string;
+	on_leader_exit: "stop" | "keep";
+	members: { agent_id: string; role: string; run_id: string; live: boolean; busy: boolean; open_tasks: number }[];
+	live: number;
+	busy: number;
+}
+
+/** Who is alive and who is working anywhere below the team's leader, across links. */
+export function teamActivity(ctx: Ctx, p: Principal, runId: string): TeamActivity {
+	const db = ctx.db;
+	const r = getRun(db, runId);
+	if (p.kind === "agent" && !inLinkedSubtree(db, p.actor_id, r.root_agent_id)) fail("FORBIDDEN", "other run");
+	const seen = new Set<string>([r.root_agent_id]);
+	const queue = [r.root_agent_id];
+	const members: TeamActivity["members"] = [];
+	while (queue.length) {
+		for (const id of getDirectSubs(db, queue.shift()!)) {
+			if (seen.has(id)) continue;
+			seen.add(id);
+			queue.push(id);
+			const a = getAgent(db, id);
+			if (isTerminal(a.status)) continue;
+			const live = a.observed_state === "LIVE";
+			const open = Number(get(db, "SELECT COUNT(*) AS n FROM tasks WHERE owner_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS','BLOCKED')", id)!.n);
+			members.push({ agent_id: id, role: a.role, run_id: a.run_id, live, busy: live && !!activity(db, id)?.busy, open_tasks: open });
+		}
+	}
+	return { run_id: runId, on_leader_exit: runConfig(db, runId).on_leader_exit ?? "stop", members, live: members.filter((m) => m.live).length, busy: members.filter((m) => m.busy).length };
+}
+
+export interface AwaySummary {
+	since: string;
+	completed: { task_id: string; title: string; by: string; status: string; summary: string }[];
+	progress_reports: number;
+	messages_waiting: number;
+	auto_paused_at: string | null;
+}
+
+/** What happened in a team while its leader was away: since the leader's previous session ended. */
+export function awaySummary(ctx: Ctx, p: Principal, runId: string): AwaySummary {
+	const db = ctx.db;
+	const r = getRun(db, runId);
+	if (p.kind === "agent" && (p.run_id !== runId || p.actor_id !== r.root_agent_id)) fail("FORBIDDEN", "only the team's leader or the operator may read its away summary");
+	const current = p.kind === "agent" ? p.session_id : get(db, "SELECT current_session_id AS id FROM agents WHERE id = ?", r.root_agent_id)?.id;
+	const since = get(db, "SELECT MAX(ended_at) AS at FROM sessions WHERE agent_id = ? AND id IS NOT ? AND ended_at IS NOT NULL", r.root_agent_id, current ?? null)?.at as string | null ?? r.created_at;
+	// Tasks this team owns, including those it assigned to teams linked under it (their events live in those teams).
+	const completed = all(db, `SELECT t.id, t.title, e.payload_json, e.created_at, a.role FROM events e JOIN tasks t ON t.id = e.entity_id JOIN agents a ON a.id = e.actor_id
+		WHERE e.type = 'task.completed' AND t.run_id = ? AND e.created_at > ? ORDER BY e.seq LIMIT 20`, runId, since).map((row) => {
+		const payload = parseJson<{ status?: string; summary?: string }>(row.payload_json, {});
+		return { task_id: row.id, title: row.title, by: row.role, status: payload.status ?? "DONE", summary: String(payload.summary ?? "").slice(0, 200) };
+	});
+	const progress = Number(get(db, `SELECT COUNT(*) AS n FROM events e JOIN tasks t ON t.id = e.entity_id WHERE e.type = 'task.progress' AND t.run_id = ? AND e.created_at > ?`, runId, since)!.n);
+	const waiting = Number(get(db, "SELECT COUNT(*) AS n FROM deliveries WHERE recipient_id = ? AND status <> 'ACKED'", r.root_agent_id)!.n);
+	const paused = get(db, "SELECT MAX(created_at) AS at FROM events WHERE run_id = ? AND type = 'run.auto_paused' AND created_at > ?", runId, since)?.at ?? null;
+	return { since, completed, progress_reports: progress, messages_waiting: waiting, auto_paused_at: paused };
 }
 
 export function attach(ctx: Ctx, p: Principal, runId: string, body: unknown): AttachResponse {

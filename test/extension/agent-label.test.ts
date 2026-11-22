@@ -76,3 +76,43 @@ test("editor decoration composes with custom editors, follows identity/theme and
 	name = undefined;
 	assert.equal(editor.render(40)[0], "─".repeat(40), "detached identity removes label without replacing the editor");
 });
+
+test("the exit guard asks before quitting while members work, and quits at once when they are idle", async () => {
+	let factory: any;
+	let busy = 1, confirmAnswer = false;
+	const calls: string[] = [];
+	const registered = new Map<string, () => void>();
+	// A stand-in for whatever editor is installed: records action handlers the way CustomEditor does.
+	const previous = () => ({ render: (w: number) => ["─".repeat(w), "", "─".repeat(w)], handleInput() {}, invalidate() {}, getText: () => "",
+		onAction(action: string, handler: () => void) { registered.set(action, handler); } });
+	const ui: any = { getEditorComponent: () => previous, setEditorComponent: (f: any) => { factory = f; }, theme: { style: (s: string) => s } };
+	installAgentLabel(ui, () => "Leader", {
+		check: async () => ({ busy, title: "Members working", detail: `${busy} working` }),
+		confirm: async (title) => { calls.push(`confirm:${title}`); return confirmAnswer; },
+		quit: () => calls.push("quit"),
+		notify: (text) => calls.push(`notify:${text.slice(0, 11)}`),
+	});
+	const editor = factory({}, {}, {});
+	const settle = () => new Promise((r) => setTimeout(r, 10));
+	// Pi wires its own quit handlers onto the editor after creating it.
+	editor.onCtrlD = () => calls.push("pi-ctrl-d");
+	editor.onSubmit = (text: string) => calls.push(`pi-submit:${text}`);
+	editor.onAction("app.clear", () => calls.push("pi-clear"));
+	const clear = registered.get("app.clear")!;
+
+	editor.onCtrlD(); await settle();
+	assert.deepEqual(calls.splice(0), ["confirm:Members working", "notify:Not quittin"], "declined: Pi's quit never runs");
+	confirmAnswer = true;
+	editor.onSubmit("/quit"); await settle();
+	assert.deepEqual(calls.splice(0), ["confirm:Members working", "pi-submit:/quit"]);
+	editor.onSubmit("hello"); await settle();
+	assert.deepEqual(calls.splice(0), ["pi-submit:hello"], "ordinary prompts pass straight through");
+	busy = 0;
+	editor.onCtrlD(); await settle();
+	assert.deepEqual(calls.splice(0), ["pi-ctrl-d"], "idle team: no question");
+	clear(); clear(); await settle();
+	assert.deepEqual(calls.splice(0), ["pi-clear", "quit"], "the second clear within 500ms quits through the guard");
+	busy = 2; confirmAnswer = false;
+	clear(); clear(); await settle();
+	assert.deepEqual(calls.splice(0), ["pi-clear", "confirm:Members working", "notify:Not quittin"]);
+});

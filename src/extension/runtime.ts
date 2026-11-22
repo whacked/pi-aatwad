@@ -16,6 +16,13 @@ import type { CallOptions, EnsureOptions, EnsureResult } from "../shared/client.
 import { formatEnvelope } from "./format.ts";
 import { installMemberStrip, MEMBER_STRIP_WIDGET, type StripMember } from "./agent-label.ts";
 
+interface TeamActivityView {
+	on_leader_exit: "stop" | "keep";
+	members: { agent_id: string; role: string; run_id: string; live: boolean; busy: boolean; open_tasks: number }[];
+	live: number;
+	busy: number;
+}
+
 export const IDENTITY_ENTRY = "pi-recursive-team/identity";
 export const INBOX_MESSAGE = "pi-recursive-team/inbox";
 export const ATTENTION_MESSAGE = "pi-recursive-team/attention";
@@ -208,6 +215,54 @@ export class TeamRuntime {
 			else ctx.ui.setStatus(STATUS_KEY, undefined);
 		} catch {
 			/* ctx invalidated */
+		}
+	}
+
+	// ------------------------------------------------------------------ exit
+	/** The team this session leads, if it is a leader; never throws. */
+	private async ledTeam(): Promise<{ runId: string; activity: TeamActivityView } | undefined> {
+		const id = this.identity;
+		if (!id || this.managed) return undefined;
+		try {
+			if (!(await this.client.me({ timeoutMs: 2_000 })).is_root) return undefined;
+			return { runId: id.run_id, activity: await this.client.get<TeamActivityView>(`/runs/${encodeURIComponent(id.run_id)}/activity`, { timeoutMs: 2_000 }) };
+		} catch { return undefined; }
+	}
+
+	/** For the exit guard: block only while someone in the team tree is working. */
+	async exitCheck(): Promise<{ busy: number; title: string; detail: string } | undefined> {
+		const led = await this.ledTeam();
+		if (!led) return undefined;
+		const act = led.activity;
+		const working = act.members.filter((m) => m.busy);
+		if (!working.length) return { busy: 0, title: "", detail: "" };
+		const names = working.slice(0, 5).map((m) => m.role).join(", ") + (working.length > 5 ? ", …" : "");
+		return {
+			busy: working.length,
+			title: "Team members are still working. Quit Pi?",
+			detail: `${working.length} of ${act.live} live member(s) are working: ${names}.\n\n` + (act.on_leader_exit === "keep"
+				? "Exit policy is keep: they continue in the background. /team resume returns to them with a summary of what happened."
+				: "Quitting stops the team now (resumable): their transcripts and tasks are kept, and /team resume continues them."),
+		};
+	}
+
+	/** On quit: apply the team's exit policy and leave a one-paragraph note. Never throws. */
+	async onQuit(write: (text: string) => void): Promise<void> {
+		const led = await this.ledTeam();
+		if (!led) return;
+		const act = led.activity;
+		if (!act.members.length) return; // Nothing was ever under this leader.
+		const working = act.members.filter((m) => m.busy).length;
+		const resume = `/team resume ${led.runId}`;
+		if (act.on_leader_exit === "keep") {
+			write(`Team ${led.runId} keeps running in the background: ${act.live} live member(s), ${working} working. ${resume} returns to it with a summary; /team exit-policy stop changes this.\n`);
+			return;
+		}
+		try {
+			await this.client.post(`/runs/${encodeURIComponent(led.runId)}/stop`, {}, { token: await this.operatorToken(1_000), timeoutMs: 4_000 });
+			write(`Team ${led.runId} stopped (resumable): ${act.members.length} member(s) paused${working ? `, ${working} mid-task` : ""}. ${resume} continues it.\n`);
+		} catch (e) {
+			write(`Could not stop team ${led.runId} (${(e as Error).message}); it may still be running. /team stop ${led.runId} stops it.\n`);
 		}
 	}
 

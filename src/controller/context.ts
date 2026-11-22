@@ -18,6 +18,8 @@ export interface ControllerTunables {
 	tickMs: number;
 	/** LOST but alive process: stop + restart after this long past lease expiry. */
 	hungMs: number;
+	/** A team whose leader has been gone and whose members have all been idle this long is stopped (resumable), unless its exit policy is keep. */
+	leaderlessIdleMs: number;
 }
 
 export type Principal =
