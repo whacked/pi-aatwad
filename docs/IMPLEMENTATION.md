@@ -368,3 +368,19 @@ marks members added by `POST /runs/:id/join` as joined and non-terminatable, reb
 manager and budget walks only follow in-team links, and cross-team links still grant
 coordination only. Reporting views now include `origin` and `terminatable`.
 
+
+## Unified links, phase 2: authority across links (v0.1.27)
+
+An agent's lead is its in-team manager or, for an agent linked under another team, that
+agent (`getLead`). Control reaches one step down: `POST /tasks` accepts an owner linked
+directly under the caller, and the task lives in the lead's team with the sub as owner.
+The sub may break it down in its own team (`parent_task_id` may point at the lead's task),
+and its progress and completion go to the assigning lead. Cross-team messages follow the
+relation: down to a linked sub (question, answer, task.progress, system.notice), up to the
+lead and sideways to peers under the same lead (question, answer, task.progress).
+Assignments only travel as tasks. Reads reach the whole linked subtree: a lead can read the
+tree and agents of any team linked below it, and `GET /runs/:id/tree?linked=1` shows linked
+teams under their leads with `run_id` on those nodes (the plain tree, used by the
+reconciler and terminal sync, is unchanged). `/me` reports the lead, linked subs and peers
+across teams with `run_id`; name resolution searches the linked tree. Severing a link
+removes all of this.

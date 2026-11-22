@@ -173,3 +173,39 @@ export function liveWorkerCount(db: DB): number {
 export function pendingSpawnCount(db: DB): number {
 	return Number(get(db, "SELECT COUNT(*) AS n FROM spawn_intents WHERE status IN ('PENDING','LAUNCHING','LAUNCHED')")!.n);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Unified links (docs/design/unified-team-links.md): an agent's one lead is its in-team manager
+// or, through a link to another team, that team's agent. Control reaches one step down; reads
+// reach the whole linked subtree.
+
+/** The agent in another team this agent is linked under, if any. */
+export function getLinkParent(db: DB, agentId: string): string | null {
+	return get(db, "SELECT parent_id FROM reporting_edges WHERE child_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL", agentId)?.parent_id ?? null;
+}
+
+/** Agents in other teams linked directly under this agent. */
+export function getLinkChildren(db: DB, agentId: string): string[] {
+	return all(db, "SELECT child_id FROM reporting_edges WHERE parent_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL ORDER BY valid_from, child_id", agentId).map((r) => r.child_id);
+}
+
+/** Who this agent reports to: its in-team manager, else the agent its team is linked under. */
+export function getLead(db: DB, agentId: string): string | null {
+	return getCurrentManager(db, agentId) ?? getLinkParent(db, agentId);
+}
+
+/** Direct subordinates across links: in-team reports, then linked agents of other teams. */
+export function getDirectSubs(db: DB, agentId: string): string[] {
+	return [...getChildren(db, agentId), ...getLinkChildren(db, agentId)];
+}
+
+/** Read scope: true when target is `lead` or anywhere below it, following in-team and cross-team links. */
+export function inLinkedSubtree(db: DB, lead: string, target: string): boolean {
+	const seen = new Set<string>();
+	for (let cur: string | null = target; cur; cur = getLead(db, cur)) {
+		if (cur === lead) return true;
+		if (seen.has(cur)) return false;
+		seen.add(cur);
+	}
+	return false;
+}

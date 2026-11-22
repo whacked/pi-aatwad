@@ -46,9 +46,10 @@ test("five independent projects connect without identity or budget changes; root
   ok(await send(h, parent, projects[0]));
   const reply = (await inbox(h, projects[0])).find((m: any) => m.from === parent.root && m.type === "question");
   assert.equal(reply.payload.text, "Status?");
-  assert.equal((await send(h, projects[0], projects[1])).status, 403, "sibling projects cannot communicate directly");
-  assert.equal((await send(h, parent, projects[0], "task.assigned")).status, 403);
-  assert.equal((await h.call("POST", "/tasks", { token: parent.token, body: { owner_id: projects[0].root, title: "Cross-team assignment" } })).status, 403);
+  ok(await send(h, projects[0], projects[1]));
+  assert.equal((await send(h, projects[0], projects[1], "task.assigned")).status, 403, "peers under the same lead exchange questions, not assignments");
+  assert.equal((await send(h, parent, projects[0], "task.assigned")).status, 403, "assignments go through tasks, not raw messages");
+  ok(await h.call("POST", "/tasks", { token: parent.token, body: { owner_id: projects[0].root, title: "Cross-team assignment" } }));
   assert.equal((await h.call("GET", `/budgets/${projects[0].root}`, { token: parent.token })).status, 403);
  } finally { await h.cleanup(); }
 });

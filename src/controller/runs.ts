@@ -24,7 +24,7 @@ import { obj, str, int, onlyKeys } from "./validate.ts";
 import { buildRunConfig, modelIneligibility } from "./config.ts";
 import { hashToken, issueSessionToken, revokeAgentCredentials } from "./auth.ts";
 import { decideWake, effectiveAttention, noteActivity } from "./attention.ts";
-import { getAgent, getAllocation, getAncestry, getChildren, getCurrentManager, getReportingHistory, getRun, getSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
+import { getAgent, getAllocation, getAncestry, getChildren, getCurrentManager, getDirectSubs, getLinkParent, getReportingHistory, getRun, getSubtree, inLinkedSubtree, isAncestor, isTerminal, runConfig } from "./queries.ts";
 import { budgetPool, budgetView, ownBudgetUsd } from "./budgets.ts";
 import { inboxPending, postMessage, requireAgent } from "./messaging.ts";
 import { assertAttachable, isRemoved } from "./team-lifecycle.ts";
@@ -33,9 +33,10 @@ function requireOperator(p: Principal): void {
 	if (p.kind !== "operator") fail("FORBIDDEN", "operator token required");
 }
 
-/** Scoped read: operator, or an agent of the same run. */
-function assertRunRead(p: Principal, runId: string): void {
-	if (p.kind === "agent" && p.run_id !== runId) fail("FORBIDDEN", "other run");
+/** Scoped read: operator, an agent of the same run, or a lead the run is linked under (any depth). */
+function assertRunRead(db: DB, p: Principal, runId: string): void {
+	if (p.kind !== "agent" || p.run_id === runId) return;
+	if (!inLinkedSubtree(db, p.actor_id, getRun(db, runId).root_agent_id)) fail("FORBIDDEN", "other run");
 }
 
 function nextGeneration(db: DB, agentId: string): number {
@@ -307,11 +308,19 @@ function nodeOf(db: DB, a: Row): Omit<TreeNode, "children"> {
 	return { agent_id: a.id, role: a.role, status: a.status, desired_state: a.desired_state, observed_state: a.observed_state, model: current.model ? `${current.provider}/${current.model}` : null, ...(meta.model_change ? { pending_model: `${meta.model_change.provider}/${meta.model_change.model}` } : {}), parent_id: getCurrentManager(db, a.id) };
 }
 
-export function tree(ctx: Ctx, p: Principal, runId: string, activeOnly = false): TreeResponse {
-	assertRunRead(p, runId);
+export function tree(ctx: Ctx, p: Principal, runId: string, activeOnly = false, linked = false): TreeResponse {
+	assertRunRead(ctx.db, p, runId);
 	const db = ctx.db;
 	const r = getRun(db, runId);
-	const build = (id: string): TreeNode => ({ ...nodeOf(db, getAgent(db, id)), children: getChildren(db, id).filter((child) => !activeOnly || !isTerminal(getAgent(db, child).status)).map(build) });
+	// Linked teams appear read-only under the agent they are linked to; their nodes carry run_id.
+	const seen = new Set<string>();
+	const build = (id: string): TreeNode => {
+		seen.add(id);
+		const a = getAgent(db, id);
+		const kids = (linked ? getDirectSubs(db, id) : getChildren(db, id)).filter((child) => !seen.has(child) && (!activeOnly || !isTerminal(getAgent(db, child).status)));
+		const node = nodeOf(db, a);
+		return { ...node, ...(a.run_id !== runId ? { run_id: a.run_id, parent_id: node.parent_id ?? getLinkParent(db, id) } : {}), children: kids.map(build) };
+	};
 	const history = all(db, "SELECT child_id, parent_id, valid_from, valid_to FROM reporting_edges WHERE run_id = ? AND parent_run_id IS NULL ORDER BY valid_from, rowid", runId) as TreeResponse["history"];
 	return { run_id: runId, topology_version: r.topology_version, root: build(r.root_agent_id), history };
 }
@@ -321,7 +330,10 @@ export function me(ctx: Ctx, p: Principal): OrgContext {
 	const db = ctx.db;
 	const ag = getAgent(db, a.actor_id);
 	const parentId = getCurrentManager(db, a.actor_id);
-	const parent = parentId ? getAgent(db, parentId) : null;
+	// The lead may be in another team when this team is linked under it.
+	const leadId = parentId ?? getLinkParent(db, a.actor_id);
+	const parent = leadId ? getAgent(db, leadId) : null;
+	const brief = (x: Row) => ({ agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state, ...(x.run_id !== a.run_id ? { run_id: x.run_id } : {}) });
 	return {
 		run_id: a.run_id,
 		agent_id: a.actor_id,
@@ -329,17 +341,14 @@ export function me(ctx: Ctx, p: Principal): OrgContext {
 		role: ag.role,
 		is_root: parentId === null,
 		...(parentId === null ? { reporting: reportingStatus(db, a.run_id) } : {}),
-		parent: parent ? { agent_id: parent.id, role: parent.role } : null,
-		children: getChildren(db, a.actor_id).filter((id) => !isTerminal(getAgent(db, id).status)).map((c) => {
-			const x = getAgent(db, c);
-			return { agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state };
-		}),
-		peers: parentId
-			? getChildren(db, parentId)
+		parent: parent ? { agent_id: parent.id, role: parent.role, ...(parent.run_id !== a.run_id ? { run_id: parent.run_id } : {}) } : null,
+		children: getDirectSubs(db, a.actor_id).map((c) => getAgent(db, c)).filter((x) => !isTerminal(x.status)).map(brief),
+		peers: leadId
+			? getDirectSubs(db, leadId)
 					.filter((c) => c !== a.actor_id)
 					.map((c) => getAgent(db, c))
 					.filter((x) => !isTerminal(x.status))
-					.map((x) => ({ agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state }))
+					.map(brief)
 			: [],
 		tasks: all(db, "SELECT id, title, status, parent_task_id FROM tasks WHERE owner_id = ? AND status NOT IN ('DONE','CANCELLED','FAILED') ORDER BY created_at", a.actor_id).map((t) => ({ task_id: t.id, title: t.title, status: t.status, parent_task_id: t.parent_task_id ?? null })),
 		envelope: getAllocation(db, a.actor_id).limits,
@@ -354,7 +363,7 @@ export function me(ctx: Ctx, p: Principal): OrgContext {
 export function inspect(ctx: Ctx, p: Principal, agentId: string): InspectResponse {
 	const db = ctx.db;
 	const a = getAgent(db, agentId);
-	assertRunRead(p, a.run_id);
+	if (p.kind === "agent" && p.run_id !== a.run_id && !inLinkedSubtree(db, p.actor_id, agentId)) fail("FORBIDDEN", "other run");
 	return {
 		agent: { ...nodeOf(db, a), children: [], metadata: parseJson(a.metadata_json, {}), created_at: a.created_at, last_heartbeat_at: a.last_heartbeat_at ?? null },
 		sessions: all(db, "SELECT * FROM sessions WHERE agent_id = ? ORDER BY generation", agentId).map((s) => ({

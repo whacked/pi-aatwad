@@ -441,10 +441,12 @@ export interface OrgContext {
 	session_id: string;
 	role: string;
 	is_root: boolean;
-	parent: { agent_id: string; role: string } | null;
-	children: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState }[];
-	/** Live agents with the same manager. Messageable directly (team_send_message). */
-	peers?: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState }[];
+	/** Your lead: the in-team manager, or for a linked team's root the agent it is linked under (run_id set). */
+	parent: { agent_id: string; role: string; run_id?: string } | null;
+	/** Direct subs: in-team reports and agents of other teams linked under you (run_id set). */
+	children: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState; run_id?: string }[];
+	/** Live agents with the same lead, in this team or another. Messageable directly (team_send_message). */
+	peers?: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState; run_id?: string }[];
 	tasks: { task_id: string; title: string; status: TaskStatus; parent_task_id: string | null }[];
 	envelope: Envelope_Limits;
 	budget: BudgetView;
@@ -490,6 +492,8 @@ export interface TreeNode {
 	observed_state: ObservedState;
 	model: string | null;
 	parent_id: string | null;
+	/** Set on agents of another team shown under the lead they are linked to (tree ?linked=1). */
+	run_id?: string;
 	children: TreeNode[];
 }
 /** GET /runs/:id/tree */

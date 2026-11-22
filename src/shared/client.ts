@@ -659,8 +659,10 @@ export class TeamClient {
 	me(o?: CallOptions): Promise<OrgContext> {
 		return this.get("/me", o);
 	}
-	tree(runId: string, o?: CallOptions, activeOnly = false): Promise<TreeResponse> {
-		return this.get(`/runs/${enc(runId)}/tree${activeOnly ? "?active_only=1" : ""}`, o);
+	/** linked: also include, read-only, the teams linked under agents of this tree (nodes carry run_id). */
+	tree(runId: string, o?: CallOptions, activeOnly = false, linked = false): Promise<TreeResponse> {
+		const q = [activeOnly ? "active_only=1" : "", linked ? "linked=1" : ""].filter(Boolean).join("&");
+		return this.get(`/runs/${enc(runId)}/tree${q ? `?${q}` : ""}`, o);
 	}
 	/** Resolve exact names or unique whole-word ID references within a run; full IDs need no run. */
 	async resolveAgent(ref: string, runId?: string, o?: CallOptions): Promise<string> {
@@ -672,7 +674,7 @@ export class TeamClient {
 			if (fullId) return ref;
 			throw new Error("Agent names and short IDs require an attached team; use /team resume or a full agent ID");
 		}
-		const t = await this.tree(runId, o).catch((error) => {
+		const t = await this.tree(runId, o, false, true).catch((error) => {
 			if (fullId) return null; // Exact foreign IDs need not depend on a readable local tree.
 			throw error;
 		});

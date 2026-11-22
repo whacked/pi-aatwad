@@ -65,7 +65,7 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/runs/:id/attention", "any", ({ p, params, body }) => runAttentionRoute(ctx, p, params[0], body ?? {})),
 		R("GET", "/agents/:id/attention", "any", ({ p, params }) => agentAttentionRoute(ctx, p, params[0])),
 		R("POST", "/agents/:id/attention", "any", ({ p, params, body }) => agentAttentionRoute(ctx, p, params[0], body ?? {})),
-		R("GET", "/runs/:id/tree", "any", ({ p, params, q }) => tree(ctx, p, params[0], q.get("active_only") === "1")),
+		R("GET", "/runs/:id/tree", "any", ({ p, params, q }) => tree(ctx, p, params[0], q.get("active_only") === "1", q.get("linked") === "1")),
 		R("GET", "/runs/:id/recovery", "operator", ({ params }) => getRecoveryStatus(ctx.db, params[0])),
 		R("POST", "/enroll", "none", ({ body }) => enroll(ctx, body)),
 		R("POST", "/sessions/heartbeat", "agent", ({ p, body }) => heartbeat(ctx, p, body), false),

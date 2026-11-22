@@ -1,6 +1,6 @@
 # Unified team links: join = report-to, with lead authority
 
-Status: agreed design (2026-11-22). Phase 1 (links table and migration) implemented in schema 5; later phases pending.
+Status: agreed design (2026-11-22). Phases 1-2 implemented (schema 5, v0.1.27); later phases pending.
 
 ## Why
 

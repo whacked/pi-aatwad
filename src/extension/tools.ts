@@ -149,7 +149,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_delegate_task",
 		"Team: delegate task",
-		"Assign a task to one of your direct reports (or a subtask to yourself under your own task). The controller rejects owners outside your authority.",
+		"Assign a task to one of your direct reports, including an agent of another team linked directly under you (or a subtask to yourself under your own task, including a task your lead assigned). The controller rejects owners outside your authority.",
 		Type.Object({
 			owner_id: Type.String({ description: "Name or agent_id of the direct report who will own the task" }),
 			title: Type.String(),

@@ -82,7 +82,9 @@ export function formatEnvelope(m: Envelope, maxPayload = 1_500): string {
 export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): string {
 	const lines: string[] = [];
 	lines.push(`You are agent ${c.agent_id} (role: ${c.role}) in team run ${c.run_id}${c.is_root ? " — you are the ROOT of this organization" : ""}.`);
-	lines.push(c.parent ? `Manager: ${c.parent.role} [${c.parent.agent_id}]` : "Manager: none (root; you report to the human operator)");
+	lines.push(c.parent ? (c.parent.run_id
+		? `Lead: ${c.parent.role} [${c.parent.agent_id}] in team ${c.parent.run_id}. Your team is linked under it: it can assign you tasks and message you; report progress and completion to it.`
+		: `Manager: ${c.parent.role} [${c.parent.agent_id}]`) : "Manager: none (root; you report to the human operator)");
 	const limits = c.budget?.limits;
 	lines.push(`Authority: manage descendants (budgets, models, close; resume via budget update); ${c.is_root ? "create members directly" : "request expansion; approval by your manager"}. Runs never expire. Omitted member limits inherit yours; set a spend or time limit only when the human asks for one.`);
 	if (c.budget?.own_budget_usd != null) lines.push(`Spend ceiling: ${usd(c.budget.own_budget_usd)}; pool consumed ${usd(c.budget.pool_consumed_usd ?? c.budget.consumed_usd)}. Inheriting members share this pool.`);
@@ -93,15 +95,15 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 		for (const link of r.links.slice(0, MAX_LIST)) lines.push(link.child_run_id === c.run_id
 			? `Report to team leader ${link.parent_agent_id} (run ${link.parent_run_id}); send initial status and meaningful progress with team_send_message.`
 			: `Reporting team ${link.child_run_id}: leader ${link.child_agent_id}; request reports with team_send_message.`);
-		if (r.links.length) lines.push("Reporting links permit coordination messages (question, answer, task.progress). Each team retains its own delegation, approvals, budgets and control. Use exact linked leader IDs. Maintain consolidated status for teams reporting to you, follow up on blockers and decisions, and avoid acknowledgement loops. team_reporting manages relationships and history.");
+		if (r.links.length) lines.push("Links between teams: a lead can assign tasks (team_delegate_task) and send messages one step down to the agent linked directly under it; that agent reports up with progress, completion, questions and answers; peers under the same lead can exchange questions, answers and progress. Leads never reach deeper than one step, and each team keeps its own recruitment, approvals and budget. Use exact agent IDs. Maintain consolidated status for teams linked under you, follow up on blockers and decisions, and avoid acknowledgement loops. team_reporting manages links and history.");
 	}
 	if (c.children.length) {
-		const shown = c.children.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}] ${k.status}/${k.observed_state}`);
+		const shown = c.children.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}] ${k.status}/${k.observed_state}${k.run_id ? ` (linked team ${k.run_id})` : ""}`);
 		lines.push(`Direct reports (${c.children.length}): ${shown.join("; ")}${c.children.length > MAX_LIST ? "; …" : ""}`);
 	} else lines.push("Direct reports: none");
 	const peers = c.peers ?? [];
 	if (peers.length) {
-		const shown = peers.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}]`);
+		const shown = peers.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}]${k.run_id ? ` (team ${k.run_id})` : ""}`);
 		lines.push(`Teammates (same manager; message them directly with team_send_message): ${shown.join("; ")}${peers.length > MAX_LIST ? "; …" : ""}`);
 	}
 	if (c.tasks.length) {

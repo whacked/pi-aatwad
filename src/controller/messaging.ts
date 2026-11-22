@@ -6,7 +6,7 @@ import { fail } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type { AckResponse, Envelope, MessageType, SendMessageResponse, InboxResponse, DelegateTaskResponse, TaskCompleteResponse, TaskProgressResponse } from "../shared/protocol.ts";
 import { assertSchema, obj, str, oneOf, onlyKeys } from "./validate.ts";
-import { getAgent, getCurrentManager, getSubtree, isTerminal, runConfig } from "./queries.ts";
+import { getAgent, getCurrentManager, getLead, getLinkParent, getSubtree, isTerminal, runConfig } from "./queries.ts";
 import { coordinationLink } from "./reporting.ts";
 import { handoff } from "./attention.ts";
 
@@ -57,9 +57,15 @@ export function sendMessage(ctx: Ctx, p: Principal, body: unknown): SendMessageR
 	assertSchema("envelope", env);
 	const to = getAgent(ctx.db, env.to as string);
 	const crossRun = to.run_id !== a.run_id;
-	const link = crossRun ? coordinationLink(ctx.db, a.actor_id, to.id) : undefined;
-	if (crossRun && !link) fail("FORBIDDEN", "recipient is in a different run without an active reporting link between roots");
-	if (crossRun && !["question", "answer", "task.progress"].includes(env.type as string)) fail("FORBIDDEN", "cross-team coordination permits question, answer and task.progress only");
+	let link: Row | undefined;
+	if (crossRun) {
+		// Across teams: up to your lead, down one step to a linked sub, or sideways to a peer under the same lead.
+		const relation = crossTeamRelation(ctx.db, a.actor_id, to.id);
+		if (!relation) fail("FORBIDDEN", "a recipient in another team must be your lead, an agent linked directly under you, or a peer under the same lead");
+		const types = relation === "down" ? ["question", "answer", "task.progress", "system.notice"] : ["question", "answer", "task.progress"];
+		if (!types.includes(env.type as string)) fail("FORBIDDEN", `messages ${relation === "down" ? "to a linked sub" : relation === "up" ? "to your lead in another team" : "to a peer in another team"} permit ${types.join(", ")} only; assign work with team_delegate_task`);
+		link = linkFor(ctx.db, a.actor_id, to.id);
+	}
 	const mgr = getCurrentManager(ctx.db, a.actor_id);
 	const isPeer = mgr !== null && to.id !== a.actor_id && getCurrentManager(ctx.db, to.id) === mgr;
 	const allowed = to.id === a.actor_id || mgr === to.id || isPeer || getSubtree(ctx.db, a.actor_id).includes(to.id);
@@ -143,6 +149,25 @@ export function createTask(db: DB, t: { run_id: string; owner_id: string; title:
 	return id;
 }
 
+/** How two agents in different teams relate through links, if at all. */
+export function crossTeamRelation(db: DB, from: string, to: string): "up" | "down" | "peer" | undefined {
+	const myLead = getLead(db, from), theirLead = getLead(db, to);
+	if (myLead === to) return "up";
+	if (theirLead === from) return "down";
+	if (myLead && myLead === theirLead) return "peer";
+	return undefined;
+}
+
+/** The link a cross-team message travels on: the direct link, else the sender's own link to its lead. */
+function linkFor(db: DB, from: string, to: string): Row | undefined {
+	return coordinationLink(db, from, to) ?? get(db, "SELECT id FROM reporting_edges WHERE child_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL", from)
+		?? get(db, "SELECT id FROM reporting_edges WHERE child_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL", to);
+}
+
+function recordLinkMessage(db: DB, messageId: string, link: Row | undefined): void {
+	if (link) run(db, "INSERT INTO team_reporting_messages(message_id, link_id) VALUES (?,?)", messageId, link.id);
+}
+
 export function delegateTask(ctx: Ctx, p: Principal, body: unknown): DelegateTaskResponse {
 	const a = requireAgent(p);
 	const b = obj(body);
@@ -152,23 +177,29 @@ export function delegateTask(ctx: Ctx, p: Principal, body: unknown): DelegateTas
 	const parentTaskId = str(b, "parent_task_id", { optional: true }) ?? null;
 	if (b.spec !== undefined && (typeof b.spec !== "object" || b.spec === null || Array.isArray(b.spec))) fail("INVALID", "spec must be an object");
 	const owner = getAgent(ctx.db, ownerId);
-	if (owner.run_id !== a.run_id) fail("FORBIDDEN", "owner is in a different run");
+	// A lead assigns one step down: its in-team reports, or an agent of another team linked under it.
+	const crossTeam = owner.run_id !== a.run_id;
+	if (crossTeam && getLinkParent(ctx.db, ownerId) !== a.actor_id) fail("FORBIDDEN", "owner is in another team that is not linked directly under you");
 	if (isTerminal(owner.status)) fail("CONFLICT", `owner is ${owner.status}`);
-	if (ownerId !== a.actor_id && getCurrentManager(ctx.db, ownerId) !== a.actor_id) fail("FORBIDDEN", "tasks can only be delegated to your direct reports (or yourself)");
+	if (!crossTeam && ownerId !== a.actor_id && getCurrentManager(ctx.db, ownerId) !== a.actor_id) fail("FORBIDDEN", "tasks can only be delegated to your direct reports (or yourself)");
 	if (parentTaskId) {
 		const pt = get(ctx.db, "SELECT * FROM tasks WHERE id = ?", parentTaskId);
-		if (!pt || pt.run_id !== a.run_id) fail("NOT_FOUND", "parent task not found");
+		// A task you own may come from your lead's team; you can break it down in your own team.
+		if (!pt || (pt.run_id !== a.run_id && pt.owner_id !== a.actor_id)) fail("NOT_FOUND", "parent task not found");
 		if (pt.owner_id !== a.actor_id) fail("FORBIDDEN", "parent task must be owned by you");
 	}
+	// The task lives in the assigning lead's team and is owned by the sub.
 	const taskId = createTask(ctx.db, { run_id: a.run_id, owner_id: ownerId, title, spec: (b.spec as Record<string, unknown>) ?? {}, parent_task_id: parentTaskId, assigned_by: a.actor_id });
-	const messageId = postMessage(ctx.db, { run_id: a.run_id, from: a.actor_id, to: ownerId, type: "task.assigned", payload: { task_id: taskId, title, spec: b.spec ?? {}, parent_task_id: parentTaskId }, correlation_id: taskId });
+	const messageId = postMessage(ctx.db, { run_id: owner.run_id, from: a.actor_id, to: ownerId, type: "task.assigned", payload: { task_id: taskId, title, spec: b.spec ?? {}, parent_task_id: parentTaskId, ...(crossTeam ? { lead_run_id: a.run_id } : {}) }, correlation_id: taskId });
+	if (crossTeam) recordLinkMessage(ctx.db, messageId, linkFor(ctx.db, a.actor_id, ownerId));
 	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.assigned", entity_id: taskId, payload: { owner_id: ownerId, title, parent_task_id: parentTaskId } });
 	return { task_id: taskId, message_id: messageId, handoff: handoff(ctx.db, ownerId) };
 }
 
 function ownTask(db: DB, a: { actor_id: string; run_id: string }, taskId: string): Row {
 	const t = get(db, "SELECT * FROM tasks WHERE id = ?", taskId);
-	if (!t || t.run_id !== a.run_id) fail("NOT_FOUND", "task not found");
+	// Tasks assigned by a lead in another team live there but are owned here.
+	if (!t || (t.run_id !== a.run_id && t.owner_id !== a.actor_id)) fail("NOT_FOUND", "task not found");
 	if (t.owner_id !== a.actor_id) fail("FORBIDDEN", "only the task owner may update it");
 	return t;
 }
@@ -182,8 +213,10 @@ export function taskProgress(ctx: Ctx, p: Principal, taskId: string, body: unkno
 	if (["DONE", "FAILED", "CANCELLED"].includes(t.status)) fail("CONFLICT", `task is ${t.status}`);
 	run(ctx.db, "UPDATE tasks SET status = 'IN_PROGRESS', updated_at = ? WHERE id = ?", nowIso(), taskId);
 	madeProgress(ctx.db, a.actor_id);
-	const mgr = getCurrentManager(ctx.db, a.actor_id);
-	const messageId = mgr ? postMessage(ctx.db, { run_id: a.run_id, from: a.actor_id, to: mgr, type: "task.progress", payload: { task_id: taskId, note }, correlation_id: taskId }) : null;
+	// Progress on a lead's cross-team task goes to that lead.
+	const mgr = t.run_id !== a.run_id ? t.assigned_by : getCurrentManager(ctx.db, a.actor_id);
+	const messageId = mgr ? postMessage(ctx.db, { run_id: getAgent(ctx.db, mgr).run_id, from: a.actor_id, to: mgr, type: "task.progress", payload: { task_id: taskId, note }, correlation_id: taskId }) : null;
+	if (messageId && t.run_id !== a.run_id) recordLinkMessage(ctx.db, messageId, linkFor(ctx.db, a.actor_id, mgr!));
 	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.progress", entity_id: taskId, payload: { note } });
 	return { task_id: taskId, status: "IN_PROGRESS", message_id: messageId };
 }
@@ -225,9 +258,10 @@ export function completeTask(ctx: Ctx, p: Principal, taskId: string, body: unkno
 	}
 	madeProgress(ctx.db, a.actor_id);
 	run(ctx.db, "UPDATE tasks SET status = ?, result_json = ?, updated_at = ? WHERE id = ?", status, JSON.stringify({ summary, artifact_ids: artifactIds }), nowIso(), taskId);
-	const mgr = getCurrentManager(ctx.db, a.actor_id) ?? t.assigned_by;
+	const mgr = t.run_id !== a.run_id ? t.assigned_by : getCurrentManager(ctx.db, a.actor_id) ?? t.assigned_by;
 	const messageId =
-		mgr && mgr !== a.actor_id ? postMessage(ctx.db, { run_id: a.run_id, from: a.actor_id, to: mgr, type: "task.completed", payload: { task_id: taskId, status, summary, artifact_ids: artifactIds }, correlation_id: taskId }) : null;
+		mgr && mgr !== a.actor_id ? postMessage(ctx.db, { run_id: getAgent(ctx.db, mgr).run_id, from: a.actor_id, to: mgr, type: "task.completed", payload: { task_id: taskId, status, summary, artifact_ids: artifactIds }, correlation_id: taskId }) : null;
+	if (messageId && t.run_id !== a.run_id) recordLinkMessage(ctx.db, messageId, linkFor(ctx.db, a.actor_id, mgr!));
 	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.completed", entity_id: taskId, payload: { status, summary, artifact_ids: artifactIds } });
 	return { task_id: taskId, status, message_id: messageId, artifact_ids: artifactIds };
 }
