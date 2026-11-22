@@ -1,16 +1,17 @@
 // Sessions started outside the controller (another harness such as Claude Code, or a human Pi) joining
 // and leaving teams. Identity, hierarchy, tasks and reassignment stay controller-owned, so reparenting,
 // transfer and reporting links work the same for every harness.
-import type { Ctx, Principal } from "./context.ts";
-import type { AttachResponse, LeaveResponse } from "../shared/protocol.ts";
+import type { Ctx, Principal, ReqScope } from "./context.ts";
+import type { AttachResponse, CreateRunResponse, LeaveResponse } from "../shared/protocol.ts";
 import { obj, str, onlyKeys } from "./validate.ts";
 import { fail, CommittedError } from "./errors.ts";
 import { createTask, postMessage, requireAgent } from "./messaging.ts";
 import { getAgent, getLead, getRun, isTerminal, runConfig } from "./queries.ts";
-import { emit, newId, nowIso, isoPlus, run, get } from "./db.ts";
+import { emit, newId, nowIso, isoPlus, run, get, parseJson } from "./db.ts";
 import { createExpansion, decide } from "./governance.ts";
 import { registerRunModel } from "./members.ts";
-import { harnessName, newSessionAttempt } from "./runs.ts";
+import { createRun, harnessName, newSessionAttempt } from "./runs.ts";
+import { terminateAgent } from "./topology.ts";
 import { issueSessionToken, revokeSessionTokens } from "./auth.ts";
 import { assertAttachable } from "./team-lifecycle.ts";
 
@@ -83,4 +84,39 @@ export function leaveSession(ctx: Ctx, p: Principal, body: unknown): LeaveRespon
 	if (mgr && !isTerminal(getAgent(db, mgr).status)) postMessage(db, { run_id: getAgent(db, mgr).run_id, from: a.actor_id, to: mgr, type: "system.notice", payload: { kind: "member_left", agent_id: a.actor_id, reason, text: `${a.actor_id} left its session (${reason}). Its tasks and identity remain; it can rejoin with /runs/:id/attach. Reassign its open work or close it if it should not return.` } });
 	emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "session.left", entity_id: a.actor_id, payload: { session_id: a.session_id, reason } });
 	return { agent_id: a.actor_id, session_id: a.session_id, notified: mgr };
+}
+
+/**
+ * A member leaves its team to lead its own (docs/design/unified-team-links.md): rerouting a
+ * non-root member is leaving, then joining. The old identity is retired in its team (history,
+ * roster and the manager's notice remain) without stopping the process: this same session
+ * continues, with its transcript, as the root of a new empty team that it can then link
+ * under any agent.
+ */
+export function secede(ctx: Ctx, p: Principal, scope: ReqScope, body: unknown): CreateRunResponse & { previous_agent_id: string; previous_run_id: string } {
+	const a = requireAgent(p);
+	const db = ctx.db;
+	const b = obj(body ?? {});
+	onlyKeys(b, ["reason"]);
+	const reason = str(b, "reason", { optional: true }) ?? "left the team to lead its own";
+	const me = getAgent(db, a.actor_id);
+	if (getRun(db, a.run_id).root_agent_id === me.id) fail("CONFLICT", "you already lead this team; link it with /team join instead");
+	if (isTerminal(me.status)) fail("CONFLICT", `agent is ${me.status}`);
+	const old = runConfig(db, a.run_id);
+	const session = get(db, "SELECT pi_session_path, harness FROM sessions WHERE id = ?", a.session_id);
+	const meta = parseJson<{ actual_model?: { provider: string; model: string } }>(me.metadata_json, {});
+	const current = meta.actual_model ?? me;
+	const created = createRun(ctx, { kind: "operator", actor_id: me.id } as Principal, {
+		root: { role: me.role, cwd: me.cwd ?? old.workspace_root, provider: current.provider ?? undefined, model: current.model ?? undefined,
+			harness: session?.harness ?? "pi", ...(me.pi_session_path || session?.pi_session_path ? { pi_session_path: me.pi_session_path ?? session!.pi_session_path } : {}) },
+		config: { models: old.models, limits: old.limits },
+	});
+	const lead = getLead(db, me.id);
+	if (lead && !isTerminal(getAgent(db, lead).status)) postMessage(db, { run_id: getAgent(db, lead).run_id, from: me.id, to: lead, type: "system.notice", payload: {
+		kind: "member_seceded", agent_id: me.id, new_run_id: created.run_id, new_agent_id: created.root_agent_id, reason,
+		text: `${me.role} [${me.id}] left this team to lead its own team ${created.run_id} as ${created.root_agent_id} (${reason}). Its open tasks here were cancelled; its members, if any, now report to you. It may link under another agent.`,
+	} });
+	terminateAgent(ctx, scope, me.id, "RETIRED", me.id, `seceded: ${reason}`, { keepProcess: true });
+	emit(db, { run_id: a.run_id, actor_id: me.id, type: "agent.seceded", entity_id: me.id, payload: { new_run_id: created.run_id, new_agent_id: created.root_agent_id, reason } });
+	return { ...created, previous_agent_id: me.id, previous_run_id: a.run_id };
 }

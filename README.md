@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.33, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.34, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -119,6 +119,7 @@ Inside Pi:
 | `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
 | `/team join <run_id\|agent_id\|none> [--terminatable]` | Link this team under another team's leader (run ID) or any of its agents (agent ID); `none` detaches. That agent becomes your lead: it can assign you tasks and dismiss you. `--terminatable` (operator) lets dismissal stop your team. It does not merge teams or take over that leader (that is `resume`). |
 | `/team report-to ...` | Alias for `join`. |
+| `/team join none` *(in a member)* | Leave the team: this session and its conversation continue as the leader of a new, empty team. The old member identity is retired there (its manager is told). `/team join <target>` in a member leaves and then joins, which is how a member moves to another team. |
 | `/team dismiss <name\|agent_id> [--stop\|--keep] [reason]` | End a team linked under you: it detaches, or stops resumably when its link is terminatable. `--stop`/`--keep` override (operator). |
 | `/team roster` | Everyone ever linked under you: active, detached, dismissed or closed. |
 | `/team recall <name\|agent_id>` | Bring one back with its context: a dismissed team resumes (if your dismissal stopped it) and links under you again; a closed member returns in the same position, continuing its transcript. |

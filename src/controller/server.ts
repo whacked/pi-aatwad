@@ -18,7 +18,7 @@ import { getRecoveryStatus, isTerminal } from "./queries.ts";
 import { assertLeaseHeld } from "./fence.ts";
 import { changeReporting, readReporting } from "./reporting.ts";
 import { agentAttentionRoute, runAttentionRoute } from "./attention.ts";
-import { joinTeam, leaveSession } from "./external.ts";
+import { joinTeam, leaveSession, secede } from "./external.ts";
 import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
 import { dismiss, setLinkPolicy } from "./links.ts";
 import { recall, rehire, roster } from "./roster.ts";
@@ -89,6 +89,7 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("GET", "/agents/:id/roster", "any", ({ p, params }) => roster(ctx, p, params[0])),
 		R("POST", "/roster/recall", "any", ({ p, scope, body }) => recall(ctx, p, scope, body)),
 		R("POST", "/roster/rehire", "any", ({ p, body }) => rehire(ctx, p, body)),
+		R("POST", "/sessions/secede", "any", ({ p, scope, body }) => secede(ctx, p, scope, body)),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
 		R("POST", "/budgets/:id", "any", ({ p, scope, params, body }) => updateBudget(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/model", "any", ({ p, params, body }) => updateModel(ctx, p, params[0], body)),

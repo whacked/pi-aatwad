@@ -525,3 +525,36 @@ test("/team join links a team under another leader or agent, /team dismiss detac
 		assert.ok(lead.notes.some((n) => new RegExp(`stopped ${subRun}`).test(n)), lead.notes.join("\n"));
 	} finally { lead.rt.stop(); sub.rt.stop(); await hs.cleanup(); }
 });
+
+test("a session working as a member moves to another team: /team join leaves its team, leads its own, and links under the target", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const lead = commandSession(hs, "lead-session", ""), worker = commandSession(hs, "worker-session", ""), other = commandSession(hs, "other-session", "");
+	try {
+		for (const s of [lead, worker, other]) await s.rt.start(s.ctx);
+		await lead.command.handler("init", lead.ctx);
+		await other.command.handler("init", other.ctx);
+		const leadRun = lead.rt.identity!.run_id, otherRun = other.rt.identity!.run_id;
+		const member = (await hs.call("POST", "/members", { token: (lead.rt.identity as any).token, body: { name: "Builder", responsibility: "Build" } })).body.spawned_agent_ids[0];
+		await worker.command.handler(`resume ${leadRun} ${member}`, worker.ctx);
+		assert.equal(worker.rt.identity!.agent_id, member);
+
+		await worker.command.handler(`join ${otherRun}`, worker.ctx);
+		const moved = worker.rt.identity!;
+		assert.notEqual(moved.agent_id, member);
+		assert.notEqual(moved.run_id, leadRun);
+		assert.ok(worker.notes.some((n) => /Left team .* you now lead team/.test(n)), worker.notes.join("\n"));
+		assert.equal(sql(hs, "SELECT status FROM agents WHERE id = ?", member)[0].status, "RETIRED");
+		assert.equal(sql(hs, "SELECT parent_id FROM reporting_edges WHERE child_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL", moved.agent_id)[0].parent_id, other.rt.identity!.agent_id);
+		assert.equal((await worker.rt.client.me()).parent?.agent_id, other.rt.identity!.agent_id, "the session now works under its new lead");
+		// Leaving alone also works: a fresh member detaches without joining anything.
+		const second = (await hs.call("POST", "/members", { token: (lead.rt.identity as any).token, body: { name: "Tester", responsibility: "Test" } })).body.spawned_agent_ids[0];
+		const solo = commandSession(hs, "solo-session", "");
+		await solo.rt.start(solo.ctx);
+		await solo.command.handler(`resume ${leadRun} ${second}`, solo.ctx);
+		await solo.command.handler("join none", solo.ctx);
+		assert.equal((await solo.rt.client.me()).is_root, true);
+		assert.equal(sql(hs, "SELECT COUNT(*) AS n FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", solo.rt.identity!.agent_id)[0].n, 0, "an independent leader");
+		solo.rt.stop();
+	} finally { for (const s of [lead, worker, other]) s.rt.stop(); await hs.cleanup(); }
+});

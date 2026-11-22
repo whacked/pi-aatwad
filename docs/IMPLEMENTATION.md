@@ -438,3 +438,14 @@ position with a fresh context. Pi: `/team roster`, `/team recall`, `/team rehire
 appear beneath it, marked `⇢ team <run_id>`. The leader's member strip marks linked teams
 with `⇢` and offers `/team watch focus` only when it has its own members; focusing a linked
 team explains that it runs in its own session and terminal.
+
+## Moving a member: leave, then join (v0.1.34)
+
+`POST /sessions/secede` lets a non-root member leave its team. The controller creates a new
+team whose root has the member's role, working directory, model and Pi transcript, notifies
+the old lead (`member_seceded`), and retires the old identity with `terminateAgent(...,
+{ keepProcess: true })`, so the running Pi process is never stopped: it continues as the new
+root with a new credential. In Pi, `/team join none` in a member does this, and
+`/team join <target>` in a member does it and then links under the target. A managed worker
+that leaves keeps its managed status (no operator token), so operator-only actions stay with
+the human's own sessions.

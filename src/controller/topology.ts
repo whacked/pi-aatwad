@@ -193,7 +193,8 @@ export function reconcileRootRunStatus(db: DB, agentId: string, actor: string, r
 }
 
 /** Terminal transition for one agent: revoke credentials, stop processes (after commit), release reservations, keep consumed_usd. */
-export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string, status: "RETIRED" | "CANCELLED" | "FAILED", actor: string, reason: string): void {
+/** keepProcess: retire the identity but leave its process running (a member that left to lead its own team). */
+export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string, status: "RETIRED" | "CANCELLED" | "FAILED", actor: string, reason: string, opts: { keepProcess?: boolean } = {}): void {
 	const db = ctx.db;
 	const a = getAgent(db, agentId);
 	const wasTerminal = isTerminal(a.status);
@@ -230,7 +231,7 @@ export function terminateAgent(ctx: Ctx, scope: ReqScope | null, agentId: string
 		if (fresh && fresh !== pr.requester_id) postMessage(db, { run_id: a.run_id, from: pr.requester_id, to: fresh, type: "team.expand.request", payload: { proposal_id: pr.id, rerouted: true }, correlation_id: pr.id });
 	}
 	if (!wasTerminal) emit(db, { run_id: a.run_id, actor_id: actor, type: "agent.terminated", entity_id: agentId, payload: { status, reason, consumed_usd: get(db, "SELECT consumed_usd FROM allocations WHERE agent_id = ?", agentId)?.consumed_usd ?? 0 } });
-	for (const pr of procs) {
+	for (const pr of opts.keepProcess ? [] : procs) {
 		const stop = () => ctx.stopProcess(pr.pid, pr.process_started_at ?? "").catch((e) => ctx.log("warn", "stop failed", { agent_id: agentId, pid: pr.pid, err: String(e) }));
 		if (scope) scope.after(stop);
 		else void stop();

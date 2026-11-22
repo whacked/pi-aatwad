@@ -18,7 +18,7 @@ import { TOOL_NAMES } from "./names.ts";
 import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 
 export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
-	{ name: "join", args: "<run_id|agent_id|none> [--terminatable]", help: "link this team under another team's leader or agent: it can assign you work and dismiss you (only detaching, unless --terminatable); none detaches" },
+	{ name: "join", args: "<run_id|agent_id|none> [--terminatable]", help: "link this team under another team's leader or agent: it can assign you work and dismiss you (only detaching, unless --terminatable); none detaches. In a member: leave its team (leading your own), then join" },
 	{ name: "report-to", args: "<run_id|agent_id|none>", help: "alias for join" },
 	{ name: "dismiss", args: "<name|agent_id> [--stop|--keep] [reason]", help: "end a team linked under you: it detaches, or stops (resumably) when its link is terminatable; --stop/--keep override" },
 	{ name: "roster", args: "", help: "everyone ever linked under you: active, detached, dismissed or closed" },
@@ -167,16 +167,28 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const terminatable = a.includes("--terminatable");
 			const args = a.filter((x) => x !== "--terminatable");
 			if (args.length !== 1) throw new Error("usage: /team join <run_id|agent_id|none> [--terminatable]");
-			const token = await rt.commandToken();
+			let token = await rt.commandToken();
+			// A member reroutes by leaving its team (leading its own) and then joining the target.
+			const self = await rt.client.me({ token: rt.identity!.token });
+			if (!self.is_root) {
+				const lead = self.parent ? `${self.parent.role} [${self.parent.agent_id}]` : "its manager";
+				if (!(await confirm(ctx, yes, `Leave team ${self.run_id} (manager ${lead}) and lead your own team${args[0] === "none" ? "" : `, then join under ${args[0]}`}? This session and its conversation continue; your member identity there is retired, its open tasks are cancelled and ${lead} is told.`))) return;
+				const r = await rt.client.post<{ run_id: string; root_agent_id: string; session_id: string; token: string; previous_agent_id: string }>("/sessions/secede", {}, { token: rt.identity!.token });
+				rt.adoptNew({ run_id: r.run_id, agent_id: r.root_agent_id, session_id: r.session_id, token: r.token, managed: rt.identity!.managed, role: self.role, pi_session_id: rt.piSession().id, ...(rt.identity!.socket_path ? { socket_path: rt.identity!.socket_path } : {}) });
+				await rt.refreshRole().catch(() => {});
+				rt.updateStatus();
+				out(ctx, `Left team ${self.run_id}: you now lead team ${r.run_id} as ${r.root_agent_id} (was ${r.previous_agent_id}).`);
+				if (args[0] === "none") return;
+				token = await rt.commandToken();
+			}
 			const me = await runId(ctx);
 			if (args[0] === "none") {
 				if (!(await confirm(ctx, yes, `Detach team ${me} from its lead? Both teams keep running.`))) return;
 				out(ctx, JSON.stringify(await rt.client.setReporting(me, { action: "disconnect" }, { token }), null, 2));
 				return;
 			}
-			// A team's run ID links under its leader; an agent ID links under that agent.
-			const runs = (await rt.client.listRuns({ token })).runs;
-			const target = runs.some((r) => r.run_id === args[0]) ? { parent_run_id: args[0] } : { parent_agent_id: (await rt.client.inspect(args[0], { token })).agent.agent_id };
+			// A team's run ID links under its leader; an agent ID links under that agent (the controller checks it).
+			const target = /^run-/.test(args[0]) ? { parent_run_id: args[0] } : { parent_agent_id: args[0] };
 			if (!(await confirm(ctx, yes, `Link team ${me} under ${args[0]}? Its lead can assign work and dismiss it (${terminatable ? "dismissal may stop the team" : "dismissal only detaches"}).`))) return;
 			const result = await rt.client.setReporting(me, { action: "connect", ...target, ...(terminatable ? { terminatable } : {}) }, { token });
 			out(ctx, JSON.stringify(result, null, 2));

@@ -150,5 +150,7 @@ cross runs and carry `terminatable`.
 ## Out of scope
 
 - Recruiting a Claude Code worker from either harness.
-- Moving a non-root member of one team under an agent of another team. Today only a
-  team's leader links (with its whole team); a session joins by leading its own team.
+- Moving a non-root member natively in Claude Code. In Pi, a member reroutes by leaving and
+  joining: `/team join none` in the member leaves its team (the same session and transcript
+  continue as the leader of a new, empty team; the old identity is retired and its manager
+  told), and `/team join <target>` in a member does both steps.

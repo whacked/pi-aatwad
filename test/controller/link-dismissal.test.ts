@@ -83,3 +83,33 @@ test("a lead cannot end a member that joined its team unless the operator made i
 		ok(await cancel(lead.token));
 	} finally { await h.cleanup(); }
 });
+
+test("a member leaves its team to lead its own, keeping its process and transcript, then joins another team", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), other = await newRun(h);
+		const member = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "Builder", responsibility: "Build" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(member), "recruit enrolled");
+		const identity = h.ex.launchesFor(member).at(-1)!.id;
+		const transcript = sql(h, "SELECT pi_session_path FROM agents WHERE id = ?", member)[0].pi_session_path;
+		const token = h.ex.tokens.get(member)!;
+		assert.equal((await h.call("POST", "/sessions/secede", { token: lead.token, body: {} })).status, 409, "a leader links instead");
+
+		const r = ok(await h.call("POST", "/sessions/secede", { token, body: { reason: "moving to the other project" } }));
+		assert.equal(r.previous_agent_id, member);
+		assert.equal(sql(h, "SELECT status FROM agents WHERE id = ?", member)[0].status, "RETIRED");
+		assert.equal(sql(h, "SELECT pi_session_path FROM agents WHERE id = ?", r.root_agent_id)[0].pi_session_path, transcript, "the same conversation continues");
+		await h.h.reconciler.idle();
+		assert.equal(await h.ex.probe(identity), "alive", "the process is never stopped: this session continues as the new leader");
+		assert.ok(!h.ex.stopped.includes(identity.pid));
+		assert.equal((await h.call("GET", "/me", { token })).status, 401, "the old member credential is revoked");
+		const me = ok(await h.call("GET", "/me", { token: r.token }));
+		assert.deepEqual({ is_root: me.is_root, role: me.role, parent: me.parent }, { is_root: true, role: "Builder", parent: null });
+		const notice = ok(await h.call("GET", "/inbox", { token: lead.token })).messages.find((m: any) => m.payload?.kind === "member_seceded");
+		assert.equal(notice.payload.new_agent_id, r.root_agent_id);
+		assert.ok((ok(await h.call("GET", `/agents/${lead.root}/roster`, { token: lead.token })).entries as any[]).some((e) => e.agent_id === member && !e.active), "the old team keeps it on its roster");
+
+		ok(await h.call("POST", `/runs/${r.run_id}/reporting`, { token: r.token, body: { action: "connect", parent_run_id: other.run_id } }));
+		assert.equal(sql(h, "SELECT parent_id FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", r.root_agent_id)[0].parent_id, other.root);
+	} finally { await h.cleanup(); }
+});
