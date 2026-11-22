@@ -1,0 +1,8 @@
+results/*.events.jsonl
+results/*.stderr.log
+results/driver.out
+results/*.tgz
+results-aborted-*/
+seed/
+secrets/
+.secrets-path

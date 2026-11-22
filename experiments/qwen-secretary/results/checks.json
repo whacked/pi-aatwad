@@ -1,0 +1,82 @@
+{
+  "models": {
+    "lead": "mac-studio-1-mtplx/mtplx-qwen38-27b-optimized-speed",
+    "a": "anthropic/claude-opus-5-5",
+    "b": "openai/gpt-5.6-sol",
+    "c": "openrouter/openrouter/free"
+  },
+  "minutes": 21.402166666666666,
+  "spend_usd": 1.3537054000000002,
+  "results": [
+    {
+      "label": "B and C created their own teams",
+      "ok": true,
+      "detail": "run-track-proud-dial-draw-concert-bench, run-worry-dose-monster-mass-ostrich-clay"
+    },
+    {
+      "label": "T and A created their teams",
+      "ok": true,
+      "detail": "run-exhibit-bar-loop-clerk-frost-hope, run-tennis-decorate-jungle-image-special-simple"
+    },
+    {
+      "label": "A is linked under T (joined, not terminatable)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "label": "T assigned A its mission as a task in T's team",
+      "ok": true,
+      "detail": "Project LEDGER: build Python ledger package with CLI, tests, README"
+    },
+    {
+      "label": "B and C are linked under T",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "label": "the secretary ran two scheduled check-ins",
+      "ok": true,
+      "detail": "2 seen"
+    },
+    {
+      "label": "four leaders are connected and idle",
+      "ok": true,
+      "detail": "T-secretary: LIVE/RUNNING/idle, A-ledger: LIVE/RUNNING/idle, B-sortbench: LIVE/RUNNING/idle, C-booknotes: LIVE/RUNNING/idle"
+    },
+    {
+      "label": "A's team was stopped (resumable) and its link closed",
+      "ok": true,
+      "detail": "state STOPPED"
+    },
+    {
+      "label": "A's members are paused, not deleted",
+      "ok": false,
+      "detail": "[\"CANCELLED\",\"CANCELLED\"]"
+    },
+    {
+      "label": "B is detached and still running on its own",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "label": "C closed its own members and is idle",
+      "ok": true,
+      "detail": "[\"Chapter3Summarizer:CANCELLED\"]"
+    },
+    {
+      "label": "all four teams are stopped (resumable)",
+      "ok": true,
+      "detail": "T-secretary: STOPPED, A-ledger: STOPPED, B-sortbench: STOPPED, C-booknotes: STOPPED"
+    },
+    {
+      "label": "no Pi processes remain",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "label": "agents remain in the database (memory kept)",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
