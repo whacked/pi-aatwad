@@ -552,7 +552,7 @@ test("a session working as a member moves to another team: /team join leaves its
 		const solo = commandSession(hs, "solo-session", "");
 		await solo.rt.start(solo.ctx);
 		await solo.command.handler(`resume ${leadRun} ${second}`, solo.ctx);
-		await solo.command.handler("join none", solo.ctx);
+		await solo.command.handler("leave", solo.ctx); // alias of join none
 		assert.equal((await solo.rt.client.me()).is_root, true);
 		assert.equal(sql(hs, "SELECT COUNT(*) AS n FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", solo.rt.identity!.agent_id)[0].n, 0, "an independent leader");
 		solo.rt.stop();

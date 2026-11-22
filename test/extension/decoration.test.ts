@@ -62,8 +62,8 @@ test("leader member strip lists running members with their colors, dims stopped 
 });
 
 test("member header can carry the way back to the leader", () => {
-	const [line] = renderMemberHeader({ ...memberDecor("m-1", "Alpha"), hint: "/team leave returns to the leader" }, 120);
-	assert.match(stripTerminalSequences(line), /Alpha {2}team member · m-1 {2}· {2}\/team leave returns to the leader/);
+	const [line] = renderMemberHeader({ ...memberDecor("m-1", "Alpha"), hint: "/team back returns to the leader" }, 120);
+	assert.match(stripTerminalSequences(line), /Alpha {2}team member · m-1 {2}· {2}\/team back returns to the leader/);
 });
 
 test("the member strip marks linked teams and only offers focus for the leader's own members", () => {

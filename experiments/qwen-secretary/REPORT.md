@@ -69,9 +69,9 @@ rounds see work in progress.
 - **Acted beyond its brief (unprompted cleanup):** it told the sub-leaders to close their idle
   members without being asked (3.8-6.1 min). The brief said it only relays the operator's
   requests. Harmless here, but a secretary should not direct resource changes unprompted.
-- **Misattribution:** it credited BOOKNOTES with adding themes "on its own initiative". The
-  operator had asked C directly, which the secretary could not see. Talking to a sub-leader
-  directly leaves the secretary's record incomplete unless the sub-leader reports it.
+- **Attribution of direct requests (expected):** it credited BOOKNOTES with adding themes "on its
+  own initiative" because the operator asked C directly. The operator is an invisible hand to the
+  secretary by design; this is acceptable and not something to change.
 - **A promise it cannot keep:** it agreed to "pause" LEDGER's scheduled check-ins. The schedule
   belongs to the secretary itself, so the promise means nothing to the controller (it did then
   skip re-asking LEDGER).
@@ -135,8 +135,6 @@ discarding it.
 2. **Restrict initiative in the brief,** or give the secretary a narrower toolset (for example no
    `team_close_member` until the operator asks), to measure whether a 27B model respects role
    limits.
-3. **Copy direct operator requests to the lead:** when the operator talks to a sub-leader directly,
-   have the sub-leader send its lead a short note, so the secretary's journal stays complete.
-4. **Teach the secretary the check-in controls:** expose `/team attention` per report, so it can
+3. **Teach the secretary the check-in controls:** expose `/team attention` per report, so it can
    actually pause check-ins for one project instead of promising to.
-5. **Make wakes observable and loss-free** (see the late first check-in above).
+4. **Make wakes observable and loss-free** (see the late first check-in above).

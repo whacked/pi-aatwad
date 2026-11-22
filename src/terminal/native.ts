@@ -1,6 +1,6 @@
 // Built-in session host for terminals without a multiplexer (plain terminals, SSH, Herdr).
 // Members live in ptyd, not beside the leader on screen; the human switches into one by
-// attaching the leader's terminal (/team watch focus) and returns with /team leave.
+// attaching the leader's terminal (/team watch focus) and returns with /team back.
 import type { TerminalLocation, TreeNode } from "../shared/protocol.ts";
 import { TerminalAllocationError } from "../watch/terminal-error.ts";
 import { memberDecor, nativeLabel } from "./decor.ts";
@@ -41,7 +41,7 @@ export class NativeView implements TerminalView {
 	/** Switching needs the leader's terminal; the leader UI attaches instead (see attachMember). */
 	async focus(agent = "leader"): Promise<void> {
 		if (agent === "leader") return;
-		throw new Error(`Members here run in the built-in session host. Ask the human to run /team watch focus ${agent} in the leader Pi (or pi-team-attach ${agent} in another terminal); /team leave returns.`);
+		throw new Error(`Members here run in the built-in session host. Ask the human to run /team watch focus ${agent} in the leader Pi (or pi-team-attach ${agent} in another terminal); /team back returns.`);
 	}
 	async member(agent: string): Promise<Pane | undefined> {
 		return (await this.panes()).find((p) => p.agent === agent);

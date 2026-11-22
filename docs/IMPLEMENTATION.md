@@ -348,7 +348,7 @@ platform support, so idle teams never start the daemon.
 Switching happens in the leader: `/team watch focus` stops Pi's TUI inside a
 `ui.custom` placeholder, runs `native/attach.ts` with inherited stdio in the alternate
 screen, then restarts and force-renders the TUI. This is the same sequence Pi uses for its
-external editor. `/team leave` in a member writes a private OSC (`7726;pi-team;detach`),
+external editor. `/team back` in a member writes a private OSC (`7726;pi-team;detach`),
 which ptyd turns into a detach event for attached clients; in tmux and Rex the same
 command focuses the leader instead. Leaders show a member strip below the editor,
 refreshed from `/me` on heartbeat and after turns. Tests cover the daemon, the attach

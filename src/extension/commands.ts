@@ -45,7 +45,8 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "remove", args: "[run_id] [--yes]", help: "permanently remove a whole team; preserve Pi and worktrees" },
 	{ name: "watch", args: "[open|status|close|off|debug|focus [name|agent_id]] [run_id]", help: "manage live Pi member terminals (tmux panes, Rex blocks, or the built-in session host); focus switches to a member" },
 	{ name: "send", args: "[name|agent_id] <message>", help: "send directions to a team member" },
-	{ name: "leave", args: "", help: "in a member's terminal: return to the leader; the member keeps running" },
+	{ name: "back", args: "", help: "in a member's terminal: return to the leader; the member keeps running" },
+	{ name: "leave", args: "[--yes]", help: "alias for join none: detach this team from its lead, or in a member leave its team to lead your own" },
 ];
 
 export { formatAttention, parseAttention, parseDuration } from "../shared/attention-format.ts";
@@ -290,16 +291,18 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (view.backend === "native") {
 				// No on-screen panes: switching means handing this terminal to the member.
 				if (target) { out(ctx, await attachMember(ctx, view as NativeView, target)); return; }
-				out(ctx, "Members run in the built-in session host and keep running when you leave. /team watch focus <name> switches this terminal to one; type /team leave there to come back. From another terminal: pi-team-attach <name>.");
+				out(ctx, "Members run in the built-in session host and keep running when you leave. /team watch focus <name> switches this terminal to one; type /team back there to come back. From another terminal: pi-team-attach <name>.");
 				return;
 			}
 			await view.focus(target ?? "leader");
-			out(ctx, `Member ${view.backend === "rex" ? "blocks" : "panes"} open beside Pi in the current ${view.backend} window; interactive members appear automatically. /team watch focus <name> switches to one; /team leave in a member returns here.`);
+			out(ctx, `Member ${view.backend === "rex" ? "blocks" : "panes"} open beside Pi in the current ${view.backend} window; interactive members appear automatically. /team watch focus <name> switches to one; /team back in a member returns here.`);
 		},
 
-		leave: async (_a, ctx) => {
+		leave: async (a, ctx, yes) => handlers.join(["none", ...a], ctx, yes),
+
+		back: async (_a, ctx) => {
 			await rt.ready;
-			if (!rt.managed || !rt.identity) throw new Error("/team leave runs in a member's terminal and returns you to the leader; you are already in the leader");
+			if (!rt.managed || !rt.identity) throw new Error("/team back runs in a member's terminal and returns you to the leader; you are already in the leader");
 			out(ctx, await leaveToLeader(rt));
 		},
 
@@ -617,7 +620,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
 					return;
 				}
-				const supportsYes = ["stop", "remove", "admin", "budget", "join", "dismiss", "reporting", "watch", "resume"].includes(command);
+				const supportsYes = ["stop", "remove", "admin", "budget", "join", "leave", "dismiss", "reporting", "watch", "resume"].includes(command);
 				const yes = supportsYes && rest.includes("--yes");
 				await h(yes ? rest.filter((arg) => arg !== "--yes") : rest, ctx, yes);
 			} catch (e) {

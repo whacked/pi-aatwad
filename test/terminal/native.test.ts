@@ -111,7 +111,7 @@ test("executor launches a gated member into the built-in host and the member kno
 	});
 });
 
-test("pi-team-attach takes over a real terminal, shows the member, relays typing and returns on /team leave or exit", { skip: !supported, timeout: 30000 }, async () => {
+test("pi-team-attach takes over a real terminal, shows the member, relays typing and returns on /team back or exit", { skip: !supported, timeout: 30000 }, async () => {
 	const pty = require("@lydell/node-pty") as typeof import("@lydell/node-pty");
 	await withHost(async (client, dir) => {
 		await client.ensure();

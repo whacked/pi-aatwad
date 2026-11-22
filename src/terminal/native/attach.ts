@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Attach this terminal to a member hosted by ptyd, like `tmux attach`.
-// Leaves when the member asks (/team leave), when it exits, or on an opt-in detach key.
+// Leaves when the member asks (/team back), when it exits, or on an opt-in detach key.
 // Usage: attach.ts [--state-dir DIR] [--detach-key ctrl-X] [name|agent_id|pty:handle]
 // Exit codes: 0 detached by request, 3 member exited or was closed, 1 error, 2 usage.
 import type { Socket } from "node:net";
@@ -77,7 +77,7 @@ async function main(argv: string[]): Promise<number> {
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--state-dir") stateDir = argv[++i];
 		else if (argv[i] === "--detach-key") detachKey = argv[++i];
-		else if (argv[i] === "-h" || argv[i] === "--help") { process.stdout.write("usage: pi-team-attach [--state-dir DIR] [--detach-key ctrl-X] [name|agent_id]\nType /team leave in the member to return.\n"); return 0; }
+		else if (argv[i] === "-h" || argv[i] === "--help") { process.stdout.write("usage: pi-team-attach [--state-dir DIR] [--detach-key ctrl-X] [name|agent_id]\nType /team back in the member to return.\n"); return 0; }
 		else target = argv[i];
 	}
 	const client = new PtydClient(stateDir);

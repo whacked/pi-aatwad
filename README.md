@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.36, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.37, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -119,6 +119,7 @@ Inside Pi:
 | `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
 | `/team join <run_id\|agent_id\|none> [--terminatable]` | Link this team under another team's leader (run ID) or any of its agents (agent ID); `none` detaches. That agent becomes your lead: it can assign you tasks and dismiss you. `--terminatable` (operator) lets dismissal stop your team. It does not merge teams or take over that leader (that is `resume`). |
 | `/team report-to ...` | Alias for `join`. |
+| `/team leave` | Alias for `/team join none`. |
 | `/team join none` *(in a member)* | Leave the team: this session and its conversation continue as the leader of a new, empty team. The old member identity is retired there (its manager is told). `/team join <target>` in a member leaves and then joins, which is how a member moves to another team. |
 | `/team dismiss <name\|agent_id> [--stop\|--keep] [reason]` | End a team linked under you: it detaches, or stops resumably when its link is terminatable. `--stop`/`--keep` override (operator). |
 | `/team roster` | Everyone ever linked under you: active, detached, dismissed or closed. |
@@ -472,7 +473,7 @@ interactive Pi sessions you can switch into, wherever the leader runs:
 
 | Environment | Default behavior |
 |---|---|
-| Plain terminal or SSH, without tmux | Members run in the built-in session host. `/team watch focus <name>` switches this terminal into a member; `/team leave` there comes back. |
+| Plain terminal or SSH, without tmux | Members run in the built-in session host. `/team watch focus <name>` switches this terminal into a member; `/team back` there comes back. |
 | Herdr | Same built-in session host as a plain terminal. Inherited outer tmux markers are ignored when `HERDR_ENV=1`. |
 | Rex (Superlogical) | Detected from `REX_SERVER`/`REX_BLOCK`. Member creation automatically splits interactive member blocks beside the leader's block. tmux running inside Rex is treated as tmux. |
 | Valid tmux pane containing this Pi | Member creation automatically opens team panes beside Pi unless explicitly disabled. |
@@ -517,7 +518,7 @@ SSH connection drops, and `/team resume` returns to them.
 - **Switching in:** `/team watch focus Alpha` hands this terminal to Alpha's live Pi,
   exactly as Pi hands the terminal to an external editor. You see Alpha's screen and
   type directly to it.
-- **Coming back:** type `/team leave` in the member. The member keeps running and the
+- **Coming back:** type `/team back` in the member. The member keeps running and the
   leader redraws. If a member exits, you return to the leader automatically. No key is
   bound by default; set `PI_TEAM_DETACH_KEY=ctrl-]` (any `ctrl-<key>`) to add one.
 - **From another terminal:** `pi-team-attach Alpha` attaches there instead.

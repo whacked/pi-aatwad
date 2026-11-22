@@ -27,7 +27,7 @@ async function watch(view: NativeView, handle: string) {
 	return state;
 }
 
-test("real Pi members live in the built-in host: header, typing, /team leave, crash recovery and close", { skip: !available, timeout: 90000 }, async () => {
+test("real Pi members live in the built-in host: header, typing, /team back, crash recovery and close", { skip: !available, timeout: 90000 }, async () => {
 	const fake = await startFakeOpenAI((req) => {
 		const task = req.messages.map((m) => m.text).join("\n").match(/Your assigned task id: ([^.\s]+)\./)?.[1];
 		if (task && !req.messages.some((m) => m.text.includes("team_complete_task"))) return { tool_calls: [{ name: "team_complete_task", arguments: { task_id: task, summary: "Done; waiting" } }] };
@@ -56,7 +56,7 @@ test("real Pi members live in the built-in host: header, typing, /team leave, cr
 
 		const attached = await watch(view, member.id);
 		await waitFor(() => plain(attached.screen).includes("NATIVE-INTERACTIVE-ANSWER"), "visible Pi answer", 20000).catch((e) => { throw new Error(`${e.message}\n${plain(attached.screen).slice(-3000)}`); });
-		await waitFor(() => new RegExp(`Adjudicator\\s+team member · ${id}\\s+·\\s+/team leave returns to the leader`).test(plain(attached.screen)), "self-drawn header with the way back", 10000)
+		await waitFor(() => new RegExp(`Adjudicator\\s+team member · ${id}\\s+·\\s+/team back returns to the leader`).test(plain(attached.screen)), "self-drawn header with the way back", 10000)
 			.catch((e) => { throw new Error(`${e.message}\n${plain(attached.screen).slice(-3000)}`); });
 		const count = fake.requests.length;
 		attached.socket.write(encodeFrame(FRAME_DATA, "NATIVE-KEYBOARD-FOLLOWUP"));
@@ -65,12 +65,12 @@ test("real Pi members live in the built-in host: header, typing, /team leave, cr
 		await waitFor(() => fake.requests.slice(count).some((r) => r.messages.some((m) => m.text.includes("NATIVE-KEYBOARD-FOLLOWUP"))), "typed input reaches Pi", 20000);
 		await waitFor(() => plain(attached.screen).split("NATIVE-KEYBOARD-FOLLOWUP").length > 2 || fake.requests.length > count, "turn finished");
 		await new Promise((r) => setTimeout(r, 500));
-		attached.socket.write(encodeFrame(FRAME_DATA, "/team leave"));
+		attached.socket.write(encodeFrame(FRAME_DATA, "/team back"));
 		await new Promise((r) => setTimeout(r, 300));
 		attached.socket.write(encodeFrame(FRAME_DATA, "\x1b")); // close slash-command completion
 		await new Promise((r) => setTimeout(r, 300));
 		attached.socket.write(encodeFrame(FRAME_DATA, "\r"));
-		await waitFor(() => attached.events.some((e) => e.event === "detach" && e.reason === "member"), "/team leave returns the human to the leader", 15000)
+		await waitFor(() => attached.events.some((e) => e.event === "detach" && e.reason === "member"), "/team back returns the human to the leader", 15000)
 			.catch((e) => { throw new Error(`${e.message}\n${plain(attached.screen).slice(-2000)}`); });
 		assert.equal((await view.member(id))?.dead, false, "the member keeps running after the human leaves");
 

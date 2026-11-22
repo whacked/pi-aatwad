@@ -1,6 +1,6 @@
 // A real leader Pi in a plain terminal (a PTY with no multiplexer): recruiting starts members
 // in the built-in session host, /team watch focus switches this terminal into a member, and
-// /team leave typed there returns to the leader, which redraws itself.
+// /team back typed there returns to the leader, which redraws itself.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -70,7 +70,7 @@ test("leader in a plain terminal switches into a native member and back", { skip
 			.catch((e) => { throw new Error(`${e.message}\n${plain(out.slice(before)).slice(-2000)}`); });
 
 		const inMember = out.length;
-		await type("/team leave");
+		await type("/team back");
 		await waitFor(() => out.slice(inMember).includes("\x1b[?1049l"), "returned from the member", 15000)
 			.catch((e) => { throw new Error(`${e.message}\n${plain(out.slice(inMember)).slice(-2000)}`); });
 		await waitFor(() => /Back in the leader from/.test(plain(out.slice(inMember))), "leader redrew and reported the return", 15000)
