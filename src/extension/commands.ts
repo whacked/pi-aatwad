@@ -18,8 +18,10 @@ import { TOOL_NAMES } from "./names.ts";
 import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 
 export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
-	{ name: "report-to", args: "[run_id|none]", help: "make this leader report to another team leader, or disconnect it" },
-	{ name: "join", args: "<run_id>", help: "alias for report-to: this team becomes a sub-team reporting to that leader (no merge, no takeover)" },
+	{ name: "join", args: "<run_id|agent_id|none> [--terminatable]", help: "link this team under another team's leader or agent: it can assign you work and dismiss you (only detaching, unless --terminatable); none detaches" },
+	{ name: "report-to", args: "<run_id|agent_id|none>", help: "alias for join" },
+	{ name: "dismiss", args: "<name|agent_id> [--stop|--keep] [reason]", help: "end a team linked under you: it detaches, or stops (resumably) when its link is terminatable; --stop/--keep override" },
+	{ name: "link", args: "<name|agent_id> terminatable on|off", help: "human operator: whether dismissing this linked team or joined member may stop it" },
 	{ name: "reporting", args: "[--all|dismiss|transfer [run_id]|wake on|off]", help: "inspect, dismiss or transfer reporting links (wake on|off = /team attention on-message)" },
 	{ name: "attention", args: "[team|name|agent_id] [on-message wake|next-turn] [batch 15s] [stall 3m|off] [tick 10m|off] [cap N] [reset]", help: "when idle leaders/members get automatic turns (message wake, stall alerts, check-ins)" },
 	{ name: "help", args: "", help: "show this help" },
@@ -47,7 +49,7 @@ export { formatAttention, parseAttention, parseDuration } from "../shared/attent
 import { formatAttention, parseAttention } from "../shared/attention-format.ts";
 
 /** Subcommand aliases, resolved before dispatch, completion and --yes handling. */
-export const ALIASES: Record<string, string> = { join: "report-to" };
+export const ALIASES: Record<string, string> = { "report-to": "join" };
 
 export function helpText(pi: Pick<ExtensionAPI, "getAllTools">, rt: TeamRuntime): string {
 	const w = Math.max(...SUBCOMMANDS.map((s) => `${s.name} ${s.args}`.length));
@@ -157,13 +159,48 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			out(ctx, formatAttention(view));
 		},
 
-		"report-to": async (a, ctx, yes) => {
+		join: async (a, ctx, yes) => {
 			await rt.requireIdentity();
-			if (a.length > 1) throw new Error("usage: /team report-to [run_id|none]");
-			const target = a[0] === "none" ? "none" : await runId(ctx, a[0], true);
-			if (!(await confirm(ctx, yes, `Change this team reporting parent to ${target}?`))) return;
-			const result = await rt.client.setReporting(await runId(ctx), target === "none" ? { action: "disconnect" } : { action: "connect", parent_run_id: target }, { token: await rt.commandToken() });
+			const terminatable = a.includes("--terminatable");
+			const args = a.filter((x) => x !== "--terminatable");
+			if (args.length !== 1) throw new Error("usage: /team join <run_id|agent_id|none> [--terminatable]");
+			const token = await rt.commandToken();
+			const me = await runId(ctx);
+			if (args[0] === "none") {
+				if (!(await confirm(ctx, yes, `Detach team ${me} from its lead? Both teams keep running.`))) return;
+				out(ctx, JSON.stringify(await rt.client.setReporting(me, { action: "disconnect" }, { token }), null, 2));
+				return;
+			}
+			// A team's run ID links under its leader; an agent ID links under that agent.
+			const runs = (await rt.client.listRuns({ token })).runs;
+			const target = runs.some((r) => r.run_id === args[0]) ? { parent_run_id: args[0] } : { parent_agent_id: (await rt.client.inspect(args[0], { token })).agent.agent_id };
+			if (!(await confirm(ctx, yes, `Link team ${me} under ${args[0]}? Its lead can assign work and dismiss it (${terminatable ? "dismissal may stop the team" : "dismissal only detaches"}).`))) return;
+			const result = await rt.client.setReporting(me, { action: "connect", ...target, ...(terminatable ? { terminatable } : {}) }, { token });
 			out(ctx, JSON.stringify(result, null, 2));
+		},
+
+		dismiss: async (a, ctx, yes) => {
+			await rt.requireIdentity();
+			if (!a.length) throw new Error("usage: /team dismiss <name|agent_id> [--stop|--keep] [reason]");
+			const stop = a.includes("--stop") ? true : a.includes("--keep") ? false : undefined;
+			const rest = a.filter((x) => x !== "--stop" && x !== "--keep");
+			const target = await agent(rest[0], ctx);
+			const reason = rest.slice(1).join(" ") || undefined;
+			if (!(await confirm(ctx, yes, `Dismiss ${rest[0]}? ${stop === true ? "Its team will be stopped (resumably)." : stop === false ? "It will only be detached." : "It detaches, or stops if its link is terminatable."}`))) return;
+			type Dismissed = { severed: boolean; stopped: boolean; stopped_run_ids: string[]; severed_below: string[] };
+			const r = await rt.client.post<Dismissed>(`/agents/${encodeURIComponent(target)}/dismiss`, { ...(stop !== undefined ? { stop } : {}), ...(reason ? { reason } : {}) }, { token: await rt.commandToken() });
+			out(ctx, r.stopped
+				? `Dismissed ${rest[0]}: stopped ${r.stopped_run_ids.join(", ")} (resumable with /team resume)${r.severed_below.length ? `; detached joined teams below: ${r.severed_below.join(", ")}` : ""}.`
+				: `Dismissed ${rest[0]}: detached; its team keeps running on its own.`);
+		},
+
+		link: async (a, ctx) => {
+			await rt.requireIdentity();
+			if (rt.managed) throw new Error("only the human operator can change whether a link is terminatable");
+			if (a.length !== 3 || a[1] !== "terminatable" || !["on", "off"].includes(a[2])) throw new Error("usage: /team link <name|agent_id> terminatable on|off");
+			const target = await agent(a[0], ctx);
+			await rt.client.post(`/agents/${encodeURIComponent(target)}/link`, { terminatable: a[2] === "on" }, { token: await rt.operatorToken(0) });
+			out(ctx, `${a[0]}: dismissal ${a[2] === "on" ? "may stop its team" : "only detaches it"}.`);
 		},
 
 		watch: async (a, ctx, yes) => {
@@ -279,7 +316,15 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		admin: async (a, ctx, yes) => {
 			if (rt.managed) throw new Error("only the human operator can change resource limits");
 			const action = a[0] ?? "status";
-			if (!["status", "limits", "unlimited", "bounded", "clear-deadlines", "clear-limits"].includes(action)) throw new Error("usage: /team admin [status|limits|clear-limits|clear-deadlines|unlimited|bounded] [run_id]");
+			if (!["status", "limits", "unlimited", "bounded", "clear-deadlines", "clear-limits", "member-default"].includes(action)) throw new Error("usage: /team admin [status|limits|clear-limits|clear-deadlines|unlimited|bounded|member-default <usd|none>] [run_id]");
+			if (action === "member-default") {
+				if (!a[1] || (a[1] !== "none" && !(Number(a[1]) >= 0))) throw new Error("usage: /team admin member-default <usd|none> [run_id]");
+				const id = await runId(ctx, a[2]);
+				const usd = a[1] === "none" ? null : Number(a[1]);
+				await rt.client.post(`/runs/${id}/admin`, { mode: "member-default", usd }, { token: await rt.commandToken() });
+				out(ctx, usd === null ? `${id}: no default member budget.` : `${id}: teams that join get $${usd} added to their budget.`);
+				return;
+			}
 			const id = await runId(ctx, a[1]);
 			const token = await rt.commandToken();
 			const read = action === "status" || action === "limits";
@@ -499,7 +544,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, report-to/join, reporting, attention, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
+		description: "Recursive agent team: init, resume, join/report-to, dismiss, link, reporting, attention, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
@@ -511,7 +556,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (["budget", "model", "inspect", "send"].includes(sub) && parts.length === 2) return await agentCompletions(sub, partial);
 			if (sub === "watch" && partial === "focus" && parts.length === 3) return await agentCompletions(sub, parts[2], "watch focus");
 			if (sub === "resume" && parts.length === 3) return await agentCompletions(sub, parts[2], `resume ${partial}`, partial);
-			if (sub === "report-to" || sub === "resume" || sub === "tree" || sub === "events" || (["stop", "remove"].includes(sub) && parts.length === 2)) {
+			if (sub === "join" || sub === "resume" || sub === "tree" || sub === "events" || (["stop", "remove"].includes(sub) && parts.length === 2)) {
 				if (parts.length > 2) return null;
 				const runs = await runCompletions();
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&
@@ -532,7 +577,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					out(ctx, `unknown subcommand '${sub}'.\n${helpText(pi, rt)}`, "warning");
 					return;
 				}
-				const supportsYes = ["stop", "remove", "admin", "budget", "report-to", "reporting", "watch", "resume"].includes(command);
+				const supportsYes = ["stop", "remove", "admin", "budget", "join", "dismiss", "reporting", "watch", "resume"].includes(command);
 				const yes = supportsYes && rest.includes("--yes");
 				await h(yes ? rest.filter((arg) => arg !== "--yes") : rest, ctx, yes);
 			} catch (e) {

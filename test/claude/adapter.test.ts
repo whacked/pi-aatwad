@@ -29,10 +29,13 @@ test("Claude Code joins a Pi team as a member: hooks deliver messages, the waite
 		const list: any = await claude.handle({ id: 1, method: "tools/list" });
 		for (const n of ["team_join", "team_leave", "team_delegate_task", "team_reassign", "team_report_to", "team_set_attention"]) assert.ok(list.result.tools.some((t: any) => t.name === n), n);
 
-		assert.match(await call(claude, "team_join", { mode: "member", run_id: team.run_id, name: "Claude", model: "anthropic/claude-opus-5-5" }), /Joined team/);
+		assert.match(await call(claude, "team_join", { mode: "member", run_id: team.run_id, name: "Claude", model: "anthropic/claude-opus-5-5" }), /Joined under/);
 		const id = readIdentity("s1", paths)!;
 		assert.equal(sql(h, "SELECT harness FROM sessions WHERE id = ?", id.session_id)[0].harness, "claude-code");
-		assert.match(await call(claude, "team_status"), new RegExp(`Manager: root \\[${team.root}\\]`));
+		// Joining is linking: the session leads its own team, linked under the Pi leader.
+		assert.notEqual(id.run_id, team.run_id);
+		assert.deepEqual({ ...sql(h, "SELECT parent_id, parent_run_id, origin, terminatable FROM reporting_edges WHERE child_id = ? AND valid_to IS NULL", id.agent_id)[0] }, { parent_id: team.root, parent_run_id: team.run_id, origin: "joined", terminatable: 0 });
+		assert.match(await call(claude, "team_status"), new RegExp(`Lead: root \\[${team.root}\\] in team ${team.run_id}`));
 
 		// Human turn: assigned work rides along with the prompt.
 		const d = ok(await h.call("POST", "/tasks", { token: team.token, body: { owner_id: id.agent_id, title: "Port the CLI" } }));
@@ -50,7 +53,7 @@ test("Claude Code joins a Pi team as a member: hooks deliver messages, the waite
 		assert.equal(await stop({ session_id: "s1" }, env), undefined, "never nags twice");
 
 		// Idle wake: controller decides (batch 0), the MCP heartbeat records it, the waiter exits with the message.
-		ok(await h.call("POST", `/runs/${team.run_id}/attention`, { token: team.token, body: { batch_seconds: 0, stall_seconds: 0 } }));
+		ok(await h.call("POST", `/runs/${id.run_id}/attention`, { token: h.op, body: { batch_seconds: 0, stall_seconds: 0 } }));
 		ok(await h.call("POST", "/messages", { token: team.token, body: { to: id.agent_id, type: "question", payload: { text: "Status of the CLI?" } } }));
 		await claude.heartbeat();
 		const woke = await wait({ ...env, sid: "s1", pollMs: 20, maxMs: 2_000 });

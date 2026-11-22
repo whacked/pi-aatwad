@@ -405,3 +405,16 @@ team a default member budget (`POST /runs/:id/admin` `{mode: "member-default", u
 `null` removes it); when another team links under it, that amount is added once to the
 joining root's `max_subtree_usd` (event `budget.join_grant`). Unlimited teams and
 ceiling-free envelopes are left alone, and re-confirming an existing link grants nothing.
+
+## Unified links, phase 5: one join in both harnesses (v0.1.30)
+
+`/team join <run_id|agent_id|none> [--terminatable]` is the Pi command for linking (with
+`/team report-to` as its alias); a run ID links under that team's leader, an agent ID
+under that agent (`team_reporting` connect accepts `parent_agent_id`). Only the operator
+can make a new link terminatable. `/team dismiss` and `/team link ... terminatable on|off`
+expose phase 3, and `/team admin member-default <usd|none>` phase 4. `team_close_member`
+dismisses a team linked under the caller instead of cancelling it, in Pi and Claude Code.
+Claude Code's `team_join` mode `member` (alias `join`) now creates the session's own team
+and links it under the target, instead of adding an in-team member; mode `agent` finds the
+agent's own team through the linked tree. Leaving notifies the lead across teams.
+`POST /runs/:id/join` remains for compatibility.

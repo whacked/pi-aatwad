@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.29, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.30, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -117,8 +117,10 @@ Inside Pi:
 | `/team resume [run_id] [agent_id]` | Auto-resume the sole valid team, pick among multiple teams, or attach directly. Works without init. |
 | `/team list [all]` | List active teams, reporting relationships and member counts; `all` includes history. |
 | `/team version` | Loaded extension/controller versions, source paths and controller state directory; works without enrollment and never starts the controller. |
-| `/team report-to [run_id\|none]` | Make this leader report to another team leader, or disconnect it. |
-| `/team join <run_id>` | Alias for `report-to <run_id>`: this team becomes a sub-team of that leader. It does not merge teams or take over that leader (that is `resume`). |
+| `/team join <run_id\|agent_id\|none> [--terminatable]` | Link this team under another team's leader (run ID) or any of its agents (agent ID); `none` detaches. That agent becomes your lead: it can assign you tasks and dismiss you. `--terminatable` (operator) lets dismissal stop your team. It does not merge teams or take over that leader (that is `resume`). |
+| `/team report-to ...` | Alias for `join`. |
+| `/team dismiss <name\|agent_id> [--stop\|--keep] [reason]` | End a team linked under you: it detaches, or stops resumably when its link is terminatable. `--stop`/`--keep` override (operator). |
+| `/team link <name\|agent_id> terminatable on\|off` | Operator: whether dismissing that linked team (or joined member) may stop it. |
 | `/team reporting [--all\|dismiss\|transfer [run_id]\|wake on\|off]` | Inspect, dismiss or transfer reporting links. `wake on\|off` is shorthand for `/team attention on-message wake\|next-turn`. |
 | `/team attention [team\|agent] [on-message wake\|next-turn] [batch 15s] [stall 3m\|off] [tick 10m\|off] [cap N] [reset]` | When idle sessions get automatic turns. See [Automatic turns](#automatic-turns-attention). |
 | `/team admin [status\|limits\|clear-limits\|clear-deadlines\|unlimited\|bounded] [run_id]` | Human operator: list the limits in force, remove them all, or change resource policy. |
@@ -133,10 +135,13 @@ Inside Pi:
 
 Every participating agent, root or worker, gets the same tools: `team_send_message`, `team_delegate_task`, `team_request_expansion`, `team_review_expansion`, `team_get_tree`, `team_get_inbox`, `team_report_progress`, `team_complete_task`, `team_close_member`, `team_get_models`, `team_get_budget`, `team_set_budget`, `team_set_model`, plus root-only `team_reporting`, `team_register_model`, `team_create_member`, and `team_watch`. What an agent may actually *do* is decided by the controller from its delegated envelope. A proposal is a request, not a guarantee.
 
-### Reporting relationships between existing team leaders
+### Linking teams: join, lead, dismiss
 
-Any active team leader can report to another active team leader. There is no
-special role to enable and no reserved name. All teams must use the same local
+Any team can link under any agent of another team, usually its leader. The agent
+above becomes the team's **lead**: control flows one step down, reports flow up and
+sideways. There is no special role to enable and no reserved name. A "member" that
+joins is just a team (possibly empty) linked under its lead; see
+[docs/design/unified-team-links.md](docs/design/unified-team-links.md). All teams must use the same local
 controller/state directory. Each leader can receive reports while also reporting
 to another leader; cycles are rejected.
 
@@ -150,10 +155,10 @@ This creates an ordinary team leader. Note its `run_id`. Use `/team list` to dis
 existing teams. In each old leader's session, run:
 
 ```text
-/team report-to <new_leader_run_id>
+/team join <new_leader_run_id>
 ```
 
-(`/team join <new_leader_run_id>` is an alias.)
+(`/team report-to` is an alias.)
 
 Or tell that leader: “Report to the team leader for run `<new_leader_run_id>`.”
 It uses `team_reporting` with action `connect` and `parent_run_id`. The receiving
@@ -166,9 +171,20 @@ members, and recent task progress. The reporting leader is asked for its goal,
 progress, blockers, pending decisions and next action. The receiving leader can
 maintain consolidated status and ask follow-up questions. `/team reporting` lists
 linked root agent IDs; use `/team send <agent_id> <message>` or `team_send_message`
-to communicate. Cross-team messages permit `question`, `answer`, and `task.progress`.
-Each team retains its own task delegation, recruitment, approvals, budget authority
-and transcripts. Ordinary workers and sibling teams do not gain cross-team access.
+to communicate. The lead can assign tasks to the agent linked directly under it
+(`team_delegate_task`); the task lives in the lead's team, and the linked agent can
+break it down in its own team and reports progress and completion up. Messages go down
+one step, up to the lead, and sideways between peers under the same lead (`question`,
+`answer`, `task.progress`). A lead never reaches two levels down. Each team retains
+its own recruitment, approvals, budget and transcripts; a lead can read (not change) its
+whole linked subtree. If the lead's team has a default member budget
+(`/team admin member-default <usd>`), a joining team gets it added once.
+
+Dismissing a linked team (`/team dismiss`, or the lead's `team_close_member`) detaches
+it by default; joined teams are not terminatable. When the human marks a link
+terminatable (`/team join --terminatable` or `/team link`), dismissal stops that team
+resumably, and the stop continues down terminatable links while joined teams below
+detach and keep running. Recruited members are terminatable by default.
 Use `causation_id` or `correlation_id` to link an answer to its question.
 
 Leaders are woken automatically when reports arrive (see
@@ -179,11 +195,12 @@ report meaningful changes and decisions and avoid acknowledgement loops.
 
 | Where | Command | Effect |
 |---|---|---|
-| Reporting leader | `/team report-to none` | End its link to its reporting parent. Its own reports stay attached. |
+| Linked team | `/team join none` | End its link to its lead. Its own reports stay attached. |
+| Lead | `/team dismiss <agent>` | Detach a linked team, or stop it if its link is terminatable. |
 | Receiving leader | `/team reporting transfer <run_id>` | Transfer all leaders reporting to it to another ordinary leader, with handoff history. Its own parent link stays attached. |
 | Any leader | `/team reporting dismiss` | End all reporting links attached to this leader. Every team and session continues running. |
 | Any leader | `/team reporting --all` | Inspect active and closed links. |
-| Human operator | `/team stop [run_id]` | Suspend that team's own hierarchy (resumable). Separately linked teams continue running. |
+| Human operator | `/team stop [run_id]` | Suspend that team's own hierarchy (resumable), and teams linked under it on terminatable links. Joined teams continue running; `/team resume` brings back everything it stopped. |
 
 ### Automatic turns (attention)
 
@@ -631,9 +648,9 @@ Then ask Claude to use the `team_*` tools.
 |---|---|
 | Found a team and lead it | `team_join` mode `new_team` |
 | Lead an existing team (take over its root) | `team_join` mode `leader`, `run_id` |
-| Join an existing team as a new member | `team_join` mode `member`, `run_id`, optional `manager` |
+| Join under an existing team's leader or an agent (you lead your own team linked under it) | `team_join` mode `member` (or `join`), `run_id`, optional `manager` |
 | Resume an existing agent identity | `team_join` mode `agent`, `run_id`, `agent` |
-| Make your team a sub-team of another leader | `team_report_to` `run_id` (`none` disconnects) |
+| Link your existing team under another leader | `team_report_to` `run_id` (`none` detaches) |
 | Move a member under another manager | `team_reassign` |
 | Leave (identity and tasks remain; manager notified) | `team_leave` |
 

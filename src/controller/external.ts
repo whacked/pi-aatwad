@@ -6,7 +6,7 @@ import type { AttachResponse, LeaveResponse } from "../shared/protocol.ts";
 import { obj, str, onlyKeys } from "./validate.ts";
 import { fail, CommittedError } from "./errors.ts";
 import { createTask, postMessage, requireAgent } from "./messaging.ts";
-import { getAgent, getCurrentManager, getRun, isTerminal, runConfig } from "./queries.ts";
+import { getAgent, getLead, getRun, isTerminal, runConfig } from "./queries.ts";
 import { emit, newId, nowIso, isoPlus, run, get } from "./db.ts";
 import { createExpansion, decide } from "./governance.ts";
 import { registerRunModel } from "./members.ts";
@@ -78,8 +78,9 @@ export function leaveSession(ctx: Ctx, p: Principal, body: unknown): LeaveRespon
 	run(db, "UPDATE sessions SET status = 'STOPPED', ended_at = COALESCE(ended_at, ?) WHERE id = ?", ts, a.session_id);
 	run(db, "UPDATE agents SET observed_state = 'STOPPED', lease_until = NULL WHERE id = ? AND current_session_id = ?", a.actor_id, a.session_id);
 	revokeSessionTokens(db, a.session_id, "session left");
-	const mgr = getCurrentManager(db, a.actor_id);
-	if (mgr && !isTerminal(getAgent(db, mgr).status)) postMessage(db, { run_id: a.run_id, from: a.actor_id, to: mgr, type: "system.notice", payload: { kind: "member_left", agent_id: a.actor_id, reason, text: `${a.actor_id} left its session (${reason}). Its tasks and identity remain; it can rejoin with /runs/:id/attach. Reassign its open work or close it if it should not return.` } });
+	// The lead hears about it, whether it manages this agent in-team or through a link.
+	const mgr = getLead(db, a.actor_id);
+	if (mgr && !isTerminal(getAgent(db, mgr).status)) postMessage(db, { run_id: getAgent(db, mgr).run_id, from: a.actor_id, to: mgr, type: "system.notice", payload: { kind: "member_left", agent_id: a.actor_id, reason, text: `${a.actor_id} left its session (${reason}). Its tasks and identity remain; it can rejoin with /runs/:id/attach. Reassign its open work or close it if it should not return.` } });
 	emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "session.left", entity_id: a.actor_id, payload: { session_id: a.session_id, reason } });
 	return { agent_id: a.actor_id, session_id: a.session_id, notified: mgr };
 }

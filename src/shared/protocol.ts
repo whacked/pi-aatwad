@@ -497,6 +497,10 @@ export interface ReportingRequest {
 	action: "connect" | "disconnect" | "dismiss" | "transfer" | "wake";
 	/** Receiving leader's run ID for connect/transfer. */
 	parent_run_id?: string;
+	/** connect: link under this agent of another team instead of its root. */
+	parent_agent_id?: string;
+	/** connect, operator only: dismissing this team may stop it (default false). */
+	terminatable?: boolean;
 	wake_on_message?: boolean;
 	reason?: string;
 }

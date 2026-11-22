@@ -92,8 +92,8 @@ export class ClaudeTeamServer {
 		const t: Tool[] = [
 			{
 				name: "team_join",
-				description: "Put this Claude Code session into a pi-aatwad team (same controller as Pi teams). mode=new_team: found a new team with you as leader. mode=leader: become the leader of an existing team (run_id; takes over its root session). mode=member: join an existing team as a NEW member under manager (default: its leader). mode=agent: resume an existing agent identity (agent). Use team_list_teams to find run IDs. Only when the human asks.",
-				inputSchema: obj({ mode: S("new_team | leader | member | agent", { enum: ["new_team", "leader", "member", "agent"] }), run_id: S("Team run ID (leader, member, agent)"), manager: S("member: manager name or agent ID"), agent: S("agent: agent name or ID to resume"), name: S("member: your member name"), responsibility: S("member: what you will do"), model: S("Your model as provider/model, e.g. anthropic/claude-opus-5-5"), unlimited: { type: "boolean", description: "new_team: operator-authorized unlimited policy" } }, ["mode"]),
+				description: "Put this Claude Code session into a pi-aatwad team (same controller as Pi teams). mode=new_team: found a new team with you as leader. mode=member (alias join): join under an existing team's leader, or under manager: you lead your own (initially empty) team linked under that agent, which can assign you work and dismiss you. mode=leader: take over an existing team's leader session (run_id). mode=agent: resume an existing agent identity (agent). Use team_list_teams to find run IDs. Only when the human asks.",
+				inputSchema: obj({ mode: S("new_team | member | join | leader | agent", { enum: ["new_team", "member", "join", "leader", "agent"] }), run_id: S("Team run ID (member, leader, agent)"), manager: S("member: the agent to join under (name or agent ID); default the team's leader"), agent: S("agent: agent name or ID to resume"), name: S("member: your member name"), responsibility: S("member: what you will do"), model: S("Your model as provider/model, e.g. anthropic/claude-opus-5-5"), unlimited: { type: "boolean", description: "new_team: operator-authorized unlimited policy" } }, ["mode"]),
 				run: async (a) => {
 					if (this.identity) throw new Error(`already in team ${this.identity.run_id} as ${this.identity.agent_id}; team_leave first`);
 					const op = await this.operator();
@@ -107,14 +107,21 @@ export class ClaudeTeamServer {
 					}
 					const runId = String(a.run_id ?? "");
 					if (!runId) throw new Error("run_id is required");
-					if (a.mode === "member") {
+					if (a.mode === "member" || a.mode === "join") {
+						// Joining is linking: this session leads its own team, linked under the target agent.
 						const manager = a.manager ? await this.api.resolveAgent(String(a.manager), runId, { token: op }) : undefined;
-						const r = await this.api.join(runId, { manager_id: manager, name: a.name as string | undefined, responsibility: a.responsibility as string | undefined, harness: HARNESS, provider, model, cwd: this.cwd }, { token: op, idempotencyKey: key });
-						this.adopt(r, "member");
-						return `Joined team ${runId} as member ${r.agent_id}. Your manager assigns work; it arrives as team messages.`;
+						const r = await this.api.createRun({ root: { role: String(a.name ?? "Claude Code"), cwd: this.cwd, provider, model, harness: HARNESS } }, { token: op, idempotencyKey: key });
+						await this.api.setReporting(r.run_id, { action: "connect", parent_run_id: runId, ...(manager ? { parent_agent_id: manager } : {}) }, { token: r.token, idempotencyKey: `${key}:link` });
+						this.adopt({ run_id: r.run_id, agent_id: r.root_agent_id, session_id: r.session_id, token: r.token }, "member");
+						return `Joined under ${manager ?? `team ${runId}'s leader`} as ${r.root_agent_id}, leading your own team ${r.run_id}. Your lead assigns work; it arrives as team messages. You can recruit your own members with team_create_member.`;
 					}
 					const agentId = a.mode === "agent" ? await this.api.resolveAgent(String(a.agent ?? ""), runId, { token: op }) : undefined;
-					const r = await this.api.attach(runId, { agent_id: agentId, harness: HARNESS }, { token: op, idempotencyKey: key });
+					// The agent may lead a team linked under run_id; attach to its own team.
+					const home = agentId ? await this.api.tree(runId, { token: op }, false, true).then((t) => {
+						const find = (n: { agent_id: string; run_id?: string; children: any[] }): string | undefined => n.agent_id === agentId ? (n.run_id ?? runId) : n.children.map(find).find(Boolean);
+						return find(t.root as never) ?? runId;
+					}).catch(() => runId) : runId;
+					const r = await this.api.attach(home, { agent_id: agentId, harness: HARNESS }, { token: op, idempotencyKey: key });
 					this.adopt(r, agentId ? "agent" : "root");
 					return `Attached to team ${runId} as ${r.agent_id}${agentId ? "" : " (leader)"}. Any previous session for this agent is superseded.`;
 				},
@@ -237,11 +244,17 @@ export class ClaudeTeamServer {
 			},
 			{
 				name: "team_close_member",
-				description: "Actually terminate a member in your subtree (cancels its tasks, stops its process). Only when requested.",
+				description: "Actually terminate a member in your subtree (cancels its tasks, stops its process). For a team linked under you it dismisses that team instead: it detaches, or stops resumably if the human made its link terminatable. Only when requested.",
 				inputSchema: obj({ agent: S("Member to close"), reason: S("Why") }, ["agent"]),
 				run: async (a) => {
 					this.requireIdentity();
-					const r = await this.api.lifecycle(await this.agentRef(String(a.agent)), { action: "cancel", reason: String(a.reason ?? "manager requested member close"), children_policy: "cascade" }, { idempotencyKey: `claude-close:${randomUUID()}` });
+					const target = await this.agentRef(String(a.agent));
+					const reason = String(a.reason ?? "manager requested member close");
+					if ((await this.api.me()).children.some((c) => c.agent_id === target && c.run_id)) {
+						const d = await this.api.post<{ stopped: boolean; stopped_run_ids: string[] }>(`/agents/${encodeURIComponent(target)}/dismiss`, { reason }, { idempotencyKey: `claude-dismiss:${randomUUID()}` });
+						return d.stopped ? `Dismissed and stopped ${d.stopped_run_ids.join(", ")} (resumable).` : "Dismissed: the linked team detached and keeps running on its own.";
+					}
+					const r = await this.api.lifecycle(target, { action: "cancel", reason, children_policy: "cascade" }, { idempotencyKey: `claude-close:${randomUUID()}` });
 					return `closed: ${r.affected_agent_ids.join(", ") || "already closed"}`;
 				},
 			},

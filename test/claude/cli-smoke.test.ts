@@ -32,9 +32,9 @@ test("cli: stdio MCP server speaks JSON-RPC and joins a team; hook commands read
 		assert.equal((await rpc(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test" } })).result.capabilities.tools !== undefined, true);
 		child.stdin!.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 		const joined = await rpc(2, "tools/call", { name: "team_join", arguments: { mode: "member", run_id: team.run_id, model: "anthropic/claude-opus-5-5" } });
-		assert.match(joined.result.content[0].text, /Joined team/);
+		assert.match(joined.result.content[0].text, /Joined under/);
 		assert.equal((await rpc(3, "nope")).error.code, -32601);
-		const member = sql(h, "SELECT id FROM agents WHERE run_id = ? AND id <> ?", team.run_id, team.root)[0].id;
+		const member = sql(h, "SELECT child_id FROM reporting_edges WHERE parent_id = ? AND parent_run_id = ? AND valid_to IS NULL", team.root, team.run_id)[0].child_id;
 		assert.equal((await h.call("POST", "/messages", { token: team.token, body: { to: member, type: "question", payload: { text: "hello from pi" } } })).status, 200);
 		const prompt = JSON.parse((await hook("UserPromptSubmit", { session_id: "cli-s", hook_event_name: "UserPromptSubmit", prompt: "hi" })).stdout);
 		assert.match(prompt.hookSpecificOutput.additionalContext, /hello from pi/);

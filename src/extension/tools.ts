@@ -51,6 +51,11 @@ function json(label: string, v: unknown) {
 export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	/** Stable per tool call, so Pi-level retries of the same call are deduplicated by the controller. */
 	const agent = (ref: string) => rt.client.resolveAgent(ref, rt.identity?.run_id);
+	/** The run of a team linked directly under this session, when target is that team's linked agent. */
+	const linkedTeamOf = async (target: string): Promise<string | undefined> => {
+		const me = await rt.client.me().catch(() => undefined);
+		return me?.children.find((c) => c.agent_id === target)?.run_id;
+	};
 	const key = (tool: string, toolCallId: string) => `tool:${rt.identity?.agent_id ?? "?"}:${tool}:${toolCallId}`;
 
 	const reg = <P extends TSchema>(
@@ -77,10 +82,11 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_reporting",
 		"Team: reporting relationships",
-		"Root only: manage generic reporting relationships between existing team leaders. Any active leader can receive reports; no role designation or setup is required. status lists linked root IDs (history optionally includes closed links). connect makes your leader report to another leader by parent_run_id. disconnect ends your own reporting-parent link. transfer moves all leaders reporting to you to another leader, with reference history, while retaining your own parent link. dismiss ends all reporting links attached to you; every team and session keeps running. Use team_close_member or the human /team stop command to stop team members. wake is a legacy toggle for your root's on_message attention policy; prefer team_set_attention. Closing a session keeps links and queues reports. Use team_send_message with linked root IDs for initial reports, meaningful progress and follow-up questions. Avoid acknowledgement loops. Cross-team budget, approval and delegation authority remains scoped to each team's own hierarchy.",
+		"Root only: manage links between teams. Linking your team under another team's leader (parent_run_id) or any of its agents (parent_agent_id) makes that agent your lead: it can assign you tasks, message you and dismiss you (dismissal only detaches unless the human made the link terminatable). status lists links (history optionally includes closed links). connect links your team under the target. disconnect ends your own reporting-parent link. transfer moves all leaders reporting to you to another leader, with reference history, while retaining your own parent link. dismiss ends all reporting links attached to you; every team and session keeps running. Use team_close_member or the human /team stop command to stop team members. wake is a legacy toggle for your root's on_message attention policy; prefer team_set_attention. Closing a session keeps links and queues reports. Use team_send_message with linked root IDs for initial reports, meaningful progress and follow-up questions. Avoid acknowledgement loops. A lead directs only the agent linked directly under it; recruitment, approvals and budgets stay with each team. Use team_close_member to dismiss a team linked under you.",
 		Type.Object({
 			action: StringEnum(["status", "connect", "disconnect", "dismiss", "transfer", "wake"] as const),
 			parent_run_id: Type.Optional(Type.String()),
+			parent_agent_id: Type.Optional(Type.String({ description: "connect: link under this agent of the other team instead of its leader" })),
 			wake_on_message: Type.Optional(Type.Boolean()),
 			reason: Type.Optional(Type.String()),
 			history: Type.Optional(Type.Boolean()),
@@ -345,10 +351,15 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_close_member", "Team: close member",
-		"Actually terminate a member in your subtree when requested. Cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. agent_id accepts an exact member name, full ID, or unique whole ID words; ambiguous short references require more words or a full ID. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
+		"Actually terminate a member in your subtree when requested. For a team linked under you, this dismisses it instead: it detaches, or stops resumably if its link is terminatable. For your own members it cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. agent_id accepts an exact member name, full ID, or unique whole ID words; ambiguous short references require more words or a full ID. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
 		Type.Object({ agent_id: Type.String(), reason: Type.Optional(Type.String()) }),
 		async (p, id) => {
 			const target = await agent(p.agent_id);
+			// A team linked under you is dismissed, not cancelled: it detaches, or stops if its link is terminatable.
+			if (await linkedTeamOf(target)) {
+				const r = await rt.client.post<{ stopped: boolean; stopped_run_ids: string[]; severed_below: string[] }>(`/agents/${encodeURIComponent(target)}/dismiss`, { reason: p.reason ?? "lead dismissed this team" }, { idempotencyKey: key("team_close_member", id) });
+				return json(r.stopped ? "Linked team dismissed and stopped (resumable)" : "Linked team dismissed: detached; it keeps running on its own", r);
+			}
 			const result = await rt.client.lifecycle(target, { action: "cancel", reason: p.reason ?? "manager requested member close", children_policy: "cascade" }, { idempotencyKey: key("team_close_member", id) });
 			const ids = result.affected_agent_ids.length ? result.affected_agent_ids : [target];
 			const sessions = (await Promise.all(ids.map((agentId: string) => rt.client.inspect(agentId)))).flatMap((r) => r.sessions.slice(-1)).filter((s) => s.pid);

@@ -96,9 +96,14 @@ export function closeReportingForRun(db: DB, runId: string, actor: string, reaso
 	run(db, "UPDATE team_reporting_settings SET wake_on_message = 0 WHERE run_id = ?", runId);
 }
 
-function connect(db: DB, childRun: string, parentRun: string, actor: string): void {
+function connect(db: DB, childRun: string, parentRun: string, actor: string, parentAgentId?: string, terminatable = false): void {
 	const child = liveRoot(db, childRun);
 	liveRoot(db, parentRun);
+	if (parentAgentId) {
+		const pa = getAgent(db, parentAgentId);
+		if (pa.run_id !== parentRun) fail("INVALID", "parent_agent_id is not in parent_run_id");
+		if (isTerminal(pa.status)) fail("CONFLICT", `agent ${parentAgentId} is ${pa.status}`);
+	}
 	let cursor: string | undefined = parentRun;
 	const seen = new Set<string>();
 	while (cursor) {
@@ -107,13 +112,16 @@ function connect(db: DB, childRun: string, parentRun: string, actor: string): vo
 		cursor = activeLink(db, cursor)?.parent_run_id;
 	}
 	const current = activeLink(db, childRun);
-	if (current?.parent_run_id === parentRun) return;
-	if (current) fail("CONFLICT", "team already reports to another leader; disconnect it first");
-	const parent = getRun(db, parentRun).root_agent_id as string;
+	const parent = parentAgentId ?? getRun(db, parentRun).root_agent_id as string;
+	if (current?.parent_agent_id === parent) {
+		if (terminatable && !current.terminatable) run(db, "UPDATE reporting_edges SET terminatable = 1 WHERE id = ?", current.id);
+		return;
+	}
+	if (current) fail("CONFLICT", "team is already linked under another agent; detach it first, then join again");
 	const link = { id: newId("report"), child_run_id: childRun, child_agent_id: child, parent_run_id: parentRun, parent_agent_id: parent, created_at: nowIso() };
 	// A join: dismissing the child only severs this link unless an operator marks it terminatable.
 	run(db, `INSERT INTO reporting_edges(id, run_id, parent_id, child_id, valid_from, reason, parent_run_id, origin, terminatable)
-		VALUES (?,?,?,?,?,?,?, 'joined', 0)`, link.id, childRun, parent, child, link.created_at, "reporting link", parentRun);
+		VALUES (?,?,?,?,?,?,?, 'joined', ?)`, link.id, childRun, parent, child, link.created_at, "reporting link", parentRun, terminatable ? 1 : 0);
 	const tasks = all(db, "SELECT id AS task_id, title, status FROM tasks WHERE run_id = ? AND status NOT IN ('DONE','FAILED','CANCELLED') ORDER BY created_at LIMIT 30", childRun);
 	const members = all(db, "SELECT id AS agent_id, role, status, observed_state FROM agents WHERE run_id = ? AND status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') ORDER BY created_at LIMIT 30", childRun);
 	const latest = all(db, "SELECT type, payload_json, created_at FROM events WHERE run_id = ? AND type IN ('task.progress','task.completed') ORDER BY seq DESC LIMIT 5", childRun);
@@ -137,7 +145,9 @@ export function changeReporting(ctx: Ctx, p: Principal, runId: string, body: unk
 	const db = ctx.db;
 	authorize(db, p, runId);
 	const b = obj(body);
-	onlyKeys(b, ["action", "parent_run_id", "wake_on_message", "reason"]);
+	onlyKeys(b, ["action", "parent_run_id", "parent_agent_id", "terminatable", "wake_on_message", "reason"]);
+	if (b.terminatable !== undefined && typeof b.terminatable !== "boolean") fail("INVALID", "terminatable must be boolean");
+	if (b.terminatable && p.kind !== "operator") fail("FORBIDDEN", "only the human operator may make a link terminatable");
 	const action = oneOf(b, "action", ["connect", "disconnect", "dismiss", "transfer", "wake"] as const);
 	const reason = str(b, "reason", { optional: true }) ?? action;
 	if (b.wake_on_message !== undefined && typeof b.wake_on_message !== "boolean") fail("INVALID", "wake_on_message must be boolean");
@@ -149,7 +159,12 @@ export function changeReporting(ctx: Ctx, p: Principal, runId: string, body: unk
 		// The toggle now writes the team attention default (see /team attention).
 		setRunAttention(db, runId, { on_message: b.wake_on_message ? "wake" : "next_turn" });
 		emit(db, { run_id: runId, actor_id: p.actor_id, type: `reporting.${action}`, payload: { wake_on_message: b.wake_on_message } });
-	} else if (action === "connect") connect(db, runId, str(b, "parent_run_id"), p.actor_id);
+	} else if (action === "connect") {
+		const parentAgent = str(b, "parent_agent_id", { optional: true });
+		const parentRun = parentAgent ? getAgent(db, parentAgent).run_id as string : str(b, "parent_run_id");
+		if (parentAgent && b.parent_run_id !== undefined && b.parent_run_id !== parentRun) fail("INVALID", "parent_agent_id is not in parent_run_id");
+		connect(db, runId, parentRun, p.actor_id, parentAgent, b.terminatable === true);
+	}
 	else if (action === "disconnect") {
 		const link = activeLink(db, runId);
 		if (link) closeLink(db, link, p.actor_id, reason);

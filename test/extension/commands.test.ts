@@ -8,7 +8,7 @@ import { TmuxWatch } from "../../src/watch/tmux.ts";
 import { registerTeamCommand } from "../../src/extension/commands.ts";
 import { TeamRuntime, __resetProcessStateForTests } from "../../src/extension/runtime.ts";
 import { statePaths } from "../../src/shared/paths.ts";
-import { harness, newRun } from "../controller/helpers.ts";
+import { harness, newRun, sql } from "../controller/helpers.ts";
 
 test("stop own run, stop another, repeat stop, and refresh completion without false fencing", async () => {
 	__resetProcessStateForTests();
@@ -488,4 +488,40 @@ test("operator lists and clears saved limits, and removes one member's ceiling b
 		await s.command.handler("admin status", s.ctx);
 		assert.ok(s.notes.at(-1)!.includes("No limits in force"));
 	} finally { s.rt.stop(); await hs.cleanup(); __resetProcessStateForTests(); }
+});
+
+test("/team join links a team under another leader or agent, /team dismiss detaches or stops it, /team link toggles terminatable", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const lead = commandSession(hs, "lead-session", ""), sub = commandSession(hs, "sub-session", "");
+	try {
+		await lead.rt.start(lead.ctx); await sub.rt.start(sub.ctx);
+		await lead.command.handler("init", lead.ctx);
+		await sub.command.handler("init", sub.ctx);
+		const leadRun = lead.rt.identity!.run_id, subRun = sub.rt.identity!.run_id, subRoot = sub.rt.identity!.agent_id;
+		const edge = () => sql(hs, "SELECT parent_id, terminatable FROM reporting_edges WHERE run_id = ? AND parent_run_id IS NOT NULL AND valid_to IS NULL", subRun)[0];
+
+		await sub.command.handler(`join ${leadRun}`, sub.ctx);
+		assert.deepEqual({ ...edge() }, { parent_id: lead.rt.identity!.agent_id, terminatable: 0 });
+		await lead.command.handler(`link ${subRoot} terminatable on`, lead.ctx);
+		assert.equal(edge().terminatable, 1);
+		await lead.command.handler(`link ${subRoot} terminatable off`, lead.ctx);
+		await lead.command.handler(`dismiss ${subRoot} wrapping up`, lead.ctx);
+		assert.equal(edge(), undefined);
+		assert.ok(lead.notes.some((n) => /detached; its team keeps running/.test(n)), lead.notes.join("\n"));
+
+		// Join under a specific agent of the lead's team, terminatable from the start.
+		const member = (await hs.call("POST", "/members", { token: (lead.rt.identity as any).token, body: { name: "Coordinator", responsibility: "Coordinate" } })).body.spawned_agent_ids[0];
+		await sub.command.handler(`join ${member} --terminatable`, sub.ctx);
+		assert.deepEqual({ ...edge() }, { parent_id: member, terminatable: 1 });
+		await sub.command.handler("join none", sub.ctx);
+		assert.equal(edge(), undefined);
+		await sub.command.handler(`report-to ${leadRun}`, sub.ctx);
+		assert.equal(edge().parent_id, lead.rt.identity!.agent_id, "report-to is an alias of join");
+
+		await lead.command.handler("admin member-default 7", lead.ctx);
+		assert.equal(JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id = ?", leadRun)[0].config_json).member_default_usd, 7);
+		await lead.command.handler(`dismiss ${subRoot} --stop`, lead.ctx);
+		assert.ok(lead.notes.some((n) => new RegExp(`stopped ${subRun}`).test(n)), lead.notes.join("\n"));
+	} finally { lead.rt.stop(); sub.rt.stop(); await hs.cleanup(); }
 });
