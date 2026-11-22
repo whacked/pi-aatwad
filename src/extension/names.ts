@@ -1,6 +1,7 @@
 // Tool names (no typebox import, so plain-node tests and commands can use it).
 export const TOOL_NAMES = [
 	"team_reporting",
+	"team_roster",
 	"team_send_message",
 	"team_delegate_task",
 	"team_request_expansion",

@@ -21,6 +21,9 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "join", args: "<run_id|agent_id|none> [--terminatable]", help: "link this team under another team's leader or agent: it can assign you work and dismiss you (only detaching, unless --terminatable); none detaches" },
 	{ name: "report-to", args: "<run_id|agent_id|none>", help: "alias for join" },
 	{ name: "dismiss", args: "<name|agent_id> [--stop|--keep] [reason]", help: "end a team linked under you: it detaches, or stops (resumably) when its link is terminatable; --stop/--keep override" },
+	{ name: "roster", args: "", help: "everyone ever linked under you: active, detached, dismissed or closed" },
+	{ name: "recall", args: "<name|agent_id>", help: "bring a former member back with its context (a dismissed team resumes and links again)" },
+	{ name: "rehire", args: "<name|agent_id>", help: "fill a former member's position with a new agent and a fresh context" },
 	{ name: "link", args: "<name|agent_id> terminatable on|off", help: "human operator: whether dismissing this linked team or joined member may stop it" },
 	{ name: "reporting", args: "[--all|dismiss|transfer [run_id]|wake on|off]", help: "inspect, dismiss or transfer reporting links (wake on|off = /team attention on-message)" },
 	{ name: "attention", args: "[team|name|agent_id] [on-message wake|next-turn] [batch 15s] [stall 3m|off] [tick 10m|off] [cap N] [reset]", help: "when idle leaders/members get automatic turns (message wake, stall alerts, check-ins)" },
@@ -192,6 +195,28 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			out(ctx, r.stopped
 				? `Dismissed ${rest[0]}: stopped ${r.stopped_run_ids.join(", ")} (resumable with /team resume)${r.severed_below.length ? `; detached joined teams below: ${r.severed_below.join(", ")}` : ""}.`
 				: `Dismissed ${rest[0]}: detached; its team keeps running on its own.`);
+		},
+
+		roster: async (_a, ctx) => {
+			await rt.requireIdentity();
+			type Entry = { agent_id: string; role: string; run_id?: string; origin: string; terminatable: boolean; active: boolean; status: string; team_state?: string; close_reason: string | null };
+			const r = await rt.client.get<{ entries: Entry[] }>(`/agents/${encodeURIComponent(rt.identity!.agent_id)}/roster`, { token: rt.managed ? undefined : await rt.commandToken() });
+			if (!r.entries.length) { out(ctx, "Roster: nobody has been linked under you yet."); return; }
+			out(ctx, ["Roster:", ...r.entries.map((e) => `  ${e.active ? "●" : "○"} ${e.role} [${e.agent_id}] ${e.origin}${e.terminatable ? ", terminatable" : ""}${e.run_id ? `, team ${e.run_id} (${e.team_state})` : `, ${e.status}`}${e.active ? "" : ` — ${e.close_reason ?? "closed"}`}`), "Bring one back: /team recall <name>; fill a position fresh: /team rehire <name>."].join("\n"));
+		},
+
+		recall: async (a, ctx) => {
+			await rt.requireIdentity();
+			if (a.length !== 1) throw new Error("usage: /team recall <name|agent_id>");
+			const r = await rt.client.post<{ same_identity: boolean; agent_id?: string; run_id?: string; resumed?: boolean; transcript_restored?: boolean }>("/roster/recall", { agent: a[0], lead_id: rt.identity!.agent_id }, { token: await rt.commandToken() });
+			out(ctx, r.same_identity ? `Recalled ${a[0]}: team ${r.run_id} is linked under you again${r.resumed ? " and resumed" : ""}.` : `Recalled ${a[0]} as ${r.agent_id}${r.transcript_restored ? ", continuing its previous transcript" : ""}.`);
+		},
+
+		rehire: async (a, ctx) => {
+			await rt.requireIdentity();
+			if (a.length !== 1) throw new Error("usage: /team rehire <name|agent_id>");
+			const r = await rt.client.post<{ agent_id: string }>("/roster/rehire", { agent: a[0], lead_id: rt.identity!.agent_id }, { token: await rt.commandToken() });
+			out(ctx, `Rehired ${a[0]}'s position as ${r.agent_id}, with a fresh context.`);
 		},
 
 		link: async (a, ctx) => {
@@ -544,7 +569,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	};
 
 	pi.registerCommand("team", {
-		description: "Recursive agent team: init, resume, join/report-to, dismiss, link, reporting, attention, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
+		description: "Recursive agent team: init, resume, join/report-to, dismiss, roster, recall, rehire, link, reporting, attention, tree, status, budget, model, inbox, proposals, events, inspect, stop, remove, watch, send (see /team help)",
 		getArgumentCompletions: async (prefix: string) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {

@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.30, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.31, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -120,6 +120,9 @@ Inside Pi:
 | `/team join <run_id\|agent_id\|none> [--terminatable]` | Link this team under another team's leader (run ID) or any of its agents (agent ID); `none` detaches. That agent becomes your lead: it can assign you tasks and dismiss you. `--terminatable` (operator) lets dismissal stop your team. It does not merge teams or take over that leader (that is `resume`). |
 | `/team report-to ...` | Alias for `join`. |
 | `/team dismiss <name\|agent_id> [--stop\|--keep] [reason]` | End a team linked under you: it detaches, or stops resumably when its link is terminatable. `--stop`/`--keep` override (operator). |
+| `/team roster` | Everyone ever linked under you: active, detached, dismissed or closed. |
+| `/team recall <name\|agent_id>` | Bring one back with its context: a dismissed team resumes (if your dismissal stopped it) and links under you again; a closed member returns in the same position, continuing its transcript. |
+| `/team rehire <name\|agent_id>` | Fill that position with a new agent and a fresh context. |
 | `/team link <name\|agent_id> terminatable on\|off` | Operator: whether dismissing that linked team (or joined member) may stop it. |
 | `/team reporting [--all\|dismiss\|transfer [run_id]\|wake on\|off]` | Inspect, dismiss or transfer reporting links. `wake on\|off` is shorthand for `/team attention on-message wake\|next-turn`. |
 | `/team attention [team\|agent] [on-message wake\|next-turn] [batch 15s] [stall 3m\|off] [tick 10m\|off] [cap N] [reset]` | When idle sessions get automatic turns. See [Automatic turns](#automatic-turns-attention). |

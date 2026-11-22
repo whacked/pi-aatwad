@@ -378,6 +378,18 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	);
 
 	reg(
+		"team_roster", "Team: roster",
+		"Everyone ever linked under you, with recall and rehire. list shows active, detached, dismissed and closed members and linked teams. recall brings a former one back with its context: a dismissed team resumes (if your dismissal stopped it) and links under you again with the same identity; a closed member of your team returns in the same position, continuing its transcript. rehire fills the position with a new agent and a fresh context. Use only when the user asks.",
+		Type.Object({ action: StringEnum(["list", "recall", "rehire"] as const), agent: Type.Optional(Type.String({ description: "recall/rehire: roster name or agent ID" })) }),
+		async (p, id) => {
+			const me = rt.identity!.agent_id;
+			if (p.action === "list") return json("Roster", await rt.client.get(`/agents/${encodeURIComponent(me)}/roster`));
+			if (!p.agent) throw new Error("agent is required for recall and rehire");
+			return json(p.action === "recall" ? "Recalled" : "Rehired", await rt.client.post(`/roster/${p.action}`, { agent: p.agent }, { idempotencyKey: key("team_roster", id) }));
+		},
+	);
+
+	reg(
 		"team_watch", "Team: member terminals",
 		"Root only: open, inspect, focus, close or disable the team's live Pi terminal session when the user requests it. Normal open shows only leader/member panes; debug explicitly adds one diagnostic control pane. Member panes appear automatically as members are recruited. Closing the view leaves workers running. Member panes run separate interactive Pi harnesses and accept direct keyboard input as well as team_send_message assignments. Existing headless workers are restarted on their saved transcripts when enabling this. Panes open beside this Pi in its own terminal; open/focus/debug fail with an explanation where the terminal cannot host them (tmux panes and Rex blocks are supported; relay any other reason to the user). focus switches the human's view to that member. Debug is tmux-only and requires Node on PATH. Use action off for detached workers (no multiplexer required); live interactive workers restart on saved transcripts, interrupting any current turn. Closing only hides the view.",
 		Type.Object({ action: StringEnum(["open", "status", "focus", "close", "debug", "off"] as const), agent_id: Type.Optional(Type.String({ description: "Member name, full agent ID, or unique ID words; required for focus" })) }),

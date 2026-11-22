@@ -418,3 +418,16 @@ Claude Code's `team_join` mode `member` (alias `join`) now creates the session's
 and links it under the target, instead of adding an in-team member; mode `agent` finds the
 agent's own team through the linked tree. Leaving notifies the lead across teams.
 `POST /runs/:id/join` remains for compatibility.
+
+## Unified links, phase 6: roster, recall, rehire (v0.1.31)
+
+`GET /agents/:id/roster` lists everyone ever linked under an agent (latest link per child):
+origin, terminatable, whether still active, agent status, the linked team's lifecycle state,
+the responsibility it was recruited for, and why the link ended. `POST /roster/recall`
+brings one back with its context. A former linked team keeps its identity: it is resumed
+when this lead's dismissal stopped it (a stop by anyone else needs the operator) and linked
+again with its previous terminatable setting. A closed in-team recruit cannot be revived
+in place, so recall recruits a new member with the same name and responsibility whose Pi
+session path is the old transcript. `POST /roster/rehire` recruits a new member in the same
+position with a fresh context. Pi: `/team roster`, `/team recall`, `/team rehire` and the
+`team_roster` tool; Claude Code: `team_roster`.

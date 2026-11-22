@@ -233,6 +233,17 @@ export class ClaudeTeamServer {
 				},
 			},
 			{
+				name: "team_roster",
+				description: "Everyone ever linked under you. action=list; recall brings a former member or dismissed team back with its context (same identity for a linked team); rehire fills its position with a fresh agent. Only when the human asks.",
+				inputSchema: obj({ action: S("list | recall | rehire", { enum: ["list", "recall", "rehire"] }), agent: S("recall/rehire: roster name or agent ID") }, ["action"]),
+				run: async (a) => {
+					const id = this.requireIdentity();
+					if (a.action === "list") return JSON.stringify(await this.api.get(`/agents/${encodeURIComponent(id.agent_id)}/roster`), null, 2);
+					if (!a.agent) throw new Error("agent is required for recall and rehire");
+					return JSON.stringify(await this.api.post(`/roster/${a.action === "recall" ? "recall" : "rehire"}`, { agent: String(a.agent) }, { idempotencyKey: `claude-roster:${randomUUID()}` }), null, 2);
+				},
+			},
+			{
 				name: "team_report_to",
 				description: "Leader only: make your team a sub-team reporting to another team's leader (run_id), or 'none' to disconnect. No merge or takeover; each team keeps its own authority.",
 				inputSchema: obj({ run_id: S("Receiving team's run ID, or none") }, ["run_id"]),

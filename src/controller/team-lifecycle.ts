@@ -107,6 +107,12 @@ export function suspendTeam(ctx: Ctx, scope: ReqScope, runId: string, actor: str
 
 export function resumeTeam(ctx: Ctx, p: Principal, scope: ReqScope, runId: string): TeamLifecycleResponse {
 	operator(p);
+	return resumeWithCascade(ctx, scope, runId, p.actor_id);
+}
+
+/** Resume a team and every team that stopped because it stopped. Callers authorize. */
+export function resumeWithCascade(ctx: Ctx, scope: ReqScope, runId: string, actor: string): TeamLifecycleResponse {
+	const p = { actor_id: actor };
 	const out = resumeOne(ctx, scope, runId, p.actor_id);
 	// Teams that stopped because this one stopped come back with it.
 	const queue = [runId], seen = new Set(queue);
