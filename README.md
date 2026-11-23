@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.39, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.40, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -715,6 +715,12 @@ rely on prompts and stops only. The `/team attention` settings apply to Claude C
 Limits: Claude Code does not report per-message cost to the controller, so spend limits do not
 count its own usage, though they still count the Pi members it recruits. Model switching
 (`team_set_model`) does not apply to Claude Code sessions.
+
+## bb (thread graph proof of concept)
+
+`integrations/bb-plugin-thread-graph` is a bb plugin (bb 0.47+) that draws a left-to-right graph
+of threads and their parent/child links above bb's thread list; parentless threads float below.
+It is the first step towards showing team members as bb child threads. See its README to install.
 
 ## Develop
 
