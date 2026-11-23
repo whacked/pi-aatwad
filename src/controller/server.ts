@@ -22,11 +22,13 @@ import { joinTeam, leaveSession, secede } from "./external.ts";
 import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
 import { dismiss, setLinkPolicy } from "./links.ts";
 import { recall, rehire, roster } from "./roster.ts";
+import { hostStatus, reportHost, requestHostRefresh } from "./host.ts";
 
-type Auth = "none" | "any" | "operator" | "agent";
+import { openApi, type Auth } from "./openapi.ts";
 type Handler = (a: { p: Principal; scope: ReqScope; params: string[]; body: unknown; q: URLSearchParams }) => unknown;
 interface Route {
 	method: "GET" | "POST";
+	path: string;
 	re: RegExp;
 	auth: Auth;
 	h: Handler;
@@ -45,8 +47,9 @@ const ID = "([A-Za-z0-9_.:-]+)";
 const OPERATOR: Principal = { kind: "operator", actor_id: "operator" };
 
 function routes(ctx: Ctx, deps: ServerDeps): Route[] {
-	const R = (method: Route["method"], path: string, auth: Auth, h: Handler, store?: boolean): Route => ({ method, re: new RegExp(`^${path.replaceAll(":id", ID)}$`), auth, h, store });
-	return [
+	const R = (method: Route["method"], path: string, auth: Auth, h: Handler, store?: boolean): Route => ({ method, path, re: new RegExp(`^${path.replaceAll(":id", ID)}$`), auth, h, store });
+	const table: Route[] = [
+		R("GET", "/openapi.json", "none", () => openApi(table, deps.health().package_version ?? "unknown")),
 		R("GET", "/health", "none", () => deps.health()),
 		R("POST", "/runs", "operator", ({ p, body }) => createRun(ctx, p, body)),
 		R("GET", "/runs", "operator", ({ p }) => listRuns(ctx, p)),
@@ -93,6 +96,9 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/runs/:id/settings", "any", ({ p, params, body }) => teamSettings(ctx, p, params[0], body)),
 		R("GET", "/runs/:id/activity", "any", ({ p, params }) => teamActivity(ctx, p, params[0])),
 		R("GET", "/runs/:id/away", "any", ({ p, params }) => awaySummary(ctx, p, params[0])),
+		R("POST", "/sessions/host", "agent", ({ p, body }) => reportHost(ctx, p, body), false),
+		R("GET", "/agents/:id/host", "any", ({ p, params }) => hostStatus(ctx, p, params[0])),
+		R("POST", "/agents/:id/host/refresh", "any", ({ p, params }) => requestHostRefresh(ctx, p, params[0])),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
 		R("POST", "/budgets/:id", "any", ({ p, scope, params, body }) => updateBudget(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/model", "any", ({ p, params, body }) => updateModel(ctx, p, params[0], body)),
@@ -116,6 +122,7 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 			false,
 		),
 	];
+	return table;
 }
 
 function canonical(v: unknown): unknown {
@@ -166,7 +173,9 @@ async function handle(ctx: Ctx, deps: ServerDeps, table: Route[], req: IncomingM
 	let status = 200;
 	let actor: string | null = null;
 	try {
-		if (req.headers[HDR_PROTOCOL] !== String(PROTOCOL_VERSION)) {
+		// Discovery works for any client, before it knows the protocol version.
+		const discovery = method === "GET" && url.pathname === "/openapi.json";
+		if (!discovery && req.headers[HDR_PROTOCOL] !== String(PROTOCOL_VERSION)) {
 			throw new ApiErr("PROTOCOL_MISMATCH", `${HDR_PROTOCOL} must be ${PROTOCOL_VERSION}`, { server_protocol: PROTOCOL_VERSION });
 		}
 		let route: Route | undefined;

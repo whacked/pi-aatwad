@@ -2,7 +2,8 @@
 import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { headerText, memberDecor, planDecoration, type MemberDecor } from "../terminal/decor.ts";
-import { hostCapabilities, type DecorationMode } from "../terminal/host.ts";
+import { currentHost } from "../terminal/hosts.ts";
+import type { DecorationMode } from "../terminal/backends.ts";
 
 type UI = ExtensionContext["ui"];
 type Factory = NonNullable<ReturnType<UI["getEditorComponent"]>>;
@@ -104,7 +105,7 @@ export function renderMemberHeader(decor: MemberDecor, width: number): string[] 
 }
 
 /** Dispatch on what the host renders natively; draw a header only where the plan asks for one. */
-export function installMemberHeader(ui: UI, decor: () => MemberDecor | undefined, mode: DecorationMode = hostCapabilities().decoration): boolean {
+export function installMemberHeader(ui: UI, decor: () => MemberDecor | undefined, mode: DecorationMode = currentHost().decoration): boolean {
 	if (!planDecoration(mode).selfHeader) { ui.setWidget(MEMBER_HEADER_WIDGET, undefined); return false; }
 	ui.setWidget(MEMBER_HEADER_WIDGET, () => ({
 		render: (width: number) => { const d = decor(); return d ? renderMemberHeader(d, width) : []; },

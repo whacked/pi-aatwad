@@ -1,7 +1,7 @@
 // Member decoration: one description per member, rendered by whatever the host supports.
 // planDecoration() is the single dispatch point; when a host gains richer native display
 // (for example Rex components) only its capability and this switch change.
-import type { DecorationMode } from "./host.ts";
+import type { DecorationMode } from "./backends.ts";
 
 export interface MemberDecor {
 	agent_id: string;

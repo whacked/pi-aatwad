@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TmuxWatch, type Pane } from "../../src/watch/tmux.ts";
+import { TmuxWatch, type Pane } from "../../src/terminal/tmux.ts";
 import { planLayout } from "../../src/watch/layout.ts";
 import { TerminalAllocationError } from "../../src/watch/terminal-error.ts";
 

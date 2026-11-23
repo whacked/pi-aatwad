@@ -4,12 +4,16 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { LOADED_SOURCE, LOADED_VERSION } from "../../src/shared/version.ts";
-import { TmuxWatch } from "../../src/watch/tmux.ts";
+import { TmuxWatch } from "../../src/terminal/tmux.ts";
 import { registerTeamCommand } from "../../src/extension/commands.ts";
 import { TeamRuntime, __resetProcessStateForTests } from "../../src/extension/runtime.ts";
 import { statePaths } from "../../src/shared/paths.ts";
 import { harness, newRun, sql, waitFor } from "../controller/helpers.ts";
 
+// These tests drive tmux/Rex panes from outside them, so host detection trusts the markers.
+process.env.PI_TEAM_HOST_VERIFY = "markers";
+// tmux tests: a richer host (Rex or bb) around the test run would otherwise be chosen first.
+for (const k of ["REX_SERVER", "REX_BLOCK", "REX_SESSION", "BB_THREAD_ID"]) delete process.env[k];
 test("stop own run, stop another, repeat stop, and refresh completion without false fencing", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();
@@ -611,5 +615,30 @@ test("/team prune closes only idle members with no open tasks, after confirmatio
 		assert.notEqual(sql(hs, "SELECT status FROM agents WHERE id = ?", busy)[0].status, "CANCELLED", "a member with open work stays");
 		await s.command.handler("prune", s.ctx);
 		assert.ok(s.notes.some((n) => /Nothing to prune/.test(n)));
+	} finally { s.rt.stop(); await hs.cleanup(); }
+});
+
+test("the leader detects its host at startup, reports it, re-detects on request, and /team host explains it", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "host-session", "");
+	try {
+		await s.rt.start(s.ctx);
+		await s.command.handler("init", s.ctx);
+		const root = (s.rt.identity as any).agent_id;
+		const read = async () => (await hs.call("GET", `/agents/${root}/host`, { token: hs.op })).body;
+		await waitFor(async () => (await read()).host !== null, "startup detection reported", 10000);
+		const first = await read();
+		assert.equal(first.host.verified, true);
+		assert.deepEqual(first.host.candidates.map((c: any) => c.host), ["bb", "rex", "tmux", "native", "detached"]);
+		await hs.call("POST", `/agents/${root}/host/refresh`, { token: hs.op, body: {} });
+		await s.rt.heartbeat();
+		await waitFor(async () => { const now = await read(); return !now.refresh_requested && now.reported_at !== first.reported_at; }, "refresh picked up on the heartbeat", 10000);
+		await s.command.handler("host", s.ctx);
+		assert.match(s.notes.at(-1)!, /^Host: [\s\S]*bb: not detected[\s\S]*detached workers/);
+		await s.command.handler("host refresh", s.ctx);
+		assert.doesNotMatch(s.notes.at(-1)!, /not yet verified/);
+		await s.command.handler("host sideways", s.ctx);
+		assert.match(s.notes.at(-1)!, /usage: \/team host \[refresh\]/);
 	} finally { s.rt.stop(); await hs.cleanup(); }
 });

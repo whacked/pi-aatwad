@@ -3,7 +3,8 @@ import { leaveToLeader, openTerminals } from "./terminals.ts";
 import { terminalView } from "../terminal/view.ts";
 import type { NativeView } from "../terminal/native.ts";
 import { attachMember } from "./attach.ts";
-import { hostCapabilities } from "../terminal/host.ts";
+import { currentHost, describeHost } from "../terminal/hosts.ts";
+import { BACKENDS } from "../terminal/backends.ts";
 // `/team` command with subcommands. Human-facing; uses the operator token unless this is a managed worker.
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -42,6 +43,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "inspect", args: "[name|agent_id]", help: "tasks, sessions, history, budget of an agent" },
 	{ name: "list", args: "[all]", help: "teams for this project with what they did last; all includes other projects, empty, closed and old teams" },
 	{ name: "prune", args: "[--yes]", help: "close this team's idle members that have no open tasks (history kept; /team recall brings one back)" },
+	{ name: "host", args: "[refresh]", help: "show which host this Pi detected (bb > Rex > tmux > built-in > detached) and why; refresh detects again" },
 	{ name: "rename", args: "<name>", help: "set this team's name (default: the project folder)" },
 	{ name: "exit-policy", args: "[stop|keep]", help: "what quitting Pi does to this team: stop it resumably (default) or keep it running in the background" },
 	{ name: "admin", args: "[status|limits|clear-limits|clear-deadlines|unlimited|bounded] [run_id]", help: "human operator resource policy: list or remove limits" },
@@ -282,11 +284,12 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				if (!(await confirm(ctx, yes, `Close the team view for ${id}? Workers remain running.`))) return;
 				if (terminal.debug) await rt.client.post(`/runs/${encodeURIComponent(id)}/terminal`, { backend: terminal.backend, socket: terminal.socket, location: terminal.location, debug: false }, { token: await rt.commandToken() });
 				await view.close();
-				out(ctx, `Member terminals left running for ${id}; your current ${view.backend} session is unchanged`);
+				out(ctx, `Member terminals left running for ${id}; your current ${BACKENDS[view.backend].label} session is unchanged`);
 				return;
 			}
 			if (action === "status") {
-				out(ctx, await view.exists() ? `${view.backend === "native" ? "built-in session host" : `${view.backend} ${view.opts.location!.window}`}: ${(await view.panes()).length} member terminals` : `No member panes for ${id}. ${hostCapabilities().sessions ? "Use /team watch to open them beside this Pi." : hostCapabilities().unavailable}`);
+				const facts = BACKENDS[view.backend], host = currentHost();
+				out(ctx, await view.exists() ? `${facts.beside ? `${facts.label} ${view.opts.location!.window}` : facts.label}: ${(await view.panes()).length} member terminals` : `No member terminals for ${id}. ${host.sessions ? "Use /team watch to open them." : host.unavailable}`);
 				return;
 			}
 			// Validate access and run existence before creating terminal resources.
@@ -298,14 +301,15 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			// A linked team runs in its own session and terminal; there is nothing here to switch to.
 			const linkedRun = target ? (await rt.client.me().catch(() => undefined))?.children.find((c) => c.agent_id === target)?.run_id : undefined;
 			if (linkedRun) { out(ctx, `${a[1] ?? target} leads its own team ${linkedRun}, linked under you; it runs in its own session, so switch to that terminal or window. Message it with /team send.`); return; }
-			if (view.backend === "native") {
+			const facts = BACKENDS[view.backend];
+			if (!facts.beside) {
 				// No on-screen panes: switching means handing this terminal to the member.
 				if (target) { out(ctx, await attachMember(ctx, view as NativeView, target)); return; }
 				out(ctx, "Members run in the built-in session host and keep running when you leave. /team watch focus <name> switches this terminal to one; type /team back there to come back. From another terminal: pi-team-attach <name>.");
 				return;
 			}
 			await view.focus(target ?? "leader");
-			out(ctx, `Member ${view.backend === "rex" ? "blocks" : "panes"} open beside Pi in the current ${view.backend} window; interactive members appear automatically. /team watch focus <name> switches to one; /team back in a member returns here.`);
+			out(ctx, `Member ${facts.noun}s open beside Pi in the current ${facts.label} window; interactive members appear automatically. /team watch focus <name> switches to one; /team back in a member returns here.`);
 		},
 
 		leave: async (a, ctx, yes) => handlers.join(["none", ...a], ctx, yes),
@@ -378,6 +382,11 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (!(await confirm(ctx, yes, `Close ${idle.length} idle member(s) with no open tasks: ${idle.map((m) => m.role).join(", ")}? Their history stays; /team recall brings one back.`))) return;
 			for (const m of idle) await rt.client.lifecycle(m.agent_id, { action: "cancel", reason: "pruned: idle with no open tasks", children_policy: "cascade" }, { token });
 			out(ctx, `Closed ${idle.length} idle member(s): ${idle.map((m) => m.role).join(", ")}.`);
+		},
+
+		host: async (a, ctx) => {
+			if (a[0] !== undefined && a[0] !== "refresh") throw new Error("usage: /team host [refresh]");
+			out(ctx, describeHost(a[0] === "refresh" ? await rt.detectHost() : currentHost()));
 		},
 
 		rename: async (a, ctx) => {

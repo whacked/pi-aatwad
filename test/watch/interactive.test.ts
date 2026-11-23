@@ -9,7 +9,7 @@ import { PiExecutor } from "../../src/executor/pi.ts";
 import { registerTools } from "../../src/extension/tools.ts";
 import { TeamClient } from "../../src/shared/client.ts";
 import { statePaths } from "../../src/shared/paths.ts";
-import { TmuxWatch } from "../../src/watch/tmux.ts";
+import { TmuxWatch } from "../../src/terminal/tmux.ts";
 
 const available = spawnSync("tmux", ["-V"]).status === 0 && spawnSync("pi", ["--version"]).status === 0;
 const inPlace = true;

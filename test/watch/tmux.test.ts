@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { TmuxWatch } from "../../src/watch/tmux.ts";
+import { TmuxWatch } from "../../src/terminal/tmux.ts";
 import { parseLayout, encodeLayout } from "../../src/watch/layout.ts";
 import { clean, renderLog, recentOutput } from "../../src/watch/render.ts";
 import { harness, newRun, waitFor } from "../controller/helpers.ts";

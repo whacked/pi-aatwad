@@ -1,7 +1,7 @@
 import { probeIdentity, processStartTime } from "../executor/proc.ts";
 import { openTerminals, autoOpenTerminals } from "./terminals.ts";
 import { terminalView } from "../terminal/view.ts";
-import { hostCapabilities } from "../terminal/host.ts";
+import { currentHost, describeHost } from "../terminal/hosts.ts";
 import { availableModels, resolveAvailableModel } from "./models.ts";
 // Organization tools. Identical set for every agent; the controller authorizes each action.
 // No tool accepts the caller's own identity: actor = the session credential held by the extension.
@@ -78,6 +78,17 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			},
 		});
 	};
+
+	reg(
+		"team_host",
+		"Team: terminal host",
+		"Show which host this Pi runs in and where member terminals go: hosts are tried richest first (bb, Rex, tmux, then the built-in session host, then detached workers); each candidate lists whether its environment markers were found and why it was skipped. refresh=true detects again, e.g. after the user moved Pi into tmux or Rex.",
+		Type.Object({ refresh: Type.Optional(Type.Boolean()) }),
+		async (p) => {
+			const d = p.refresh ? await rt.detectHost() : currentHost();
+			return json(describeHost(d), d);
+		},
+	);
 
 	reg(
 		"team_reporting",
@@ -413,7 +424,8 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 				await view.focus(p.action === "focus" ? await agent(p.agent_id) : undefined);
 			}
 			const open = await view.exists();
-			return json("Member terminals", { open, host: hostCapabilities().kind, backend: view.backend, window: view.opts.location?.window, panes: open ? await view.panes() : [], ...(open || hostCapabilities().sessions ? {} : { unavailable: hostCapabilities().unavailable }) });
+			const host = currentHost();
+			return json("Member terminals", { open, host: host.host, backend: view.backend, window: view.opts.location?.window, panes: open ? await view.panes() : [], ...(open || host.sessions ? {} : { unavailable: host.unavailable }) });
 		},
 	);
 

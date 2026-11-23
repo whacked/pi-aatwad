@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.40, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.41, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -122,6 +122,7 @@ Inside Pi:
 | `/team leave` | Alias for `/team join none`. |
 | `/team exit-policy [stop\|keep]` | What quitting Pi does to this team: stop it resumably (default) or keep it running in the background. |
 | `/team rename <name>` | Set the team's name. |
+| `/team host [refresh]` | Show which host this Pi detected (bb, Rex, tmux, built-in session host, detached) and why; `refresh` detects again. |
 | `/team prune` | Close this team's idle members that have no open tasks. |
 | `/team join none` *(in a member)* | Leave the team: this session and its conversation continue as the leader of a new, empty team. The old member identity is retired there (its manager is told). `/team join <target>` in a member leaves and then joins, which is how a member moves to another team. |
 | `/team dismiss <name\|agent_id> [--stop\|--keep] [reason]` | End a team linked under you: it detaches, or stops resumably when its link is terminatable. `--stop`/`--keep` override (operator). |
@@ -504,15 +505,44 @@ available in its pane. The plugin does not add a separate compactor. See
 ### Where members run: tmux, Rex, or the built-in session host
 
 Team recruitment and reporting do not require a multiplexer. Members are
-interactive Pi sessions you can switch into, wherever the leader runs:
+interactive Pi sessions you can switch into, wherever the leader runs.
+
+**How the host is chosen.** Each Pi detects its host when it starts, trying the
+richest environment first and falling back down the chain:
+
+1. **bb**: detected from `BB_THREAD_ID`. Members as bb child threads are not
+   implemented yet, so bb always falls through to the next host.
+2. **Rex**: `REX_SERVER`/`REX_BLOCK`. Members open as blocks beside the leader's block.
+   tmux running inside Rex uses Rex.
+3. **tmux**: `TMUX`/`TMUX_PANE`. Members open as panes beside the leader's pane.
+4. **Built-in session host**: always available where prebuilt terminal support exists.
+5. **Detached workers**: the last resort.
+
+Environment markers are inherited by child processes, so they are only claims. A host is
+used only once the live system confirms this Pi is really inside it:
+- tmux must report this Pi's own terminal for the pane.
+- Rex's block must be an ancestor process of this Pi.
+- Either way, Pi must have a terminal at all. A Pi started by bb, which has none, never takes
+  over a tmux pane bb itself was launched from.
+
+Stale markers simply fall through to the next host.
+
+`/team host` shows which host was chosen and why each candidate was skipped.
+`/team host refresh` detects again, for example after moving Pi into tmux or Rex.
+The `team_host` tool does the same for agents, and the controller API exposes it as
+`GET /agents/:id/host` and `POST /agents/:id/host/refresh`. A refresh request is picked up on
+the session's next heartbeat. `PI_TEAM_HOST_VERIFY=markers` skips the process check, for
+wrappers that run Pi outside the terminal they name; tmux or Rex must still recognise the pane
+or block.
 
 | Environment | Default behavior |
 |---|---|
 | Plain terminal or SSH, without tmux | Members run in the built-in session host. `/team watch focus <name>` switches this terminal into a member; `/team back` there comes back. |
-| Herdr | Same built-in session host as a plain terminal. Inherited outer tmux markers are ignored when `HERDR_ENV=1`. |
-| Rex (Superlogical) | Detected from `REX_SERVER`/`REX_BLOCK`. Member creation automatically splits interactive member blocks beside the leader's block. tmux running inside Rex is treated as tmux. |
-| Valid tmux pane containing this Pi | Member creation automatically opens team panes beside Pi unless explicitly disabled. |
-| Missing tmux or stale inherited pane markers | Automatic pane setup cannot block recruitment; detached workers remain available. |
+| Rex (Superlogical) | Member creation automatically splits interactive member blocks beside the leader's block. |
+| tmux pane containing this Pi | Member creation automatically opens team panes beside Pi unless explicitly disabled. |
+| Missing tmux or stale inherited pane markers | The markers fail verification and the next host is used (normally the built-in session host). |
+| bb | The built-in session host, until bb child-thread members exist. |
+| Herdr | Not specifically supported. It behaves like a plain terminal (built-in session host). tmux markers inherited from an outer tmux fail verification, because Herdr gives Pi its own terminal. |
 | Platform without prebuilt terminal support (for example Alpine/musl, Windows) | Workers use detached, one-shot execution. |
 | Saved tmux session/pane becomes unavailable | Controller records a fallback notice and switches workers to detached execution, preserving identities, tasks and transcripts. |
 
@@ -536,10 +566,9 @@ an ordinary root-session exit or SSH disconnect; host shutdown or session cleanu
 policies can still stop processes. Resume with `/team resume` later.
 
 Member panes open beside the leader Pi in tmux and Rex. There is no detached tmux
-session mode, and the team never nests or attaches tmux inside Herdr or Rex. Teams saved by
+session mode, and the team never nests or attaches tmux inside another multiplexer. Teams saved by
 older versions with a detached tmux session fall back to detached workers; reopen
-them from a leader Pi inside tmux. Herdr documents the limitations of nested tmux in its
-[agent hosting guide](https://herdr.dev/tui/docs/agents/).
+them from a leader Pi inside tmux.
 
 ### Members in a plain terminal (built-in session host)
 
@@ -721,6 +750,20 @@ count its own usage, though they still count the Pi members it recruits. Model s
 `integrations/bb-plugin-thread-graph` is a bb plugin (bb 0.47+) that draws a left-to-right graph
 of threads and their parent/child links above bb's thread list; parentless threads float below.
 It is the first step towards showing team members as bb child threads. See its README to install.
+
+## Controller API
+
+The controller serves HTTP on its unix socket (`<state dir>/c.sock`). The full route list,
+with each route's auth and purpose, is generated from the route table:
+
+```sh
+# macOS; on Linux the socket is ~/.local/state/pi-recursive-team/c.sock
+curl -s --unix-socket "$HOME/Library/Application Support/pi-recursive-team/c.sock" http://controller/openapi.json
+```
+
+No token or protocol header is needed for this document. Every other request needs the
+`x-team-protocol` header and a bearer token. Request and response types are in
+`src/shared/protocol.ts`.
 
 ## Develop
 

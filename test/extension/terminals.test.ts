@@ -5,8 +5,12 @@ import { join } from "node:path";
 import { openTerminals } from "../../src/extension/terminals.ts";
 import { TeamClient } from "../../src/shared/client.ts";
 import { statePaths } from "../../src/shared/paths.ts";
-import { TmuxWatch } from "../../src/watch/tmux.ts";
+import { TmuxWatch } from "../../src/terminal/tmux.ts";
 import { harness, newRun } from "../controller/helpers.ts";
+// These tests drive tmux/Rex panes from outside them, so host detection trusts the markers.
+process.env.PI_TEAM_HOST_VERIFY = "markers";
+// tmux tests: a richer host (Rex or bb) around the test run would otherwise be chosen first.
+for (const k of ["REX_SERVER", "REX_BLOCK", "REX_SESSION", "BB_THREAD_ID"]) delete process.env[k];
 const haveTmux = spawnSync("tmux", ["-V"]).status === 0;
 
 for (const savedLocation of ["saved", "missing", "disabled", "moved"]) test(`pane ownership is released for a new team (location: ${savedLocation}); active teams remain protected`, { skip: !haveTmux }, async () => {
@@ -63,10 +67,10 @@ for (const savedLocation of ["saved", "missing", "disabled", "moved"]) test(`pan
 	}
 });
 
-test("recruitment works with missing tmux, stale markers, Herdr and an explicit headless preference", async () => {
+test("recruitment works with missing tmux, stale markers and an explicit headless preference", async () => {
  const { registerTools } = await import("../../src/extension/tools.ts");
  const hs = await harness();
- const previous = { PATH: process.env.PATH, TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE, HERDR_ENV: process.env.HERDR_ENV };
+ const previous = { PATH: process.env.PATH, TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
  try {
   const team = await newRun(hs, { models: [] });
   const client = new TeamClient({ paths: statePaths(hs.dir), token: () => team.token, noReconnect: true });
@@ -76,18 +80,16 @@ test("recruitment works with missing tmux, stale markers, Herdr and an explicit 
   registerTools({ registerTool: (t: any) => tools.set(t.name, t) } as any, rt as any);
   // No executable can be found on this PATH, including tmux. Stub workers need none.
   process.env.PATH = hs.dir;
-  delete process.env.TMUX; delete process.env.TMUX_PANE; delete process.env.HERDR_ENV;
+  delete process.env.TMUX; delete process.env.TMUX_PANE;
   const create = (name: string) => tools.get("team_create_member").execute(name, { name, responsibility: "Wait" }, undefined, undefined, {});
   assert.equal((await create("PlainSSH")).details.spawned_agent_ids.length, 1);
   process.env.TMUX = "/missing/server,1,0"; process.env.TMUX_PANE = "%987654";
   const stale = await create("StaleTmux");
   assert.equal(stale.details.spawned_agent_ids.length, 1);
-  assert.match(stale.details.terminal_warning, /tmux is not installed/);
-  process.env.HERDR_ENV = "1";
-  const herdr = await create("Herdr");
-  assert.equal(herdr.details.spawned_agent_ids.length, 1);
-  assert.equal(herdr.details.terminal_warning, undefined, "Herdr ignores inherited outer tmux markers");
-  delete process.env.HERDR_ENV;
+  // tmux cannot confirm the pane, so detection falls back to the next host down.
+  assert.equal(stale.details.terminal_warning, undefined);
+  const { currentHost } = await import("../../src/terminal/hosts.ts");
+  assert.match(currentHost().candidates.find((c) => c.host === "tmux")!.reason!, /tmux is not installed/);
   await client.post(`/runs/${team.run_id}/terminal`, { enabled: false });
   const disabled = await create("ExplicitHeadless");
   assert.equal(disabled.details.spawned_agent_ids.length, 1);

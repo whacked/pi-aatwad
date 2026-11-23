@@ -3,6 +3,7 @@ import { getRun, runConfig } from "./queries.ts";
 import { obj, onlyKeys, str } from "./validate.ts";
 import { fail } from "./errors.ts";
 import { run, emit } from "./db.ts";
+import { backendFacts, BACKENDS, isBackend } from "../terminal/backends.ts";
 
 export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown) {
 	const row = getRun(ctx.db, id);
@@ -23,22 +24,21 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 			return { enabled: false, auto_open: false };
 		}
 		if (b.debug !== undefined && typeof b.debug !== "boolean") fail("INVALID", "debug must be boolean");
-		if (b.backend !== undefined && b.backend !== "tmux" && b.backend !== "rex" && b.backend !== "native") fail("INVALID", "backend must be tmux, rex or native");
-		const backend = b.backend === "rex" || b.backend === "native" ? b.backend : undefined;
-		if (backend && b.debug) fail("INVALID", "the debug control pane is tmux-only");
+		if (b.backend !== undefined && !isBackend(b.backend)) fail("INVALID", `backend must be one of ${Object.keys(BACKENDS).join(", ")}`);
+		const facts = backendFacts(b.backend as Parameters<typeof backendFacts>[0]);
+		// The default backend is recorded by omission, as older configurations were.
+		const backend = facts.id === backendFacts(undefined).id ? undefined : facts.id;
+		if (b.debug && !facts.debugPane) fail("INVALID", `the debug control pane is only available on ${Object.values(BACKENDS).filter((x) => x.debugPane).map((x) => x.label).join(", ")}`);
 		const socket = str(b, "socket", { optional: true });
 		let location: { window: string; leader: string } | undefined;
 		if (b.location !== undefined) {
 			const l = obj(b.location); onlyKeys(l, ["window", "leader"]);
 			const window = str(l, "window"), leader = str(l, "leader");
-			const valid = backend === "rex" ? /^window:[0-9a-f-]+$/i.test(window) && /^block:[0-9a-f-]+$/i.test(leader)
-				: backend === "native" ? window === "native" && leader === "native"
-				: /^@\d+$/.test(window) && /^%\d+$/.test(leader);
-			if (!valid) fail("INVALID", `location must use ${backend === "rex" ? "Rex window/block IDs" : backend === "native" ? "the native marker" : "tmux window/pane IDs"}`);
+			if (!facts.validLocation({ window, leader })) fail("INVALID", `location must use ${facts.locationFormat}`);
 			location = { window, leader };
 		}
-		// The built-in host is found through the state directory; it has no on-screen location.
-		if (backend === "native") location = { window: "native", leader: "native" };
+		// Backends without an on-screen place (the built-in host) have one fixed location.
+		if (facts.fixedLocation) location = { ...facts.fixedLocation };
 		cfg.terminal = { ...(backend ? { backend } : {}), ...(socket ? { socket } : {}), ...(location ? { location } : {}), ...(b.debug ? { debug: true } : {}) };
 		delete cfg.terminal_disabled;
 		run(ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), id);

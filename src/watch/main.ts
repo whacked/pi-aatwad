@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { TeamClient } from "../shared/client.ts";
 import { statePaths } from "../shared/paths.ts";
 import { formatTree, formatBudget, formatEvents } from "../extension/format.ts";
-import { TmuxWatch, flatten } from "./tmux.ts";
+import { TmuxWatch, flatten } from "../terminal/tmux.ts";
 import { recentOutput, screen } from "./render.ts";
 
 const [stateDir, runId, agent, socket, location] = process.argv.slice(2);

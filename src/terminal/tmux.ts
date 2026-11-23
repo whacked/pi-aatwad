@@ -1,17 +1,17 @@
-import { planLayout, encodeLayout, parseLayout, teamRegion, arrangeRegion } from "./layout.ts";
-import { TerminalAllocationError } from "./terminal-error.ts";
+import { planLayout, encodeLayout, parseLayout, teamRegion, arrangeRegion } from "../watch/layout.ts";
+import { TerminalAllocationError } from "../watch/terminal-error.ts";
 // Pane-scoped team groups beside the leader Pi, inside the user's own tmux window.
 // There is deliberately no detached/dedicated tmux session mode.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join, basename } from "node:path";
 import { packageRoot } from "../shared/paths.ts";
-import { clean } from "./render.ts";
+import { clean } from "../watch/render.ts";
 import type { TreeNode, TerminalLocation } from "../shared/protocol.ts";
-import { memberDecor, nativeLabel, planDecoration } from "../terminal/decor.ts";
-import { hostCapabilities } from "../terminal/host.ts";
-import { teamOwner, type Pane, type PaneTag, type TerminalView, type WatchOptions } from "../terminal/view.ts";
-export type { Pane, WatchOptions } from "../terminal/view.ts";
+import { memberDecor, nativeLabel, planDecoration } from "./decor.ts";
+import { BACKENDS } from "./backends.ts";
+import { teamOwner, type Pane, type PaneTag, type TerminalView, type WatchOptions } from "./view.ts";
+export type { Pane, WatchOptions } from "./view.ts";
 const exec = promisify(execFile);
 
 export class TmuxWatch implements TerminalView {
@@ -28,8 +28,6 @@ export class TmuxWatch implements TerminalView {
 	async tmux(...args: string[]): Promise<string> {
 		try {
 			const env = { ...process.env };
-			// Herdr may itself be inside tmux. Never target that outer pane through inherited markers.
-			if (env.HERDR_ENV === "1") { delete env.TMUX; delete env.TMUX_PANE; }
 			const result = await exec("tmux", [...(this.opts.socket ? ["-S", this.opts.socket] : []), ...args], { env, timeout: 5000, maxBuffer: 1024 * 1024 });
 			return result.stdout.trim();
 		} catch (e) {
@@ -235,7 +233,7 @@ export class TmuxWatch implements TerminalView {
 
 	/** Apply whatever native decoration the dispatch plan assigns to tmux (currently the pane title). */
 	async decorate(pane: string, agent: string, role: string): Promise<void> {
-		const plan = planDecoration(hostCapabilities("tmux").decoration);
+		const plan = planDecoration(BACKENDS.tmux.decoration);
 		if (plan.native !== "label" && plan.native !== "border-title") return;
 		const label = nativeLabel(memberDecor(agent, clean(role)));
 		await this.tmux("set-option", "-p", "-t", pane, "@pi_team_name", label);

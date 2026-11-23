@@ -478,3 +478,63 @@ leader's previous session ended, shown by `/team resume`. The reconciler pauses 
 is not LIVE and whose members have all been idle for `leaderlessIdleMs` (15 minutes), unless its
 policy is `keep`. `/team prune` closes idle members without open tasks.
 
+
+## Pluggable hosts and backends; API discovery (v0.1.41)
+
+Supersedes the `terminalHost()`/`host.ts` detection of v0.1.23 and the Herdr special cases
+of v0.1.7.
+
+**Two registries.** `src/terminal/backends.ts` holds one `BackendFacts` per place member
+terminals can live (`tmux`, `rex`, `native`), with everything that differs between them:
+- the noun and label used in messages;
+- whether members sit beside the leader;
+- the decoration mode;
+- debug-pane support;
+- the location format and validator, and any fixed location;
+- the environment marker named in errors;
+- a platform support check and a lazy view factory.
+
+It is pure data plus lazy imports, so the controller (location validation) and the
+executor (preflight) use it too. Code outside `src/terminal/` no longer compares backend
+names.
+
+`src/terminal/hosts.ts` holds the ordered host providers: bb > Rex > tmux > built-in session
+host > detached. Each provider has:
+- `markers(env)`: detection from environment markers;
+- optional `unusable()`: known reasons, such as bb child threads not being implemented or an
+  unsupported platform;
+- optional `verify()`.
+
+`detectHost()` walks the chain, and the first host that is detected and usable wins. Each
+candidate is recorded with detected/usable/reason, so the choice can be explained. Adding a
+host or backend means adding a provider or a facts entry.
+
+**Verification.** Inherited markers are claims. tmux is accepted only when `#{pane_tty}` of
+`TMUX_PANE` is this process's own tty. Rex is accepted only when the block's process is an
+ancestor of this one. Both require that the process has a tty at all.
+
+This covers several cases with one rule:
+- stale markers;
+- a multiplexer nested inside a pane (Herdr inside tmux): the pane tty differs;
+- Pi in bb's RPC mode under a bb started from tmux: no tty.
+
+`PI_TEAM_HOST_VERIFY=markers` skips the process checks but still requires tmux or Rex to
+answer for the pane or block. Tests that drive panes from outside use it.
+
+**In-memory state.** `currentHost()` returns the last verified detection for the current
+markers, else a markers-only answer (`verified: false`). `refreshHost()` replaces it.
+`TeamRuntime.start` detects once at startup and sends the result to
+`POST /sessions/host`. That is a separate route, so older controllers merely 404 it.
+- `GET /agents/:id/host` returns the latest report.
+- `POST /agents/:id/host/refresh` (the agent itself, its leaders or lead, or the operator)
+  sets a flag that the heartbeat response returns as `host_refresh`; the session re-detects
+  and reports, which clears it.
+- Events: `agent.host_detected` (host changed) and `agent.host_refresh_requested`.
+- `/team host [refresh]` and the `team_host` tool show `describeHost()`.
+
+**Discovery.** `GET /openapi.json` (no token, no protocol header) is OpenAPI 3.1 generated
+from the route table. Each route lists its path parameters, the protocol and idempotency
+headers, and its auth as `x-auth`. Summaries live in `src/controller/openapi.ts`;
+`test/controller/host-api.test.ts` fails when a route has no summary.
+
+The tmux view moved from `src/watch/tmux.ts` to `src/terminal/tmux.ts`.

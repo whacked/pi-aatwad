@@ -1,6 +1,7 @@
 // Session-scoped team runtime: identity (enrollment / re-attach / fork detection),
 // heartbeat, inbox delivery, and token selection. No typebox import so plain
 // `node --test` can exercise it with a fake ExtensionAPI.
+import { refreshHost, type HostDetection } from "../terminal/hosts.ts";
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -113,6 +114,8 @@ export class TeamRuntime {
 	lastInboxPending = 0;
 	fenced = false;
 	private timer: ReturnType<typeof setInterval> | undefined;
+	/** Latest host detection not yet accepted by the controller. */
+	private unreportedHost: HostDetection | undefined;
 	private delivering = false;
 	private stopped = false;
 	private attachQueue: Promise<void> = Promise.resolve();
@@ -292,6 +295,8 @@ export class TeamRuntime {
 	start(ctx: CtxLike): Promise<void> {
 		this.ctx = ctx;
 		this.stopped = false;
+		// Detect the host once at startup; /team host refresh or the controller can ask again.
+		void this.detectHost().catch(() => {});
 		this.ready = this.resolveIdentity().catch((e) => {
 			this.say(`team: could not restore organization identity: ${(e as Error).message}`, "warning");
 		});
@@ -643,6 +648,27 @@ export class TeamRuntime {
 		return this.operatorToken();
 	}
 
+	// ------------------------------------------------------------------ host detection
+	/** Re-run host detection, replace the in-memory host, and report it to the controller. */
+	async detectHost(): Promise<HostDetection> {
+		const detection = await refreshHost();
+		this.unreportedHost = detection;
+		void this.reportHost();
+		return detection;
+	}
+
+	private async reportHost(): Promise<void> {
+		const report = this.unreportedHost;
+		if (!report || !this.identity || this.stopped) return;
+		try {
+			await this.client.post("/sessions/host", report, { timeoutMs: 5_000 });
+			if (this.unreportedHost === report) this.unreportedHost = undefined;
+		} catch (e) {
+			// An older controller has no host route; the report is informational, so stop trying.
+			if (/404|NOT_FOUND|no route/i.test((e as Error).message)) this.unreportedHost = undefined;
+		}
+	}
+
 	// ------------------------------------------------------------------ heartbeat + inbox
 	private startHeartbeat(): void {
 		if (this.timer) clearInterval(this.timer);
@@ -765,6 +791,8 @@ export class TeamRuntime {
 				{ idempotencyKey: `hb:${this.identity.session_id}:${randomUUID()}`, timeoutMs: 5_000 },
 			);
 			if (this.identity !== identity) return;
+			if (r.host_refresh) void this.detectHost().catch(() => {});
+			else if (this.unreportedHost) void this.reportHost();
 			await this.flushUsage();
 			if (this.identity !== identity) return;
 			this.updateStatus();

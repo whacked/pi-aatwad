@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { PiExecutor } from "../../src/executor/pi.ts";
-import { TmuxWatch } from "../../src/watch/tmux.ts";
+import { TmuxWatch } from "../../src/terminal/tmux.ts";
 import { harness, newRun, waitFor } from "../controller/helpers.ts";
 import type { TerminalMember } from "../../src/executor/types.ts";
 

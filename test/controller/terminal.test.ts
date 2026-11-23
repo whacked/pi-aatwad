@@ -100,10 +100,10 @@ test("terminal options validate per backend: Rex IDs for Rex, tmux IDs for tmux,
 		assert.deepEqual(saved.location, rexLocation);
 		assert.match((await post({ backend: "rex", location: { window: "@1", leader: "%1" } })).body.error.message, /Rex window\/block/);
 		assert.match((await post({ location: rexLocation })).body.error.message, /tmux window\/pane/);
-		assert.match((await post({ backend: "rex", location: rexLocation, debug: true })).body.error.message, /tmux-only/);
-		assert.match((await post({ backend: "screen" })).body.error.message, /tmux, rex or native/);
+		assert.match((await post({ backend: "rex", location: rexLocation, debug: true })).body.error.message, /only available on tmux/);
+		assert.match((await post({ backend: "screen" })).body.error.message, /backend must be one of tmux, rex, native/);
 		assert.match((await post({ backend: "native", location: { window: "@1", leader: "%1" } })).body.error.message, /native marker/);
-		assert.match((await post({ backend: "native", debug: true })).body.error.message, /tmux-only/);
+		assert.match((await post({ backend: "native", debug: true })).body.error.message, /only available on tmux/);
 		assert.equal((await post({ backend: "native" })).status, 200);
 		assert.deepEqual((await hs.call("GET", `/runs/${run_id}/terminal`, { token: hs.op })).body.location, { window: "native", leader: "native" }, "native gets its fixed marker");
 		assert.match((await post({ enabled: false, backend: "rex" })).body.error.message, /cannot include terminal options/);

@@ -10,7 +10,7 @@ import { formatOrgContext } from "./format.ts";
 import { agentDisplayName, installAgentLabel, installMemberHeader } from "./agent-label.ts";
 import { memberDecor } from "../terminal/decor.ts";
 import { ENV_PTY_HANDLE } from "../terminal/native/protocol.ts";
-import { terminalHost } from "../shared/environment.ts";
+import { currentHost } from "../terminal/hosts.ts";
 
 export const CONTEXT_SECTION = "team_org_context";
 
@@ -69,7 +69,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 			});
 			// Member terminals get a decoration from the host's dispatch plan; the leader keeps its editor label.
 			// Members the human can switch into say how to get back.
-			const switchable = !!process.env[ENV_PTY_HANDLE] || ["tmux", "rex"].includes(terminalHost());
+			const switchable = !!process.env[ENV_PTY_HANDLE] || currentHost().beside;
 			installMemberHeader(ctx.ui, () => rt.identity && rt.managed ? { ...memberDecor(rt.identity.agent_id, agentDisplayName(rt.identity.role)), ...(switchable ? { hint: "/team back returns to the leader" } : {}) } : undefined);
 		}
 		// Managed one-shot worker: enroll before the first turn (Pi awaits session_start handlers).

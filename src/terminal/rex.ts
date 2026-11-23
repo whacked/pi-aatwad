@@ -9,7 +9,7 @@ import { findExecutable } from "../shared/environment.ts";
 import type { TerminalLocation, TreeNode } from "../shared/protocol.ts";
 import { TerminalAllocationError } from "../watch/terminal-error.ts";
 import { memberDecor, nativeLabel, planDecoration } from "./decor.ts";
-import { hostCapabilities } from "./host.ts";
+import { BACKENDS } from "./backends.ts";
 import { teamOwner, type Pane, type PaneTag, type TerminalView, type WatchOptions } from "./view.ts";
 const exec = promisify(execFile);
 
@@ -223,7 +223,7 @@ export class RexView implements TerminalView {
 
 	/** Apply the native decoration the dispatch plan assigns to Rex (currently the block label). */
 	async decorate(block: string, agent: string, role: string): Promise<void> {
-		const plan = planDecoration(hostCapabilities("rex").decoration);
+		const plan = planDecoration(BACKENDS.rex.decoration);
 		if (plan.native !== "label" && plan.native !== "border-title") return;
 		const label = nativeLabel(memberDecor(agent, role));
 		const info = await this.blockInfo(block);

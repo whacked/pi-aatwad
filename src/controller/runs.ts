@@ -1,3 +1,4 @@
+import { hostRefreshWanted } from "./host.ts";
 import { reportingStatus } from "./reporting.ts";
 // Runs, sessions (attach/enroll/heartbeat/usage) and read projections (tree, me, inspect, budgets, models, events).
 import { isAbsolute } from "node:path";
@@ -332,6 +333,7 @@ export function heartbeat(ctx: Ctx, p: Principal, body: unknown): HeartbeatRespo
 	const db = ctx.db;
 	const b = obj(body ?? {});
 	onlyKeys(b, ["busy", "pi_session_id", "pi_session_path", "last_entry_id"]);
+	const hostRefresh = hostRefreshWanted(ctx, a.actor_id);
 	const ts = nowIso();
 	const lease = isoPlus(ctx.t.leaseMs);
 	const before = getAgent(db, a.actor_id);
@@ -358,7 +360,7 @@ export function heartbeat(ctx: Ctx, p: Principal, body: unknown): HeartbeatRespo
 		reporting_wake: getRun(db, a.run_id).root_agent_id === a.actor_id && policy.on_message === "wake",
 		attention: { on_message: policy.on_message },
 		...(wake ? { wake } : {}),
-		lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state, ...(change ? { model_change: change } : {}),
+		lease_until: lease, inbox_pending: inboxPending(db, a.actor_id), desired_state: before.desired_state, ...(change ? { model_change: change } : {}), ...(hostRefresh ? { host_refresh: true } : {}),
 	};
 }
 

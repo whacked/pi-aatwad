@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launchTerminal } from "../../src/executor/terminal.ts";
 import type { LaunchSpec } from "../../src/executor/types.ts";
-import { TmuxWatch } from "../../src/watch/tmux.ts";
+import { TmuxWatch } from "../../src/terminal/tmux.ts";
 import { TerminalAllocationError } from "../../src/watch/terminal-error.ts";
 
 for (const failure of ["lost split reply", "post-launch tagging", "identity query"]) {

@@ -51,7 +51,7 @@ test("whole-team stop uses operator endpoint, retains resumable identity, and re
 		assert.equal(f.entries.at(-1).data.ended, undefined);
 		assert.match(f.rt.notice!, /resume one/);
 		assert.ok(f.notes.some((n) => n.includes("CLEANING") && n.includes("operation op")));
-		const posts = f.server.requests.filter((r) => r.method === "POST");
+		const posts = f.server.requests.filter((r) => r.method === "POST" && r.path !== "/sessions/host"); // host reports are incidental
 		assert.deepEqual(posts.map((r) => r.path), ["/runs/one/stop"]);
 		assert.deepEqual(posts[0].body, {});
 		assert.equal(posts[0].headers.authorization, "Bearer operator");
@@ -68,7 +68,7 @@ test("same attached leader resumes server-side before fresh attach with saved tr
 		(f.runs[0] as any).stopped = true; // stopped from another operator session
 		await f.command.handler("resume one", f.ctx);
 		assert.equal(f.rt.identity?.token, "fresh-token");
-		const posts = f.server.requests.filter((r) => r.method === "POST");
+		const posts = f.server.requests.filter((r) => r.method === "POST" && r.path !== "/sessions/host"); // host reports are incidental
 		assert.deepEqual(posts.map((r) => r.path), ["/runs/one/resume", "/runs/one/attach"]);
 		assert.deepEqual(posts[0].body, {});
 		assert.equal(posts[1].body.pi_session_path, "/saved/transcript.jsonl");

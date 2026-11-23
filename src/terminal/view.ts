@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { TerminalBackend, TerminalLocation, TerminalOptions, TreeNode } from "../shared/protocol.ts";
+import { backendFacts } from "./backends.ts";
 
 export interface WatchOptions { stateDir: string; runId: string; socket?: string; node?: string; location?: TerminalLocation; debug?: boolean }
 /** One member terminal. `id` is the backend handle: a tmux pane ID or a Rex block ID. */
@@ -47,12 +48,10 @@ export function teamOwner(stateDir: string, runId: string): string {
 
 /** Saved options select the backend; older saved configurations are tmux. */
 export async function terminalView(opts: WatchOptions & { backend?: TerminalBackend }): Promise<TerminalView> {
-	const { backend = "tmux", ...rest } = opts;
-	if (backend === "rex") return new (await import("./rex.ts")).RexView(rest);
-	if (backend === "native") return new (await import("./native.ts")).NativeView(rest);
-	return new (await import("../watch/tmux.ts")).TmuxWatch(rest);
+	const { backend, ...rest } = opts;
+	return backendFacts(backend).view(rest);
 }
 
 export function savedOptions(view: TerminalView, socket: string): TerminalOptions {
-	return { ...(view.backend === "tmux" ? {} : { backend: view.backend }), socket, location: view.opts.location, ...(view.opts.debug ? { debug: true } : {}) };
+	return { ...(backendFacts(undefined).id === view.backend ? {} : { backend: view.backend }), socket, location: view.opts.location, ...(view.opts.debug ? { debug: true } : {}) };
 }

@@ -451,6 +451,29 @@ export interface EnrollResponse {
 }
 
 /** POST /sessions/heartbeat (agent). Renews lease. Returns pending-work hints. */
+/** What a session's host detection found (see src/terminal/hosts.ts HostDetection). */
+export interface HostReport {
+	host: string;
+	label: string;
+	backend?: string;
+	leader?: string;
+	sessions: boolean;
+	beside: boolean;
+	verified: boolean;
+	candidates: { host: string; label: string; detected: boolean; usable?: boolean; reason?: string }[];
+	detected_at: string;
+	unavailable?: string;
+}
+/** POST /sessions/host (agent) sends a HostReport after detection runs (startup or refresh).
+ * GET /agents/:id/host reads the latest; POST /agents/:id/host/refresh asks the session to detect again. */
+export interface HostStatusResponse {
+	agent_id: string;
+	/** Latest report from the agent's session; null before its first report. */
+	host: HostReport | null;
+	reported_at: string | null;
+	/** A refresh was requested and the session has not reported since. */
+	refresh_requested: boolean;
+}
 export interface HeartbeatRequest {
 	busy?: boolean;
 	pi_session_id?: string;
@@ -466,6 +489,8 @@ export interface HeartbeatResponse {
 	/** Present when the controller wants this (idle) agent to take a turn now. */
 	wake?: Wake;
 	model_change?: ModelChange;
+	/** Present when someone asked this session to detect its host again. */
+	host_refresh?: boolean;
 	lease_until: string;
 	inbox_pending: number;
 	desired_state: DesiredState;

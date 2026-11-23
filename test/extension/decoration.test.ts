@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { memberColor, memberDecor, nativeLabel, planDecoration } from "../../src/terminal/decor.ts";
 import { installMemberHeader, MEMBER_HEADER_WIDGET, renderMemberHeader, renderMemberStrip } from "../../src/extension/agent-label.ts";
-import type { DecorationMode } from "../../src/terminal/host.ts";
+import type { DecorationMode } from "../../src/terminal/backends.ts";
 
 test("decoration dispatch: native components replace the self-drawn header; weaker hosts keep it", () => {
 	assert.deepEqual(planDecoration("components"), { native: "components", selfHeader: false });

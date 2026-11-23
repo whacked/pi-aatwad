@@ -11,6 +11,8 @@ import { launchTerminal } from "../../src/executor/terminal.ts";
 import type { LaunchSpec } from "../../src/executor/types.ts";
 import { waitFor } from "../controller/helpers.ts";
 
+// These tests drive tmux/Rex panes from outside them, so host detection trusts the markers.
+process.env.PI_TEAM_HOST_VERIFY = "markers";
 const bin = rexExecutable();
 const server = process.env.REX_SERVER;
 const available = !!bin && !!server && (() => { try { execFileSync(bin, ["-S", server, "--autostart=false", "whoami", "--json"], { stdio: "ignore", timeout: 5000 }); return true; } catch { return false; } })();
