@@ -496,7 +496,7 @@ export class TeamRuntime {
 			if (!id.socket_path) throw new Error(MANAGED_NO_STATE_DIR);
 			if (this._paths?.socket !== id.socket_path) this.useManagedSocket(id.socket_path);
 		}
-		if (this.identity?.agent_id !== id.agent_id) this.localModel = undefined;
+		if (this.identity?.agent_id !== id.agent_id) { this.localModel = undefined; this.observedModel = undefined; }
 		this.identity = id;
 		this.fenced = false;
 		identityCache().set(id.pi_session_id, id);
@@ -691,12 +691,29 @@ export class TeamRuntime {
 	private localModel?: { provider: string; model: string };
 	private modelWarning?: string;
 	private modelSelectionVersion = 0;
+	/** provider/model last reported as what this session actually runs. */
+	private observedModel?: string;
 
 	async reportModel(provider: string, model: string): Promise<void> {
 		if (!this.identity || this.applyingModel) return;
 		this.modelSelectionVersion++;
 		this.localModel = { provider, model };
 		await this.flushLocalModel();
+	}
+
+	/**
+	 * Report the model this session really runs when it differs from the last report. The controller only
+	 * hears about explicit selections otherwise, so a model restored from a transcript or chosen by Pi at
+	 * startup would leave the recruitment-time model in the record (and in what leads see).
+	 */
+	private async reportObservedModel(identity: NonNullable<TeamRuntime["identity"]>): Promise<void> {
+		const m = this.ctx?.model;
+		if (!m || this.applyingModel || this.localModel || this.identity !== identity) return;
+		const key = `${m.provider}/${m.id}`;
+		if (key === this.observedModel) return;
+		try { await this.client.post("/sessions/model", { provider: m.provider, model: m.id, observed: true }); }
+		catch (e) { if (this.identity !== identity || !/INVALID|observed/i.test((e as Error).message)) return; } // older controller: give up quietly
+		if (this.identity === identity) this.observedModel = key;
 	}
 
 	private async flushLocalModel(): Promise<void> {
@@ -799,6 +816,8 @@ export class TeamRuntime {
 			void this.refreshMemberStrip(identity);
 			const hadLocalSelection = !!this.localModel;
 			await this.flushLocalModel();
+			if (this.identity !== identity) return;
+			if (!r.model_change) await this.reportObservedModel(identity);
 			if (this.identity !== identity) return;
 			if (r.model_change && !hadLocalSelection && selectionVersion === this.modelSelectionVersion) {
 				try {

@@ -515,3 +515,31 @@ test("attention: controller wakes start turns; wake policy leaves messages pendi
   } finally { rt.stop(); await m.close(); cleanup(); }
  }
 });
+
+test("a session reports the model it actually runs once per change, and not while a requested change is pending", async () => {
+	const { paths, cleanup } = makeState();
+	const pi = fakePi();
+	const ctx = fakeCtx(pi, "observed-session") as any;
+	ctx.isIdle = () => false;
+	ctx.model = { provider: "openai", id: "gpt-sol" };
+	const rt = new TeamRuntime(pi as any, { paths, env: {} });
+	rt.ctx = ctx;
+	rt.identity = { run_id: "run1", agent_id: "ag-member", session_id: "ses1", token: "t", managed: false, pi_session_id: "observed-session" };
+	const posts: { path: string; body: any }[] = [];
+	let hb: any = { lease_until: "x", inbox_pending: 0, desired_state: "RUNNING" };
+	rt.client.heartbeat = async () => hb;
+	rt.client.post = async (path: string, body: any) => { posts.push({ path, body }); return {} as any; };
+	const observed = () => posts.filter((p) => p.path === "/sessions/model" && p.body.observed).map((p) => p.body.model);
+	try {
+		await rt.heartbeat();
+		await rt.heartbeat();
+		assert.deepEqual(observed(), ["gpt-sol"], "reported once, not on every heartbeat");
+		ctx.model = { provider: "openai", id: "gpt-astra" };
+		hb = { ...hb, model_change: { request_id: "r1", provider: "openai", model: "gpt-mini" } };
+		await rt.heartbeat();
+		assert.deepEqual(observed(), ["gpt-sol"], "a pending requested change is applied through its own path");
+		hb = { lease_until: "x", inbox_pending: 0, desired_state: "RUNNING" };
+		await rt.heartbeat();
+		assert.deepEqual(observed(), ["gpt-sol", "gpt-astra"]);
+	} finally { rt.stop(); cleanup(); }
+});

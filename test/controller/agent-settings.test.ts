@@ -80,6 +80,15 @@ test("model requests survive restart; acknowledgments fence stale requests; loca
 		assert.equal(sql(hs, "SELECT COUNT(*) n FROM messages")[0].n, messagesBefore);
 		assert.equal(sql(hs, "SELECT model FROM agents WHERE id=?", id)[0].model, "user-chosen");
 		assert.equal((await hs.call("POST", "/sessions/heartbeat", { token: memberToken, body: {} })).body.model_change, undefined);
+		// What the session actually runs corrects the record (and the tree leads read) without being a selection.
+		assert.deepEqual((await selected({ provider: "openrouter", model: "user-chosen", observed: true })).body.unchanged, true);
+		const pendingReq = await hs.call("POST", `/agents/${id}/model`, { token, body: { model_id: "leader" } });
+		assert.equal((await selected({ provider: "openai", model: "restored-from-transcript", observed: true })).body.applied, true);
+		assert.equal(sql(hs, "SELECT model FROM agents WHERE id=?", id)[0].model, "restored-from-transcript");
+		assert.equal((await hs.call("POST", "/sessions/heartbeat", { token: memberToken, body: {} })).body.model_change.request_id, pendingReq.body.request_id, "an observation does not cancel a pending requested change");
+		assert.ok(sql(hs, "SELECT COUNT(*) n FROM events WHERE type = 'agent.model_observed' AND entity_id = ?", id)[0].n === 1);
+		await selected({ provider: pendingReq.body.provider, model: pendingReq.body.model, request_id: pendingReq.body.request_id });
+		await selected({ provider: "openrouter", model: "user-chosen" });
 		await hs.restart({ crash: true });
 		assert.equal(sql(hs, "SELECT model FROM agents WHERE id=?", id)[0].model, "user-chosen");
 	} finally { await hs.cleanup(); }

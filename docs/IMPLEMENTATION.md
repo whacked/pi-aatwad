@@ -599,3 +599,16 @@ The walk stops at the home directory, at the root, or at `MAX_NAME_FOLDERS` (3).
 The agent ID keyword is `projectName(cwd, 19)`, the run abbreviation is the initials of all name words,
 and the default team name is `projectName(cwd, 40)`. All of it is pure string work on the path, so
 `/team list` can compute names cheaply.
+
+## Observed models (v0.1.44)
+
+A member's model in the tree, roster and `/me` comes from its agent record. That record was set at
+recruitment and updated only by explicit selections (`model_select` events other than `restore`, and
+leader-requested changes). A model restored from a member's transcript, or resolved differently by Pi
+at startup, never reached the record, so leads could see a model the member was not running.
+
+On each heartbeat (without a pending requested change) the session now posts
+`POST /sessions/model {provider, model, observed: true}` when its live model differs from its last
+report. An observation updates the record and `actual_model` and emits `agent.model_observed` (with the
+previously recorded model). It never clears a pending `model_change`. An unchanged observation is a
+no-op. Older controllers reject the `observed` key; the session then stops reporting.

@@ -115,15 +115,22 @@ export function updateModel(ctx: Ctx, p: Principal, id: string, body: unknown) {
 /** Report Pi's actual selection, including direct /model changes; never send a leader inbox message. */
 export function selectedModel(ctx: Ctx, p: Principal, body: unknown) {
 	const principal = requireAgent(p), b = obj(body), db = ctx.db;
-	onlyKeys(b, ["provider", "model", "request_id"]);
+	onlyKeys(b, ["provider", "model", "request_id", "observed"]);
 	const provider = str(b, "provider"), model = str(b, "model"), requestId = str(b, "request_id", { optional: true });
+	if (b.observed !== undefined && typeof b.observed !== "boolean") fail("INVALID", "observed must be boolean");
 	const a = getAgent(db, principal.actor_id), meta = parseJson<Record<string, any>>(a.metadata_json, {});
-	if (requestId && meta.model_change?.request_id !== requestId) return { applied: false, superseded: true };
-	delete meta.model_change;
+	// observed: the model the session is actually running (startup, restored transcript, local fallback). It
+	// corrects the record without being a selection, so a pending model change stays pending.
+	if (b.observed === true) {
+		if (a.provider === provider && a.model === model && (!meta.actual_model || (meta.actual_model.provider === provider && meta.actual_model.model === model))) return { applied: false, unchanged: true, provider, model };
+	} else {
+		if (requestId && meta.model_change?.request_id !== requestId) return { applied: false, superseded: true };
+		delete meta.model_change;
+	}
 	meta.actual_model = { provider, model };
 	const entry = runConfig(db, a.run_id).models.find((m) => m.provider === provider && m.model === model);
 	run(db, "UPDATE agents SET provider=?, model=?, model_id=?, metadata_json=? WHERE id=?", provider, model, entry?.id ?? null, JSON.stringify(meta), a.id);
 	run(db, "UPDATE sessions SET provider=?, model=? WHERE id=?", provider, model, principal.session_id);
-	emit(db, { run_id: a.run_id, actor_id: a.id, type: "agent.model_selected", entity_id: a.id, payload: { provider, model } });
+	emit(db, { run_id: a.run_id, actor_id: a.id, type: b.observed === true ? "agent.model_observed" : "agent.model_selected", entity_id: a.id, payload: { provider, model, ...(b.observed === true ? { recorded: a.provider && a.model ? `${a.provider}/${a.model}` : null } : {}) } });
 	return { applied: true, provider, model };
 }
