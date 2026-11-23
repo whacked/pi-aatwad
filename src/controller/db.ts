@@ -5,6 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { projectAgentId, readableId } from "../shared/readable-id.ts";
+import { fail } from "./errors.ts";
 
 export type DB = DatabaseSync;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,9 +41,25 @@ export function nowIso(): string {
 export function isoPlus(ms: number, from = Date.now()): string {
 	return new Date(from + ms).toISOString();
 }
-export function newId(prefix: string, cwd = process.cwd()): string {
-	if (prefix === "agent") return projectAgentId(cwd);
-	return prefix === "run" ? readableId(prefix) : `${prefix}-${randomBytes(8).toString("hex")}`;
+/** `agent`: `<keyword>-<4 words>-<stamp>`; `run`: `run-<abbr>-<4 words>`; anything else: `<prefix>-<16 hex>`. */
+export function newId(prefix: string, cwd = process.cwd(), stamp?: string): string {
+	if (prefix === "agent") return projectAgentId(cwd, stamp);
+	return prefix === "run" ? readableId(prefix, cwd) : `${prefix}-${randomBytes(8).toString("hex")}`;
+}
+
+export const FRESH_ID_ATTEMPTS = 16;
+
+/**
+ * A readable ID not yet used in `table`. Readable IDs carry fewer random bits than hex ones (agents of one team
+ * share every non-random part), so check before inserting and draw again instead of failing on the primary key.
+ * Callers run inside the request transaction (single writer), so the check cannot race another insert.
+ */
+export function freshId(db: DB, table: "runs" | "agents", make: () => string, attempts = FRESH_ID_ATTEMPTS): string {
+	for (let i = 0; i < attempts; i++) {
+		const id = make();
+		if (!get(db, `SELECT 1 AS taken FROM ${table} WHERE id = ?`, id)) return id;
+	}
+	fail("CONFLICT", `could not draw an unused ${table === "runs" ? "run" : "agent"} ID in ${attempts} attempts`);
 }
 
 /** BEGIN IMMEDIATE transaction. Nested calls join the outer transaction. */

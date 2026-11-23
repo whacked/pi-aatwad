@@ -248,6 +248,8 @@ export interface RunConfig {
 	member_default_usd?: number;
 	/** Human-readable team name (default: the project folder). */
 	name?: string;
+	/** Controller-assigned at creation: the team's agent ID stamp `<date>.<n>` and the project it counts in. */
+	id_stamp?: { project: string; date: string; n: number };
 	/** What happens to this team when its leader's harness exits: stop it resumably (default) or keep it running. */
 	on_leader_exit?: "stop" | "keep";
 	/** Interactive Pi workers hosted beside the leader in tmux or Rex. */

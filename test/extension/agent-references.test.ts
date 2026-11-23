@@ -73,6 +73,23 @@ test("project IDs accept keyword, word and numeric tokens with unambiguous order
 	assert.equal(await client.resolveAgent("aatwad-river-maple-orbit-cloud-5831042", "run-test"), "aatwad-river-maple-orbit-cloud-5831042", "exact IDs take priority over aliases");
 });
 
+test("stamped project IDs (v0.1.42) accept the date and counter tokens; old IDs still resolve beside them", async () => {
+	const { client, root, node } = fixture();
+	const maple = "standard-cell-river-maple-orbit-cloud-20261123.2";
+	const egg = "standard-cell-river-egg-orbit-cloud-20261123.2";
+	const legacy = "standard-cell-silver-garden-lake-tree-5831042";
+	root.children = [node(maple, "Reviewer"), node(egg, "Writer"), node(legacy, "Old")];
+	for (const ref of ["maple", "maple orbit cloud 20261123", "maple orbit cloud 20261123.2", "maple-orbit-cloud-20261123.2", "standard cell river maple"]) {
+		assert.equal(await client.resolveAgent(ref, "run-test"), maple);
+	}
+	for (const ref of ["garden", "5831042"]) assert.equal(await client.resolveAgent(ref, "run-test"), legacy);
+	for (const ref of ["20261123", "20261123.2", "2", "river"]) await assert.rejects(client.resolveAgent(ref, "run-test"), /Ambiguous/, "teammates share the stamp");
+	for (const ref of ["2026", "1123", "20261123.1", "maple."]) await assert.rejects(client.resolveAgent(ref, "run-test"), /No agent/);
+	assert.equal(await client.resolveAgent(maple), maple, "full stamped IDs route without a team");
+	assert.equal(matchesAgentWords(maple, "20261123.2"), true);
+	assert.equal(matchesAgentWords(legacy, "5831042"), true);
+});
+
 test("full IDs remain routable if the local tree is unavailable", async () => {
 	const { client } = fixture();
 	client.tree = async () => { throw new Error("unavailable"); };

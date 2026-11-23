@@ -538,3 +538,47 @@ headers, and its auth as `x-auth`. Summaries live in `src/controller/openapi.ts`
 `test/controller/host-api.test.ts` fails when a route has no summary.
 
 The tmux view moved from `src/watch/tmux.ts` to `src/terminal/tmux.ts`.
+
+## Readable IDs with project abbreviation and day counter (v0.1.42)
+
+**Agent IDs** are `<keyword>-<4 words>-<yyyyMMdd>.<n>`, e.g.
+`standard-cell-river-maple-orbit-cloud-20261123.2`. The trailing `<yyyyMMdd>.<n>` is the
+team's stamp, assigned once in `createRun` (`nextIdStamp` in `src/controller/runs.ts`) and
+stored in the run config as `id_stamp: { project, date, n }`. `n` is 1 + the highest `n`
+already stored for the same project and local date, counting removed teams too, so a
+number is never reused that day. Member creation (`governance.ts`) reads the stored stamp
+instead of re-deriving it, so all agents of a team share it even after midnight.
+
+**Project** is `projectRoot(root cwd)`: the git top-level, else the CWD. This is the same
+function the `/team list` scoping uses (now in `src/shared/readable-id.ts`, re-exported
+from `commands.ts`). The list's containment test (`sameProject`) is not an equivalence,
+so it cannot key a counter; inside a git repo both agree. Outside git, a team started in a
+subdirectory counts separately from its parent directory.
+
+**Date format** is the single constant `ID_DATE_FORMAT` (`yyyyMMdd`, local time). The
+user's request said `yyyyMM`, but a per-day counter needs the day. The reference
+matcher accepts any `<4+ digits>.<n>` stamp, so changing the format needs no other edit.
+
+**Run IDs** are `run-<abbr>-<4 words>`, e.g. `run-scg-borrow-vault-visit-carpet`. `<abbr>`
+is the first character of each basename token, using the same tokens as the keyword and
+skipping generic words. It is capped at 6 characters, with `p` when empty. Run IDs
+previously had 6 words (66 bits). They now have 4 (44 bits): with 10,000 runs on one
+controller, the collision chance is about 3 × 10⁻⁶.
+
+**Collisions.** Agents of one team share keyword and stamp, so the 4 words (44 bits) are
+the only random part. `freshId(db, table, make)` in `db.ts` checks the table before the
+insert and draws again, at most 16 times, then fails with CONFLICT. It runs inside the
+request transaction, so the check cannot race. Tests force collisions through
+`idRandom.int`, the replaceable random source in `readable-id.ts`.
+
+**Compatibility.** There is no migration. Old IDs (`agent-<hex>`, `agent-<6 words>`,
+`<keyword>-<4 words>-<7 digits>`, `run-<6 words>`) stay valid, and `isFullAgentId` and
+`matchesAgentWords` accept both project-ID forms. Teams without `id_stamp` (created
+before v0.1.42) recruit members with the legacy 7-digit suffix, so a team stays uniform,
+and they do not count toward today's numbering. In stamped IDs the date and counter are
+separate reference tokens, so `20261123`, `2` and `20261123.2` all match. These references
+are usually ambiguous within a team, because teammates share the stamp.
+
+**Other derivers.** No other readable `<function>-<slug>` IDs exist. The remaining
+`newId` prefixes (`msg`, `task`, `evt`, `edge`, `teamop`, …) are `<prefix>-<16 hex>` and
+unchanged. Credentials, controller IDs (`ctl-<hex>`) and pty handles are opaque.

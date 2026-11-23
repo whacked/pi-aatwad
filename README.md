@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.41, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.42, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -294,7 +294,7 @@ pi (root) ──unix socket──▶ controller (background, one per user) ─�
 
 - **The controller is auto-started** by the first command that needs it. It is a detached process, so it keeps running when your Pi exits, and it exits by itself once idle (no live workers or pending spawns). Its state dir is `~/Library/Application Support/pi-recursive-team/` on macOS and `${XDG_STATE_HOME:-~/.local/state}/pi-recursive-team/` on Linux, with mode 0700. The socket is per-user, never under `/tmp`.
 - **Workers** run as interactive Pi harnesses in tmux when `/team watch` is enabled, or detached `pi --mode json -p --session <file>` processes otherwise. Each enrolls with a one-time credential passed through a 0600 file (never argv) and works in its own git worktree under `<workspace>/.team-worktrees/<run>/<agent>`. Interactive workers stay at their Pi prompt between assignments. Headless workers exit when their prompt settles and are relaunched on the **same Pi transcript and the same agent ID** for new work.
-- **Readable IDs.** New agent IDs use `<keyword>-<four random words>-<seven-digit number>`, for example `pi-aatwad-river-maple-orbit-cloud-5831042`. The keyword comes from the originating root session’s CWD basename (members share it, including when a workspace override is configured). The first-pass heuristic lowercases and ASCII-normalizes the basename, splits punctuation/whitespace into tokens, skips generic tokens (`a`, `an`, `the`, `project`, `repo`, `repository`) when other tokens remain, and takes the first one or two tokens. Only the keyword is truncated, to 19 characters with no trailing hyphen; empty results fall back to `project`. Full IDs are at most **63 characters**. Four words are selected independently with replacement from the bundled 2,048-word vocabulary, plus a uniform integer from 1,000,000 through 9,999,999, all using cryptographic randomness: **approximately 67.1 bits of entropy**, without counting the keyword (previous six-word IDs: 66 bits; old hex suffix: 64). Run IDs retain `run-<six random words>`. Existing IDs remain valid and are never renamed; internal record IDs and authentication credentials are unchanged. The vocabulary is the MIT-licensed [BIP-0039 English word list](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt), not a wallet/secret format.\n  - **Naming follow-up:** selecting the most important project words algorithmically will not work well for every directory name. This initial implementation uses only CWD; project metadata or backend-LLM keyword selection may be considered later.
+- **Readable IDs.** New agent IDs use `<keyword>-<four random words>-<yyyyMMdd>.<n>`, for example `standard-cell-river-maple-orbit-cloud-20261123.2`. The stamp `<yyyyMMdd>.<n>` belongs to the team: `<n>` is 1 for the first team created for the project that (local) day, 2 for the second, and so on; every member of the team carries its stamp. The project is the root session’s git top-level, else its CWD—the same scoping `/team list` uses. The keyword comes from the originating root session’s CWD basename (members share it, including when a workspace override is configured). The first-pass heuristic lowercases and ASCII-normalizes the basename, splits punctuation/whitespace into tokens, skips generic tokens (`a`, `an`, `the`, `project`, `repo`, `repository`) when other tokens remain, and takes the first one or two tokens. Only the keyword is truncated, to 19 characters with no trailing hyphen; empty results fall back to `project`. Run IDs use `run-<abbr>-<four random words>`, for example `run-scg-borrow-vault-visit-carpet`, where `<abbr>` is the first character of each of the same tokens (at most six; `p` when there are none): `standard-cell-generator` → `scg`. Words are selected independently with replacement from the bundled 2,048-word vocabulary using cryptographic randomness: **44 random bits** per ID (the keyword, abbreviation and stamp add none). Because teammates share everything but those words, the controller checks each new run and agent ID before inserting it and draws again on a collision (bounded; a CONFLICT error after 16 attempts). Existing IDs—`agent-<hex>`, `agent-<six words>`, `<keyword>-<four words>-<seven digits>` and `run-<six words>`—remain valid and are never renamed; members recruited into a team created before v0.1.42 keep the seven-digit form. Internal record IDs and authentication credentials are unchanged. The vocabulary is the MIT-licensed [BIP-0039 English word list](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt), not a wallet/secret format.\n  - **Naming follow-up:** selecting the most important project words algorithmically will not work well for every directory name. This initial implementation uses only CWD; project metadata or backend-LLM keyword selection may be considered later.
 - **Identity.** A logical agent ID is independent of the Pi session, process and model. If you close the root Pi, its reports keep working. Reopen Pi and use `/team resume` to choose a team. Pi's own `/resume` restores a previous conversation and automatically re-attaches its saved team identity when it is the same non-managed Pi session and the agent is still active. Running `/team resume <run>` afterward reports “Already attached” for that team; no second attach is needed. A forked or cloned Pi session is never silently adopted, and saved managed-worker identities require deliberate takeover.
 
 ### Configuration
@@ -453,12 +453,14 @@ insensitive and scoped to the attached team; full IDs remain usable without an
 attached team and across linked teams. Exact names take precedence; an active
 member takes precedence over old closed members with the same exact name.
 
-For `pi-aatwad-river-maple-orbit-cloud-5831042`, use `maple`, `agent maple`, or
-`river maple`. Keyword tokens and the complete numeric suffix (`5831042`) also
-work; legacy `agent-…` IDs retain word matching. Tokens can occur anywhere in
-the ID; multi-token references must be adjacent and ordered. Spaces and hyphens
+For `standard-cell-river-maple-orbit-cloud-20261123.2`, use `maple`, `agent maple`, or
+`river maple`. Keyword tokens and the stamp's date and counter tokens (`20261123`,
+`2`, or `20261123.2`) also work, though teammates share the stamp, so alone it is
+usually ambiguous. Older IDs match the same way, including their complete
+seven-digit suffix (`5831042`); legacy `agent-…` IDs retain word matching. Tokens can occur anywhere in
+the ID; multi-token references must be adjacent and ordered. Spaces, hyphens (and a stamp's dot)
 are equivalent, but partial tokens do not match (`map` is not `maple`). If another
-ID starts `pi-aatwad-river-egg-…`, `river` is
+ID starts `standard-cell-river-egg-…`, `river` is
 ambiguous, while `maple` and `egg` select their respective agents. Ambiguity lists
 full candidate IDs instead of guessing—even if one matching member is inactive.
 Use more words or a full ID to disambiguate. Quote references containing spaces

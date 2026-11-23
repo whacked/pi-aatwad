@@ -2,7 +2,8 @@ import { hostRefreshWanted } from "./host.ts";
 import { reportingStatus } from "./reporting.ts";
 // Runs, sessions (attach/enroll/heartbeat/usage) and read projections (tree, me, inspect, budgets, models, events).
 import { isAbsolute } from "node:path";
-import { type DB, type Row, all, get, run, newId, nowIso, isoPlus, emit, parseJson } from "./db.ts";
+import { type DB, type Row, all, get, run, freshId, newId, nowIso, isoPlus, emit, parseJson } from "./db.ts";
+import { idDate, projectRoot, teamStamp } from "../shared/readable-id.ts";
 import { fail } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type {
@@ -78,6 +79,18 @@ export function newSessionAttempt(
 	return { session_id: id, generation: gen };
 }
 
+/**
+ * The team's ID stamp: today's local date and 1 + the highest counter of teams already stamped today for the
+ * same project. Project = git top-level of the root CWD, else the CWD (projectRoot), as /team list scopes teams.
+ * Removed teams still count, so a number is never reused on the same day.
+ */
+export function nextIdStamp(db: DB, cwd: string, now = new Date()): NonNullable<RunConfig["id_stamp"]> {
+	const project = projectRoot(cwd);
+	const date = idDate(now);
+	const prev = get(db, "SELECT MAX(json_extract(config_json, '$.id_stamp.n')) AS n FROM runs WHERE json_extract(config_json, '$.id_stamp.date') = ? AND json_extract(config_json, '$.id_stamp.project') = ?", date, project)?.n;
+	return { project, date, n: Number(prev ?? 0) + 1 };
+}
+
 export function createRun(ctx: Ctx, p: Principal, body: unknown): CreateRunResponse {
 	requireOperator(p);
 	const db = ctx.db;
@@ -93,8 +106,9 @@ export function createRun(ctx: Ctx, p: Principal, body: unknown): CreateRunRespo
 	const model = str(root, "model", { optional: true });
 	if (b.config !== undefined && (typeof b.config !== "object" || b.config === null)) fail("INVALID", "config must be an object");
 	const cfg: RunConfig = buildRunConfig(b.config as Partial<RunConfig> | undefined, { role, cwd, provider, model });
-	const runId = newId("run");
-	const agentId = newId("agent", cwd);
+	cfg.id_stamp = nextIdStamp(db, cwd);
+	const runId = freshId(db, "runs", () => newId("run", cwd));
+	const agentId = freshId(db, "agents", () => newId("agent", cwd, teamStamp(cfg.id_stamp!.date, cfg.id_stamp!.n)));
 	const ts = nowIso();
 	run(db, "INSERT INTO runs(id, created_at, status, config_json, topology_version) VALUES (?,?, 'RUNNING', ?, 0)", runId, ts, JSON.stringify(cfg));
 	run(

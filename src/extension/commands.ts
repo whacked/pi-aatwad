@@ -14,7 +14,7 @@ import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } f
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
 import { formatAway, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, teamLabel, type AwaySummary } from "./format.ts";
-import { execFileSync } from "node:child_process";
+import { projectRoot } from "../shared/readable-id.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
@@ -97,11 +97,8 @@ function runLabel(run: RunSummary): string {
 	return `${teamLabel(run)} · ${run.run_id}`;
 }
 
-/** The project a session works in: its git top-level, else its working directory. */
-export function projectRoot(cwd: string): string {
-	try { return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 }).trim() || cwd; }
-	catch { return cwd; }
-}
+/** The project a session works in: its git top-level, else its working directory (shared with team ID stamps). */
+export { projectRoot };
 
 export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	const out = (ctx: ExtensionCommandContext, text: string, level: "info" | "warning" | "error" = "info") => {

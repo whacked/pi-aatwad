@@ -1,6 +1,7 @@
 // Expansion proposals and decisions (APPROVE / REJECT / AMEND / ESCALATE) with atomic reservation + durable spawn intents.
 import { join } from "node:path";
-import { type DB, type Row, all, get, run, newId, nowIso, emit, parseJson } from "./db.ts";
+import { type DB, type Row, all, get, run, freshId, newId, nowIso, emit, parseJson } from "./db.ts";
+import { teamStamp } from "../shared/readable-id.ts";
 import { ApiErr, CommittedError, fail, LIMIT_REMEDY } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type { CreateExpansionResponse, DecisionResponse, ExpansionProposal, ExpansionRole, ProposalListResponse, ProposalView, ProposalStatus } from "../shared/protocol.ts";
@@ -235,10 +236,13 @@ function approve(ctx: Ctx, p: Principal, prop: Row, request: ExpansionProposal, 
 	const ts = nowIso();
 	const reqEnv = getAllocation(db, requester).limits;
 	const spawned: string[] = [];
+	// Members carry their team's stamp; teams created before v0.1.42 have none and keep the legacy random suffix.
+	const idCwd = getAgent(db, runRow.root_agent_id).cwd ?? cfg.workspace_root;
+	const stamp = cfg.id_stamp ? teamStamp(cfg.id_stamp.date, cfg.id_stamp.n) : undefined;
 	roles.forEach((role, i) => {
 		const choice = choices[i];
 		for (let j = 0; j < role.count; j++) {
-			const agentId = newId("agent", getAgent(db, runRow.root_agent_id).cwd ?? cfg.workspace_root);
+			const agentId = freshId(db, "agents", () => newId("agent", idCwd, stamp));
 			const parentMeta = JSON.parse(getAgent(db, requester).metadata_json);
 			const runtime = role.max_runtime_seconds ?? request.max_runtime_seconds ?? parentMeta.max_runtime_seconds ?? null;
 			const meta = { budget_pool_id: role.max_cost_usd === undefined ? (parentMeta.budget_pool_id ?? requester) : agentId, own_budget_usd: role.budget, budget_inherited: role.max_cost_usd === undefined, max_runtime_seconds: runtime, proposal_id: prop.id, responsibility: role.responsibility, capabilities: role.capabilities, requested_model_id: role.preferred_model_id ?? null, model_id: choice.entry.id, model_selection_reason: choice.reason, model_candidates: choice.candidates, cost_estimated: choice.cost_estimated };
