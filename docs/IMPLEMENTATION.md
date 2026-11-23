@@ -630,3 +630,13 @@ stop. A client holding a session token now calls `ensureController` with `existi
 spawns only if the state dir still has its database, and passes `PI_TEAM_EXISTING_STATE=1`, so the
 controller itself re-checks before creating anything (`StateGoneError`, exit 0). Clients without a
 token (first start, operator commands) still create the state dir as before.
+
+## Whole messages (v0.1.47)
+
+`formatEnvelope` cut every message body to 1,500 characters (with `…`) since the first
+implementation. It renders messages wherever they reach a model: inbox delivery into Pi,
+`team_get_inbox`, and the Claude Code inbox tool and hook. The controller stored the full body, but a
+delivered message is acknowledged and cannot be fetched again, so agents received instructions and
+task assignments that simply stopped mid-sentence (reported by a sub-team leader: "Classify each as
+(a) not expressible, (…"). Bodies are now delivered whole. `MAX_MESSAGE_CHARS` (100,000) is only a
+safety ceiling, and a body over it says where it was cut and asks the sender for the rest.

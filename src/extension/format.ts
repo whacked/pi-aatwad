@@ -72,12 +72,20 @@ export function formatEvents(events: EventView[], tail = 20): string {
 	return ev.map((e) => `#${e.seq} ${e.created_at} ${e.type}${e.entity_id ? ` ${e.entity_id}` : ""}${e.actor_id ? ` by ${e.actor_id}` : ""}`).join("\n");
 }
 
-export function formatEnvelope(m: Envelope, maxPayload = 1_500): string {
+/**
+ * Safety ceiling only. Messages are acknowledged once delivered and cannot be fetched again, so a body
+ * must reach the agent whole: instructions and task specs routinely run to several thousand characters.
+ */
+export const MAX_MESSAGE_CHARS = 100_000;
+
+export function formatEnvelope(m: Envelope, maxPayload = MAX_MESSAGE_CHARS): string {
 	let payload: string;
 	const text = (m.payload as { text?: unknown })?.text;
 	if (typeof text === "string" && Object.keys(m.payload).length === 1) payload = text;
 	else payload = JSON.stringify(m.payload);
-	return `[${m.type}] from ${m.from} (message ${m.message_id}${m.correlation_id ? `, correlation ${m.correlation_id}` : ""})\n${clip(payload, maxPayload)}`;
+	const body = payload.length <= maxPayload ? payload
+		: `${payload.slice(0, maxPayload)}\n[message cut at ${maxPayload} of ${payload.length} characters; ask ${m.from} to send the rest in a file]`;
+	return `[${m.type}] from ${m.from} (message ${m.message_id}${m.correlation_id ? `, correlation ${m.correlation_id}` : ""})\n${body}`;
 }
 
 /** Bounded org-context section injected before each agent run. Fresh facts only. */

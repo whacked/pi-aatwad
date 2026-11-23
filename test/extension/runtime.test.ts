@@ -543,3 +543,23 @@ test("a session reports the model it actually runs once per change, and not whil
 		assert.deepEqual(observed(), ["gpt-sol", "gpt-astra"]);
 	} finally { rt.stop(); cleanup(); }
 });
+
+test("inbox delivery hands the model the whole message body", async () => {
+	__resetProcessStateForTests();
+	const { paths, cleanup } = makeState();
+	const m = await startMock(paths, { operatorToken: "op" });
+	const long = `${"Phase two: failure-mode split of the corpus. ".repeat(200)}LAST-WORDS`;
+	m.route("POST", "/runs/run1/attach", () => ({ body: { run_id: "run1", agent_id: "ag-r", session_id: "s", token: "rt" } }));
+	m.route("GET", "/me", () => ({ body: me({ agent_id: "ag-r", role: "root" }) }));
+	m.route("POST", "/sessions/heartbeat", () => ({ body: { lease_until: "x", inbox_pending: 1, desired_state: "RUNNING", reporting_wake: true } }));
+	m.route("GET", "/inbox", () => ({ body: { messages: [{ ...env1("long"), payload: { text: long } }] } }));
+	m.route("POST", /ack$/, () => ({ body: { acked: true } }));
+	const pi = fakePi();
+	pi.appendEntry(IDENTITY_ENTRY, { version: 1, run_id: "run1", agent_id: "ag-r", pi_session_id: "pis-long", managed: false });
+	const rt = new TeamRuntime(pi as any, { paths, env: {}, heartbeatMs: 60_000 });
+	try {
+		await rt.start(fakeCtx(pi, "pis-long"));
+		await waitFor(() => pi.sent.length === 1, 3_000, "inbox delivery");
+		assert.ok(pi.sent[0].message.content.includes(long), "nothing cut from a 9,000-character message");
+	} finally { rt.stop(); await m.close(); cleanup(); }
+});
