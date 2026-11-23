@@ -612,3 +612,11 @@ On each heartbeat (without a pending requested change) the session now posts
 report. An observation updates the record and `actual_model` and emits `agent.model_observed` (with the
 previously recorded model). It never clears a pending `model_change`. An unchanged observation is a
 no-op. Older controllers reject the `observed` key; the session then stops reporting.
+
+## Orphaned controllers (v0.1.45)
+
+A controller is reachable only through its state directory's socket, and the lock file is its claim
+on that directory. Deleting the directory (as every test does with its temp state dir) used to leave
+the controller running forever. Housekeeping (every 5 s, or a quarter of the idle timeout) now stops
+the controller, reason `orphaned`, when its lock file or socket is gone. A lock held by a rival
+controller is not checked here: the database lease already fences that case.

@@ -84,3 +84,16 @@ test("idle controller shuts itself down", { timeout: 30_000 }, async () => {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("controller stops when its state dir is deleted (no orphaned controllers)", { timeout: 30_000 }, async () => {
+	const dir = shortStateDir();
+	const { p, exit } = startProc(dir);
+	try {
+		await waitFor(async () => (await api(join(dir, "c.sock"), "GET", "/health").catch(() => null))?.body, "health", 15_000);
+		rmSync(dir, { recursive: true, force: true });
+		assert.equal(await exit, 0);
+	} finally {
+		if (p.exitCode === null) p.kill("SIGKILL");
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

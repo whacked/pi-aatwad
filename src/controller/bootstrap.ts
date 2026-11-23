@@ -361,6 +361,14 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 		() => {
 			if (closing) return;
 			try {
+				// Our lock file and socket are our claim on the state dir. When either disappears
+				// (state dir deleted, e.g. a finished test's temp dir), nobody can reach us any
+				// more: stop instead of running orphaned. (A rival lock is fencing, handled below.)
+				if (!existsSync(paths.lock) || !existsSync(paths.socket)) {
+					log("warn", "lock or socket removed; stopping");
+					void close({ reason: "orphaned" });
+					return;
+				}
 				// Renew our DB lease; if someone else holds it we are fenced → stop.
 				const n = run(db, "UPDATE controller_lease SET lease_until = ?, updated_at = ? WHERE singleton_key = 'local' AND controller_id = ?", isoPlus(CONTROLLER_LEASE_MS), nowIso(), controllerId);
 				if (n === 0) {

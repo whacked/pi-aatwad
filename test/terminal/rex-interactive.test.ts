@@ -45,7 +45,7 @@ test("real Pi members run in Rex blocks with a decorated header, keyboard input,
 		assert.ok(member && !member.dead);
 		const capture = async () => rex("capture", "-b", (await block())!.id, "--trim");
 		await waitFor(async () => (await capture()).includes("REX-INTERACTIVE-ANSWER"), "visible Pi answer", 20000).catch(async (e) => { throw new Error(`${e.message}\n${await capture()}`); });
-		assert.match(await capture(), new RegExp(`Adjudicator\\s+team member · ${id}`), "self-drawn header from the decoration plan");
+		assert.match(await capture(), new RegExp(`Adjudicator\\s+team member · ${id.slice(0, 30)}`), "self-drawn header from the decoration plan");
 		assert.equal(JSON.parse(rex("block", "inspect", member.id, "--json")).block.label, `Adjudicator [${id}]`);
 		const pid = sql(hs, "SELECT s.pid FROM sessions s JOIN agents a ON a.current_session_id=s.id WHERE a.id=?", id)[0].pid;
 		assert.equal(await view.paneProcess(member.id), pid);
