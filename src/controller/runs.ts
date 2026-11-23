@@ -3,7 +3,7 @@ import { reportingStatus } from "./reporting.ts";
 // Runs, sessions (attach/enroll/heartbeat/usage) and read projections (tree, me, inspect, budgets, models, events).
 import { isAbsolute } from "node:path";
 import { type DB, type Row, all, get, run, freshId, newId, nowIso, isoPlus, emit, parseJson } from "./db.ts";
-import { idDate, projectRoot, teamStamp } from "../shared/readable-id.ts";
+import { idDate, projectName, projectRoot, teamStamp } from "../shared/readable-id.ts";
 import { fail } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type {
@@ -166,7 +166,7 @@ function teamIdentity(db: DB, r: Row): Partial<RunSummary> {
 	const linked = Number(get(db, "SELECT COUNT(*) AS n FROM reporting_edges WHERE parent_run_id = ?", r.id)!.n);
 	const summary = pending ? `working on: ${pending}` : done ? `last done: ${String(done)}` : null;
 	return {
-		name: cfg.name ?? (cwd ? cwd.split("/").filter(Boolean).pop() : undefined) ?? r.id,
+		name: cfg.name ?? (cwd ? projectName(cwd, 40) : undefined) ?? r.id,
 		cwd, model, last_activity_at: last, open_tasks: open,
 		summary: summary ? (summary.length > 140 ? `${summary.slice(0, 139)}…` : summary) : null,
 		empty: Number(r.n) <= 1 && linked === 0,

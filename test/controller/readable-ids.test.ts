@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { FRESH_ID_ATTEMPTS, freshId, newId } from "../../src/controller/db.ts";
-import { ID_DATE_FORMAT, ID_WORDS, idDate, idRandom, projectAbbr, projectKeyword, teamStamp } from "../../src/shared/readable-id.ts";
+import { ID_DATE_FORMAT, ID_WORDS, idDate, idRandom, projectAbbr, projectKeyword, projectName, teamStamp } from "../../src/shared/readable-id.ts";
 import { harness, newRun, ownTask, recruit, sql } from "./helpers.ts";
 
 const vocabulary = new Set(ID_WORDS);
@@ -27,27 +27,41 @@ test("run IDs are run-<project abbr>-<four random words>; internal IDs stay opaq
 	for (const prefix of ["task", "evt", "ses", "rsv"]) assert.match(newId(prefix), new RegExp(`^${prefix}-[0-9a-f]{16}$`));
 });
 
-test("project abbreviations take each basename token's first character, capped, with a fallback", () => {
-	assert.equal(projectAbbr("/work/standard-cell-generator"), "scg");
-	assert.equal(projectAbbr("/work/pi-aatwad"), "pa");
-	assert.equal(projectAbbr("/work/The Project Useful_Thing_extra/"), "ute", "generic tokens are skipped like the keyword");
-	assert.equal(projectAbbr("/work/Café App"), "ca");
-	assert.equal(projectAbbr("/work/123-test"), "1t");
-	assert.equal(projectAbbr("/work/v2.0-beta"), "v0b");
-	assert.equal(projectAbbr("/work/a-b-c-d-e-f-g-h"), "bcdefg", "at most six characters (a is generic)");
-	assert.equal(projectAbbr("/work/project"), "p", "only generic tokens: keep them");
-	for (const cwd of ["/", "/work/!!!", "/work/中文"]) assert.equal(projectAbbr(cwd), "p");
-	assert.match(newId("run", "/"), /^run-p(?:-[a-z]+){4}$/);
+test("project names walk up from the working directory until they carry enough information", () => {
+	const H = "/home/me";
+	const name = (cwd: string, max = Infinity) => projectName(cwd, max, H);
+	assert.equal(name("/path/to/something/cool/src"), "something-cool-src", "src carries no information; cool alone is too little");
+	assert.equal(name("/home/me/code/pi-aatwad"), "pi-aatwad", "an informative folder stands alone");
+	assert.equal(name("/home/me/work/subproject/src"), "subproject-src");
+	assert.equal(name("/tmp"), "tmp", "nothing better exists");
+	assert.equal(name("/home/me/cool/src"), "cool-src", "never climbs past the home directory");
+	assert.equal(name("/home/me"), "me");
+	assert.equal(name("/"), "project");
+	assert.equal(name("/a/b/c/d/e/f"), "d-e-f", "at most three folders");
+	assert.equal(name("/x/The Project Useful_Thing_extra/"), "useful-thing-extra", "filler words are dropped inside a folder name");
+	assert.equal(name("/x/Café-Résumé"), "cafe-resume");
+	for (const cwd of ["/x/!!!", "/x/中文"]) assert.equal(name(cwd), "x", "unusable folder names are skipped");
+	// Length budget: squeeze outer folders first, then trim the innermost folder.
+	assert.equal(name("/path/to/something/cool/src", 15), "smthng-cool-src");
+	assert.equal(name("/path/to/something/cool/src", 14), "smthng-cl-src");
+	assert.equal(name("/w/standard-cell-generator", 19), "standard-cell");
+	assert.equal(name("/w/abcdefghijklmnopqrstuvwxyz", 19), "abcdfghjklmnpqrstvw");
+	assert.equal(projectKeyword("/path/to/something/cool/src", H), "something-cool-src", "agent IDs use up to 19 characters");
+	assert.equal(projectKeyword("/home/me/work/standard-cell-generator", H), "standard-cell");
+	assert.equal(projectKeyword("/", H), "project");
 });
 
-test("project keywords normalize CWD tokens and truncate only the keyword", () => {
-	assert.equal(projectKeyword("/work/pi-aatwad"), "pi-aatwad");
-	assert.equal(projectKeyword("/work/The Project Useful_Thing_extra/"), "useful-thing");
-	assert.equal(projectKeyword("/work/Café App"), "cafe-app");
-	assert.equal(projectKeyword("/work/123-test"), "123-test");
-	assert.equal(projectKeyword("/work/abcdefghijklmnopqr-next"), "abcdefghijklmnopqr");
-	assert.equal(projectKeyword("/work/abcdefghijklmnopqrstuvwxyz"), "abcdefghijklmnopqrs");
-	for (const cwd of ["/", "/work/!!!", "/work/中文"]) assert.equal(projectKeyword(cwd), "project");
+test("project abbreviations take the first character of each name word, capped, with a fallback", () => {
+	const H = "/home/me";
+	assert.equal(projectAbbr("/w/standard-cell-generator", H), "scg");
+	assert.equal(projectAbbr("/home/me/pi-aatwad", H), "pa");
+	assert.equal(projectAbbr("/path/to/something/cool/src", H), "scs");
+	assert.equal(projectAbbr("/home/me/123-test", H), "1t");
+	assert.equal(projectAbbr("/w/123-test", H), "w1t", "too little information: the parent folder joins");
+	assert.equal(projectAbbr("/w/v2.0-beta", H), "v0b");
+	assert.equal(projectAbbr("/w/a-b-c-d-e-f-g-h", H), "bcdefg", "at most six characters (a is filler)");
+	assert.equal(projectAbbr("/home/me/project", H), "p");
+	assert.equal(projectAbbr("/", H), "p");
 });
 
 test("team stamps use the single date-format constant and local time", () => {

@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { basename } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, resolve } from "node:path";
 
 // BIP-0039 English vocabulary, MIT licensed; see id-words.LICENSE.
 // These are identifiers, NOT wallet mnemonics, credentials, or checksummed BIP-39 phrases.
@@ -15,21 +16,73 @@ export const idRandom: { int: (max: number) => number } = { int: (max) => random
 
 const words = (n: number): string[] => Array.from({ length: n }, () => ID_WORDS[idRandom.int(ID_WORDS.length)]);
 
-/** Lowercase ASCII tokens of the CWD basename, skipping generic tokens when others remain. */
-function projectTokens(cwd: string): string[] {
-	const tokens = basename(cwd).normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().match(/[a-z0-9]+/g) ?? [];
-	const meaningful = tokens.filter((word) => !["a", "an", "the", "project", "repo", "repository"].includes(word));
+/** Filler words dropped inside a folder name when other words remain. */
+const FILLER = new Set(["a", "an", "the", "project", "repo", "repository"]);
+/** Folder names that say little about the project; kept in a name but carry no information. */
+export const GENERIC_FOLDERS: ReadonlySet<string> = new Set([
+	...FILLER, "projects", "repos", "src", "source", "sources", "lib", "libs", "app", "apps", "pkg", "pkgs", "packages",
+	"code", "dev", "devel", "test", "tests", "build", "dist", "out", "bin", "main", "master", "trunk", "work", "workspace",
+	"workspaces", "git", "github", "tmp", "temp", "home", "users", "user", "private", "var", "opt", "usr", "local",
+	"documents", "desktop", "downloads", "mnt", "volumes", "data", "server", "client", "web", "frontend", "backend",
+]);
+/** Informative characters (outside generic folders) a project name needs before the path walk stops. */
+export const MIN_NAME_INFO = 6;
+/** At most this many folders make up a name. */
+export const MAX_NAME_FOLDERS = 3;
+
+function folderTokens(name: string): string[] {
+	const tokens = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().match(/[a-z0-9]+/g) ?? [];
+	const meaningful = tokens.filter((word) => !FILLER.has(word));
 	return meaningful.length ? meaningful : tokens;
 }
 
-/** First-pass CWD heuristic, not semantic project-name inference. Keep at most two tokens. */
-export function projectKeyword(cwd: string): string {
-	return projectTokens(cwd).slice(0, 2).join("-").slice(0, 19).replace(/-+$/, "") || "project";
+/**
+ * The folders that name a project, outermost first, each as its tokens. Starts at the working directory and walks
+ * up while the name is below MIN_NAME_INFO informative characters (generic folders such as src count zero), never
+ * past the home directory or the root: /path/to/something/cool/src → something, cool, src; /x/pi-aatwad →
+ * pi-aatwad; /tmp → tmp (nothing better exists).
+ */
+export function projectNameFolders(cwd: string, home = homedir()): string[][] {
+	const folders: string[][] = [];
+	let info = 0;
+	for (let dir = resolve(cwd); dir !== resolve(home) && dir !== dirname(dir); dir = dirname(dir)) {
+		const tokens = folderTokens(basename(dir));
+		if (!tokens.length) continue;
+		folders.unshift(tokens);
+		info += tokens.filter((t) => !GENERIC_FOLDERS.has(t)).join("").length;
+		if (info >= MIN_NAME_INFO || folders.length >= MAX_NAME_FOLDERS) break;
+	}
+	if (!folders.length) { const own = folderTokens(basename(resolve(cwd))); if (own.length) folders.push(own); }
+	return folders;
 }
 
-/** First character of each CWD basename token, at most six: `standard-cell-generator` → `scg`; empty → `p`. */
-export function projectAbbr(cwd: string): string {
-	return projectTokens(cwd).map((token) => token[0]).join("").slice(0, 6) || "p";
+/** Drop vowels after the first letter: something → smthng, cool → cl. */
+const squeeze = (token: string) => token[0] + token.slice(1).replace(/[aeiou]/g, "");
+
+/**
+ * A project name of at most `max` characters from projectNameFolders. Too long: squeeze outer folders (outermost
+ * first), keep two words of the innermost folder, squeeze it, drop outer folders, then cut.
+ */
+export function projectName(cwd: string, max = Infinity, home = homedir()): string {
+	let folders = projectNameFolders(cwd, home);
+	if (!folders.length) return "project";
+	const text = () => folders.map((f) => f.join("-")).join("-");
+	for (let i = 0; i < folders.length - 1 && text().length > max; i++) folders[i] = folders[i].map(squeeze);
+	const last = folders.length - 1;
+	if (text().length > max) folders[last] = folders[last].slice(0, 2);
+	if (text().length > max) folders[last] = folders[last].map(squeeze);
+	while (folders.length > 1 && text().length > max) folders = folders.slice(1);
+	return text().slice(0, max).replace(/-+$/, "") || "project";
+}
+
+/** Keyword at the start of agent IDs: the project name, at most 19 characters. */
+export function projectKeyword(cwd: string, home = homedir()): string {
+	return projectName(cwd, 19, home);
+}
+
+/** First character of each word of the project name, at most six: `standard-cell-generator` → `scg`; empty → `p`. */
+export function projectAbbr(cwd: string, home = homedir()): string {
+	return projectNameFolders(cwd, home).flat().map((token) => token[0]).join("").slice(0, 6) || "p";
 }
 
 /** The project a directory belongs to: its git top-level, else the directory itself (as the /team list scopes it). */

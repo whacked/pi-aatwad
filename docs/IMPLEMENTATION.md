@@ -582,3 +582,20 @@ are usually ambiguous within a team, because teammates share the stamp.
 **Other derivers.** No other readable `<function>-<slug>` IDs exist. The remaining
 `newId` prefixes (`msg`, `task`, `evt`, `edge`, `teamop`, …) are `<prefix>-<16 hex>` and
 unchanged. Credentials, controller IDs (`ctl-<hex>`) and pty handles are opaque.
+
+### Project names from the path (v0.1.43)
+
+`projectNameFolders(cwd)` walks up from the CWD, prepending folder tokens, until the non-generic
+characters reach `MIN_NAME_INFO` (6). `GENERIC_FOLDERS` (src, lib, app, tmp, …) count zero but are kept.
+The walk stops at the home directory, at the root, or at `MAX_NAME_FOLDERS` (3).
+
+`projectName(cwd, max)` fits the result into `max` characters by these steps, in order:
+1. drop vowels from outer folders, outermost first;
+2. keep two words of the innermost folder;
+3. drop vowels from the innermost folder;
+4. drop outer folders;
+5. cut.
+
+The agent ID keyword is `projectName(cwd, 19)`, the run abbreviation is the initials of all name words,
+and the default team name is `projectName(cwd, 40)`. All of it is pure string work on the path, so
+`/team list` can compute names cheaply.

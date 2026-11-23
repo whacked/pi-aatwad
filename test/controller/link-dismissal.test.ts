@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { projectName } from "../../src/shared/readable-id.ts";
 import { harness, newRun, sql, waitFor, type Harness } from "./helpers.ts";
 
 type Team = Awaited<ReturnType<typeof newRun>>;
@@ -131,7 +132,7 @@ test("teams have names, project directories and a summary line; settings and act
 		assert.match(mine.summary, /working on: (Write the parser|Builder)/);
 		assert.ok(mine.last_activity_at);
 		assert.equal(empty.empty, true);
-		assert.equal(empty.name, h.dir.split("/").filter(Boolean).pop(), "default name is the project folder");
+		assert.equal(empty.name, projectName(h.dir, 40), "default name is the project name from its folders");
 
 		await h.call("POST", "/sessions/heartbeat", { token: h.ex.tokens.get(member)!, body: { busy: true } });
 		const act = ok(await h.call("GET", `/runs/${lead.run_id}/activity`, { token: lead.token }));
