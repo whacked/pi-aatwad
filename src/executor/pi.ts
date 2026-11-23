@@ -28,6 +28,7 @@ import { launchTerminal } from "./terminal.ts";
 // * Credentials come only from env (allowlist in env.ts) / ~/.pi/agent/auth.json, never argv.
 
 import { join } from "node:path";
+import { MEMBER_RESUME_PREFIX } from "../shared/protocol.ts";
 import { packageRoot } from "../shared/paths.ts";
 import { buildWorkerEnv } from "./env.ts";
 import { launchDetached, newLaunchToken, logLaunchFailure } from "./launch.ts";
@@ -35,7 +36,7 @@ import { probeIdentity, stopIdentity } from "./proc.ts";
 import type { Executor, LaunchSpec, ProbeResult, ProcessIdentity, TerminalMember } from "./types.ts";
 
 export const DEFAULT_RESUME_PROMPT =
-	"You were restarted by the team controller. Your previous conversation is above. " +
+	`${MEMBER_RESUME_PREFIX} Your previous conversation is above. ` +
 	"Check your organization context and inbox, then continue your assigned task.";
 
 export interface PiExecutorOptions {
@@ -74,6 +75,9 @@ export class PiExecutor implements Executor {
 	}
 
 	async launch(spec: LaunchSpec): Promise<ProcessIdentity> {
+		// Hosts that run Pi themselves (bb) get the prompt; their own Pi loads the installed extension.
+		const host = spec.terminal ? backendFacts(spec.terminal.backend) : undefined;
+		if (host?.launch) return host.launch(spec, spec.resume ? (spec.resume_prompt ?? DEFAULT_RESUME_PROMPT) : spec.bootstrap_prompt);
 		const piBin = findExecutable(this.piBin);
 		if (!piBin) {
 			const error = `Pi executable '${this.piBin}' is unavailable to the controller. Install Pi on PATH or set PI_TEAM_PI_BIN to its absolute executable path before starting the controller. GUI/SSH environments may have a different PATH; restart the controller after changing it.`;

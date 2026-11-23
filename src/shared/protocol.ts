@@ -93,6 +93,15 @@ export interface ApiError {
 // Credential expires after ENROLL_TTL_MS and is single-use.
 
 export const ENV_ENROLL_FILE = "PI_TEAM_ENROLL_FILE";
+/**
+ * bb launches member Pi itself, so a member cannot be given env vars. The controller writes this file into
+ * the member thread's storage dir ($BB_THREAD_STORAGE) right after spawning it: {"env": {PI_TEAM_* worker vars}}.
+ * The extension consumes it once, exactly like an enrollment file.
+ */
+export const BB_CLAIM_FILE = "pi-team-claim.json";
+/** First words of the controller's member prompts. A bb member that sees one before its claim waits for it. */
+export const MEMBER_BOOTSTRAP_PREFIX = "You are a managed member of a recursive agent team";
+export const MEMBER_RESUME_PREFIX = "You were restarted by the team controller.";
 /** Overrides the state directory (tests, demo). */
 export const ENV_STATE_DIR = "PI_TEAM_STATE_DIR";
 /** Set on a controller started for a client holding a session token: start only if the team state still exists. */
@@ -235,11 +244,15 @@ export const DEFAULT_PROVIDER = "default";
 /** What happens to an agent whose runtime deadline expires (see RunConfig.deadline_policy). */
 export type DeadlinePolicy = "BLOCKED" | "FAILED";
 
-export type TerminalBackend = "tmux" | "rex" | "native";
+export type TerminalBackend = "tmux" | "rex" | "native" | "bb";
 /** Multiplexer IDs of the leader's window and terminal (tmux @n/%n, or Rex window:/block: IDs). */
 export interface TerminalLocation { window: string; leader: string }
-/** `socket` is the multiplexer server address: a tmux socket path or a Rex server URL. Omitted backend means tmux. */
-export interface TerminalOptions { backend?: TerminalBackend; socket?: string; location?: TerminalLocation; debug?: boolean }
+/**
+ * `socket` is the multiplexer server address: a tmux socket path, a Rex or bb server URL. Omitted backend means tmux.
+ * `env` is what the controller needs to reach a host through its CLI (bb: BB_CLI, BB_SERVER_URL, BB_DATA_DIR);
+ * only the backend's declared keys are accepted.
+ */
+export interface TerminalOptions { backend?: TerminalBackend; socket?: string; location?: TerminalLocation; debug?: boolean; env?: Record<string, string> }
 
 export interface RunConfig {
 	/** Human opt-out from automatic tmux panes; /team watch open enables them again. */

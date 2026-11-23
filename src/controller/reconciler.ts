@@ -6,6 +6,7 @@ import { type Row, all, get, run, tx, nowIso, isoPlus, emit, parseJson } from ".
 import type { Ctx } from "./context.ts";
 import type { Executor, LaunchSpec, ProcessIdentity } from "../executor/types.ts";
 import type { EnrollmentFile, TerminalOptions } from "../shared/protocol.ts";
+import { MEMBER_BOOTSTRAP_PREFIX } from "../shared/protocol.ts";
 import { TerminalAllocationError } from "../watch/terminal-error.ts";
 import { mintSecret, hashToken } from "./auth.ts";
 import { getAgent, getAncestry, getSubtree, isTerminal, runConfig, TERMINAL_SQL } from "./queries.ts";
@@ -629,7 +630,7 @@ function resumePrompt(a: Row, spec: { task_id?: string }): string {
 
 function bootstrapPrompt(a: Row, parentId: string | null, spec: { task_id?: string; responsibility?: string }): string {
 	return [
-		`You are a managed member of a recursive agent team (agent ${a.id}, role "${a.role}").`,
+		`${MEMBER_BOOTSTRAP_PREFIX} (agent ${a.id}, role "${a.role}").`,
 		parentId ? `You report to ${parentId}.` : "",
 		spec.responsibility ? `Responsibility: ${spec.responsibility}` : "",
 		spec.task_id ? `Your assigned task id: ${spec.task_id}. Read your inbox (team_get_inbox) for details, report progress, and complete the task with team_complete_task.` : "",

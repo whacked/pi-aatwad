@@ -1,10 +1,10 @@
 // TeamRuntime against a mock controller, with a fake Pi API/context (no Pi process needed).
 import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TeamRuntime, __resetProcessStateForTests, IDENTITY_ENTRY, INBOX_MESSAGE, NOT_ENROLLED, MAX_SETTLE_CONTINUATIONS, MANAGED_NO_STATE_DIR } from "../../src/extension/runtime.ts";
-import { ENV_ENROLL_FILE } from "../../src/shared/protocol.ts";
+import { BB_CLAIM_FILE, ENV_ENROLL_FILE, MEMBER_BOOTSTRAP_PREFIX } from "../../src/shared/protocol.ts";
 import type { EnrollmentFile, Envelope, OrgContext } from "../../src/shared/protocol.ts";
 import { formatOrgContext, MAX_CONTEXT_CHARS } from "../../src/extension/format.ts";
 import { makeState, startMock, waitFor, sleep } from "./helpers.ts";
@@ -561,5 +561,38 @@ test("inbox delivery hands the model the whole message body", async () => {
 		await rt.start(fakeCtx(pi, "pis-long"));
 		await waitFor(() => pi.sent.length === 1, 3_000, "inbox delivery");
 		assert.ok(pi.sent[0].message.content.includes(long), "nothing cut from a 9,000-character message");
+	} finally { rt.stop(); await m.close(); cleanup(); }
+});
+
+test("bb member: claim from thread storage enrolls it, and new messages wake it like a terminal member", async () => {
+	__resetProcessStateForTests();
+	const { paths, cleanup } = makeState();
+	const m = await startMock(paths);
+	m.route("POST", "/enroll", () => ({ body: { run_id: "run1", agent_id: "ag-bb", session_id: "ses-bb", token: "bb-tok", parent_id: "ag-root", task_id: "t1" } }));
+	m.route("GET", "/me", () => ({ body: me({ agent_id: "ag-bb" }) }));
+	m.route("POST", "/sessions/heartbeat", () => ({ body: { lease_until: "x", inbox_pending: 1, desired_state: "RUNNING", attention: { on_message: "wake" } } }));
+	m.route("GET", "/inbox", () => ({ body: { messages: [env1("bb-msg")] } }));
+	m.route("POST", /ack$/, () => ({ body: { acked: true } }));
+	const file = join(paths.enrollDir, "bb.json");
+	const ef: EnrollmentFile = { version: 1, socket_path: paths.socket, run_id: "run1", agent_id: "ag-bb", spawn_intent_id: "si-bb", token: "one-time", expires_at: new Date(Date.now() + 60_000).toISOString() };
+	writeFileSync(file, JSON.stringify(ef), { mode: 0o600 });
+	const storage = join(paths.dir, "thread-storage");
+	mkdirSync(storage, { recursive: true });
+	const env: NodeJS.ProcessEnv = { BB_THREAD_ID: "thr_bbmember", BB_THREAD_STORAGE: storage };
+	const pi = fakePi();
+	const rt = new TeamRuntime(pi as any, { paths, env, heartbeatMs: 60_000 });
+	try {
+		// The first prompt (our bootstrap prompt) arrives before the claim: it waits for it.
+		setTimeout(() => writeFileSync(join(storage, BB_CLAIM_FILE), JSON.stringify({ env: { [ENV_ENROLL_FILE]: file, PI_TEAM_AGENT_ID: "ag-bb", PI_TEAM_RUN_ID: "run1" } })), 150);
+		await rt.start(fakeCtx(pi, "pis-bb"));
+		assert.equal(rt.identity, undefined, "no claim yet at session start");
+		await rt.awaitHostClaim("You are a team lead. Hi", 300);
+		assert.equal(rt.identity, undefined, "only the controller's member prompts wait for a claim");
+		await rt.awaitHostClaim(`${MEMBER_BOOTSTRAP_PREFIX} (agent ag-bb, role "Beta").`, 5_000);
+		assert.equal((rt.identity as { agent_id?: string } | undefined)?.agent_id, "ag-bb");
+		assert.equal((rt.identity as { managed?: boolean } | undefined)?.managed, true);
+		await rt.heartbeat();
+		await waitFor(() => pi.sent.length === 1, 3_000, "bb member woken by its inbox");
+		assert.deepEqual(pi.sent[0].options, { triggerTurn: true });
 	} finally { rt.stop(); await m.close(); cleanup(); }
 });

@@ -3,10 +3,10 @@
 // `node --test` can exercise it with a fake ExtensionAPI.
 import { refreshHost, type HostDetection } from "../terminal/hosts.ts";
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ENV_ENROLL_FILE, HEARTBEAT_INTERVAL_MS } from "../shared/protocol.ts";
+import { BB_CLAIM_FILE, ENV_ENROLL_FILE, HEARTBEAT_INTERVAL_MS, MEMBER_BOOTSTRAP_PREFIX, MEMBER_RESUME_PREFIX } from "../shared/protocol.ts";
 import type { EnrollRequest, EnrollmentFile, Envelope, OrgContext } from "../shared/protocol.ts";
 
 export const ENV_LAUNCH_TOKEN = "PI_TEAM_LAUNCH_TOKEN";
@@ -183,6 +183,41 @@ export class TeamRuntime {
 
 	get env(): NodeJS.ProcessEnv {
 		return this.opts.env ?? process.env;
+	}
+
+	/**
+	 * bb starts member Pi itself, so the controller cannot set the worker env. It drops a one-time claim with
+	 * that env into the thread's storage dir instead. Taking it makes this process a managed launch, exactly
+	 * as if the env had been set. Returns whether this process now has an enrollment file to consume.
+	 */
+	takeHostClaim(): boolean {
+		if (this.env[ENV_ENROLL_FILE]) return true;
+		const dir = this.env.BB_THREAD_STORAGE;
+		if (!dir || this.identity) return false;
+		const file = join(dir, BB_CLAIM_FILE);
+		let claim: { env?: Record<string, unknown> };
+		try { claim = JSON.parse(readFileSync(file, "utf8")); } catch { return false; }
+		try { unlinkSync(file); } catch { /* another process took it */ return false; }
+		for (const [k, v] of Object.entries(claim.env ?? {})) if (k.startsWith("PI_TEAM_") && typeof v === "string") this.env[k] = v;
+		return !!this.env[ENV_ENROLL_FILE];
+	}
+
+	/**
+	 * A bb member's first prompt can arrive before the controller has written its claim (it is written right
+	 * after bb returns the new thread's ID). When the prompt is one of the controller's member prompts, wait
+	 * for the claim and enroll before the turn runs.
+	 */
+	async awaitHostClaim(prompt: string, timeoutMs = 15_000): Promise<void> {
+		if (this.identity || !this.env.BB_THREAD_STORAGE) return;
+		if (!prompt.startsWith(MEMBER_BOOTSTRAP_PREFIX) && !prompt.startsWith(MEMBER_RESUME_PREFIX)) return;
+		const deadline = Date.now() + timeoutMs;
+		while (!this.takeHostClaim()) {
+			if (Date.now() > deadline) { this.say("team: this looks like a team member thread, but its enrollment claim never arrived", "warning"); return; }
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		this.ready = this.resolveIdentity().catch((e) => { this.say(`team: could not enroll: ${(e as Error).message}`, "warning"); });
+		await this.ready;
+		this.updateStatus();
 	}
 
 	/** True when this Pi process was launched by the controller as a managed worker. */
@@ -857,10 +892,14 @@ export class TeamRuntime {
 	/** Last effective on_message policy from the controller (undefined: older controller). */
 	onMessage: "wake" | "next_turn" | undefined;
 	private interactive(): boolean {
-		return !!this.identity && (!this.identity.managed || this.ctx?.mode === "tui");
+		return !!this.identity && (!this.identity.managed || this.persistentSession());
+	}
+	/** Pi keeps running between turns: a terminal (tui), or bb driving it over RPC. */
+	private persistentSession(): boolean {
+		return this.ctx?.mode === "tui" || (this.ctx?.mode === "rpc" && !!this.env.BB_THREAD_ID);
 	}
 	private managedTui(): boolean {
-		return !!this.identity?.managed && this.ctx?.mode === "tui";
+		return !!this.identity?.managed && this.persistentSession();
 	}
 
 	/**
@@ -992,7 +1031,7 @@ export class TeamRuntime {
 	async onBeforeSettle(ev: { outcome?: string; context?: { canContinue?: boolean } }): Promise<
 		{ entries: { type: "custom_message"; customType: string; content: string; display: boolean; details: unknown }[]; continue: true } | undefined
 	> {
-		if (!this.identity?.managed || this.ctx?.mode === "tui" || this.delivering) return undefined;
+		if (!this.identity?.managed || this.persistentSession() || this.delivering) return undefined;
 		if (ev.outcome && ev.outcome !== "completed") return undefined;
 		if (this.settleContinuations >= MAX_SETTLE_CONTINUATIONS) return undefined;
 		const identity = this.identity;

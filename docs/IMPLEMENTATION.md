@@ -640,3 +640,43 @@ delivered message is acknowledged and cannot be fetched again, so agents receive
 task assignments that simply stopped mid-sentence (reported by a sub-team leader: "Classify each as
 (a) not expressible, (…"). Bodies are now delivered whole. `MAX_MESSAGE_CHARS` (100,000) is only a
 safety ceiling, and a body over it says where it was cut and asks the sender for the rest.
+
+## bb member threads (v0.1.48)
+
+bb is now a usable host and a terminal backend (`BACKENDS.bb`). A leader Pi in a bb thread gets its
+members as child threads; everything bb-specific is behind the backend registry and host chain.
+
+- **Detection** (`hosts.ts`): markers `BB_THREAD_ID` + `BB_CLI`. Verified when `bb thread show`
+  knows the thread, it is not archived, it has a machine, and this Pi has no tty (bb runs its agent
+  Pi headless; a Pi from a shell inside the thread inherits the markers but has a terminal).
+- **Backend facts**: `controlEnv` (`BB_CLI`, `BB_SERVER_URL`, `BB_DATA_DIR`) is saved with the
+  team's terminal options (`TerminalOptions.env`, validated per backend), so the controller reaches
+  the same bb without the leader's environment. `launch()` marks a host that starts Pi itself;
+  `PiExecutor.launch` hands such launches to it instead of allocating a terminal.
+- **Launch** (`src/executor/bb.ts`): fresh member: `bb thread spawn --parent-thread <leader>
+  --environment <workspace> --machine <leader's machine> --parent-notifications off
+  --lifecycle-owner-thread <leader> --title <role> --prompt-file <bootstrap>`. Restart with a live
+  thread: `bb thread stop`, then `bb thread tell --mode auto --message-file <resume prompt>`, so the
+  transcript and Pi session stay one. Agent -> thread map: `<state>/bb-threads/<team owner>/<agent>.json`.
+- **Identity**: the worker env (enrollment file path, agent/run IDs, launch token, resume flag) is
+  written as `pi-team-claim.json` into `<BB_DATA_DIR>/thread-storage/<thread>` (the member's
+  `$BB_THREAD_STORAGE`). `TeamRuntime.takeHostClaim()` consumes it at `session_start`; when the
+  first prompt is the controller's bootstrap or resume prompt and no claim is there yet,
+  `awaitHostClaim()` waits up to 15 s in `before_agent_start`. No title marker or bb plugin is needed.
+- **Supervisor** (`src/executor/bb-member.ts`): the process the controller tracks. It polls the
+  thread and exits when it is archived or gone; SIGTERM runs `bb thread stop`. The launcher waits
+  for its `watching` line, so an immediate stop is never lost. A crashed member Pi is detected by
+  its heartbeat lease (LOST, then the hung grace), then stopped and restarted through the thread.
+- **View** (`src/terminal/bb.ts`): `panes()` lists member threads in one `bb thread list --thread …`
+  call; `removeMember` archives; `focus` runs `bb thread open`; tags are no-ops (threads are not
+  contested like panes).
+- **Waking**: managed members in `rpc` mode under bb count as persistent sessions (like `tui`), so
+  inbox messages wake them; before, they behaved as one-shot workers and were never woken.
+- **Team name**: `/team init` without `--name` uses the leader thread's title.
+- `/team init` prints "no limit" for unlimited budget caps instead of `≤$null`.
+
+Verified end to end against an isolated bb 0.50.1 with a fake model (a local harness, not committed):
+leader thread -> `/team init` (team named after the thread) -> recruit -> member
+child thread enrolled by claim, completed its task and woke the leader; cancel stopped and archived
+the thread. Not shown in bb: `/team` command output (bb ignores Pi notifications and custom
+messages; it logs them as `provider/unhandled`).

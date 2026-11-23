@@ -2,7 +2,6 @@
 // The factory only registers commands/tools/handlers: no process, socket or timer is created here.
 // Long-lived resources start in session_start and are released idempotently in session_shutdown.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ENV_ENROLL_FILE } from "../shared/protocol.ts";
 import { TeamRuntime } from "./runtime.ts";
 import { registerTools } from "./tools.ts";
 import { projectTeamsNotice, registerTeamCommand } from "./commands.ts";
@@ -58,7 +57,8 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 	registerTools(pi, rt);
 
 	pi.on("session_start", (_event, ctx) => {
-		const managedLaunch = !!process.env[ENV_ENROLL_FILE]; // read before start() consumes it
+		// Read before start() consumes it. A bb member thread gets its worker env from a claim instead.
+		const managedLaunch = rt.takeHostClaim();
 		const p = rt.start(ctx);
 		if (ctx.mode === "tui") {
 			installAgentLabel(ctx.ui, () => rt.identity ? agentDisplayName(rt.identity.role) : undefined, {
@@ -101,6 +101,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 
 	// Small, fresh org context before each run. Never a cached hierarchy, never the whole tree.
 	pi.on("before_agent_start", async (event) => {
+		if (event.messageType === "user") await rt.awaitHostClaim(event.prompt);
 		await waitBounded(rt.ready, rt.managed ? 15_000 : 5_000);
 		const identity = rt.identity;
 		if (!identity) return;

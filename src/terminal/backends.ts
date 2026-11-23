@@ -3,6 +3,7 @@
 // and extension never compare backend names. View code is imported lazily, only when used.
 // Which backend to use is decided by host detection (hosts.ts).
 import type { TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
+import type { LaunchSpec, ProcessIdentity } from "../executor/types.ts";
 import { nativeHostSupport } from "./native/client.ts";
 import type { TerminalView, WatchOptions } from "./view.ts";
 
@@ -37,6 +38,13 @@ export interface BackendFacts {
 	/** Why this backend cannot run on this machine at all; undefined when it can. */
 	unsupported(): string | undefined;
 	view(opts: WatchOptions): Promise<TerminalView>;
+	/** Environment the controller keeps to reach this host's CLI (saved with the team's terminal options). */
+	readonly controlEnv?: readonly string[];
+	/**
+	 * Hosts that start member Pi themselves (bb): launch a member there. Otherwise the executor runs
+	 * Pi in a terminal the view allocates (launchAgent).
+	 */
+	launch?(spec: LaunchSpec, prompt: string): Promise<ProcessIdentity>;
 }
 
 export const BACKENDS: Readonly<Record<TerminalBackend, BackendFacts>> = {
@@ -67,6 +75,17 @@ export const BACKENDS: Readonly<Record<TerminalBackend, BackendFacts>> = {
 		locationFormat: "the native marker",
 		unsupported: () => nativeHostSupport(),
 		view: async (opts) => new (await import("./native.ts")).NativeView(opts),
+	},
+	bb: {
+		id: "bb", label: "bb", noun: "thread", beside: true,
+		// Members are child threads in bb's sidebar, titled with their role.
+		decoration: "label", debugPane: false, marker: "BB_THREAD_ID",
+		validLocation: (l) => /^proj_[0-9a-z]+$/i.test(l.window) && /^thr_[0-9a-z]+$/i.test(l.leader),
+		locationFormat: "a bb project and thread ID",
+		unsupported: () => undefined,
+		controlEnv: ["BB_CLI", "BB_SERVER_URL", "BB_DATA_DIR"],
+		view: async (opts) => new (await import("./bb.ts")).BbView(opts),
+		launch: async (spec, prompt) => (await import("../executor/bb.ts")).launchBbMember(spec, prompt),
 	},
 };
 

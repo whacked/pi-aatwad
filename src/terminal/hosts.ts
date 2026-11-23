@@ -13,6 +13,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { TerminalBackend } from "../shared/protocol.ts";
 import { BACKENDS, type DecorationMode } from "./backends.ts";
+import { bbControlFrom, showThread, type BbThreadDetails } from "./bb-cli.ts";
 
 const exec = promisify(execFile);
 
@@ -57,6 +58,8 @@ export interface HostProbe {
 	tmuxPaneTty(pane: string): Promise<string>;
 	/** PID of the process running in a Rex block; throws if Rex cannot answer. */
 	rexBlockPid(block: string): Promise<number>;
+	/** A bb thread's details (undefined when bb does not know it); throws if bb cannot answer. */
+	bbThread(thread: string): Promise<BbThreadDetails | undefined>;
 }
 
 interface Markers { leader: string }
@@ -82,10 +85,18 @@ async function needTerminal(probe: HostProbe): Promise<string | undefined> {
 /** Ordered by feature richness. The order is the decision. */
 export const HOSTS: readonly HostProvider[] = [
 	{
-		kind: "bb", label: "bb",
-		markers: (env) => env.BB_THREAD_ID ? { leader: env.BB_THREAD_ID } : undefined,
-		// Members as bb child threads are planned; until then bb uses the next host down.
-		unusable: () => "bb member threads are not implemented yet",
+		kind: "bb", label: "bb", backend: "bb",
+		markers: (env) => /^thr_[0-9a-z]+$/i.test(env.BB_THREAD_ID ?? "") && env.BB_CLI ? { leader: env.BB_THREAD_ID! } : undefined,
+		verify: async (m, probe, strict) => {
+			// bb runs its agent Pi headless; a Pi with a terminal was started from a shell inside the thread.
+			if (strict && await probe.tty()) return "this Pi has a terminal of its own, so it is not the thread's agent (inherited BB_THREAD_ID)";
+			let d: BbThreadDetails | undefined;
+			try { d = await probe.bbThread(m.leader); } catch (e) { return `bb cannot answer: ${(e as Error).message}`; }
+			if (!d) return `bb does not know thread ${m.leader}`;
+			if (d.thread.archivedAt || d.thread.deletedAt) return `bb thread ${m.leader} is archived`;
+			if (!d.environment?.hostId) return `bb thread ${m.leader} has no machine to run members on`;
+			return undefined;
+		},
 	},
 	{
 		kind: "rex", label: "Rex", backend: "rex",
@@ -120,7 +131,7 @@ export const HOSTS: readonly HostProvider[] = [
 	{ kind: "detached", label: "detached workers", fallback: true, markers: () => ({ leader: "detached" }) },
 ];
 
-const MARKER_KEYS = ["BB_THREAD_ID", "REX_SERVER", "REX_BLOCK", "TMUX", "TMUX_PANE", "PI_TEAM_HOST_VERIFY"] as const;
+const MARKER_KEYS = ["BB_THREAD_ID", "BB_CLI", "REX_SERVER", "REX_BLOCK", "TMUX", "TMUX_PANE", "PI_TEAM_HOST_VERIFY"] as const;
 const markerKey = (env: NodeJS.ProcessEnv) => MARKER_KEYS.map((k) => env[k] ?? "").join("\0");
 
 function result(winner: HostProvider, m: Markers, candidates: HostCandidate[], verified: boolean): HostDetection {
@@ -131,7 +142,7 @@ function result(winner: HostProvider, m: Markers, candidates: HostCandidate[], v
 		...(facts ? { backend: facts.id, leader: m.leader } : {}),
 		sessions: !!facts, beside: facts?.beside ?? false, decoration: facts?.decoration ?? "self",
 		verified, candidates, detected_at: new Date().toISOString(),
-		...(facts ? {} : { unavailable: `${skipped.map((c) => `${c.label}: ${c.reason}`).join("; ") || "no terminal host"}, so members run detached. Start the leader Pi inside tmux or Rex for member terminals.` }),
+		...(facts ? {} : { unavailable: `${skipped.map((c) => `${c.label}: ${c.reason}`).join("; ") || "no terminal host"}, so members run detached. Start the leader Pi in a bb thread, Rex or tmux for member terminals.` }),
 	};
 }
 
@@ -233,6 +244,7 @@ export function systemProbe(env: NodeJS.ProcessEnv = process.env): HostProbe {
 			const { RexView } = await import("./rex.ts");
 			return new RexView({ stateDir: "", runId: "" }).paneProcess(block);
 		},
+		bbThread: (thread) => showThread(bbControlFrom(env), thread),
 	};
 }
 

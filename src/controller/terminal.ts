@@ -12,10 +12,10 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 	if (body !== undefined) {
 		if (p.kind !== "operator" && p.actor_id !== row.root_agent_id) fail("FORBIDDEN", "only the root may enable interactive terminals");
 		const b = obj(body);
-		onlyKeys(b, ["enabled", "backend", "socket", "location", "debug"]);
+		onlyKeys(b, ["enabled", "backend", "socket", "location", "debug", "env"]);
 		if (b.enabled !== undefined && typeof b.enabled !== "boolean") fail("INVALID", "enabled must be boolean");
 		if (b.enabled === false) {
-			if (b.backend !== undefined || b.socket !== undefined || b.location !== undefined || b.debug !== undefined) fail("INVALID", "enabled=false cannot include terminal options");
+			if (b.backend !== undefined || b.socket !== undefined || b.location !== undefined || b.debug !== undefined || b.env !== undefined) fail("INVALID", "enabled=false cannot include terminal options");
 			delete cfg.terminal;
 			cfg.terminal_disabled = true;
 			run(ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), id);
@@ -39,7 +39,16 @@ export function terminalMode(ctx: Ctx, p: Principal, id: string, body?: unknown)
 		}
 		// Backends without an on-screen place (the built-in host) have one fixed location.
 		if (facts.fixedLocation) location = { ...facts.fixedLocation };
-		cfg.terminal = { ...(backend ? { backend } : {}), ...(socket ? { socket } : {}), ...(location ? { location } : {}), ...(b.debug ? { debug: true } : {}) };
+		let env: Record<string, string> | undefined;
+		if (b.env !== undefined) {
+			const e = obj(b.env), allowed = facts.controlEnv ?? [];
+			for (const [k, v] of Object.entries(e)) {
+				if (!allowed.includes(k)) fail("INVALID", allowed.length ? `env may only contain ${allowed.join(", ")}` : `${facts.label} takes no env`);
+				if (typeof v !== "string" || !v) fail("INVALID", `env ${k} must be a non-empty string`);
+			}
+			env = e as Record<string, string>;
+		}
+		cfg.terminal = { ...(backend ? { backend } : {}), ...(socket ? { socket } : {}), ...(location ? { location } : {}), ...(b.debug ? { debug: true } : {}), ...(env && Object.keys(env).length ? { env } : {}) };
 		delete cfg.terminal_disabled;
 		run(ctx.db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), id);
 		emit(ctx.db, { run_id: id, actor_id: p.actor_id, type: "run.terminal_enabled", entity_id: id, payload: {} });

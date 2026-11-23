@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.47, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.48, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -511,7 +511,7 @@ overflow recovery. Each member uses Pi's own compaction settings; `/compact` rem
 available in its pane. The plugin does not add a separate compactor. See
 [Pi compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md).
 
-### Where members run: tmux, Rex, or the built-in session host
+### Where members run: bb, tmux, Rex, or the built-in session host
 
 Team recruitment and reporting do not require a multiplexer. Members are
 interactive Pi sessions you can switch into, wherever the leader runs.
@@ -519,8 +519,8 @@ interactive Pi sessions you can switch into, wherever the leader runs.
 **How the host is chosen.** Each Pi detects its host when it starts, trying the
 richest environment first and falling back down the chain:
 
-1. **bb**: detected from `BB_THREAD_ID`. Members as bb child threads are not
-   implemented yet, so bb always falls through to the next host.
+1. **bb**: `BB_THREAD_ID`/`BB_CLI`. Members open as child threads of the leader's thread
+   (see [bb member threads](#bb-member-threads)).
 2. **Rex**: `REX_SERVER`/`REX_BLOCK`. Members open as blocks beside the leader's block.
    tmux running inside Rex uses Rex.
 3. **tmux**: `TMUX`/`TMUX_PANE`. Members open as panes beside the leader's pane.
@@ -533,6 +533,8 @@ used only once the live system confirms this Pi is really inside it:
 - Rex's block must be an ancestor process of this Pi.
 - Either way, Pi must have a terminal at all. A Pi started by bb, which has none, never takes
   over a tmux pane bb itself was launched from.
+- bb must know the thread (and give it a machine), and Pi must have no terminal: bb runs its agent
+  Pi headless, so a Pi started from a shell inside a bb thread does not claim the thread.
 
 Stale markers simply fall through to the next host.
 
@@ -550,7 +552,7 @@ or block.
 | Rex (Superlogical) | Member creation automatically splits interactive member blocks beside the leader's block. |
 | tmux pane containing this Pi | Member creation automatically opens team panes beside Pi unless explicitly disabled. |
 | Missing tmux or stale inherited pane markers | The markers fail verification and the next host is used (normally the built-in session host). |
-| bb | The built-in session host, until bb child-thread members exist. |
+| bb thread | Member creation spawns a child thread of the leader's thread for each member. |
 | Herdr | Not specifically supported. It behaves like a plain terminal (built-in session host). tmux markers inherited from an outer tmux fail verification, because Herdr gives Pi its own terminal. |
 | Platform without prebuilt terminal support (for example Alpine/musl, Windows) | Workers use detached, one-shot execution. |
 | Saved tmux session/pane becomes unavailable | Controller records a fallback notice and switches workers to detached execution, preserving identities, tasks and transcripts. |
@@ -754,11 +756,36 @@ Limits: Claude Code does not report per-message cost to the controller, so spend
 count its own usage, though they still count the Pi members it recruits. Model switching
 (`team_set_model`) does not apply to Claude Code sessions.
 
-## bb (thread graph proof of concept)
+## bb member threads
 
-`integrations/bb-plugin-thread-graph` is a bb plugin (bb 0.47+) that draws a left-to-right graph
-of threads and their parent/child links above bb's thread list; parentless threads float below.
-It is the first step towards showing team members as bb child threads. See its README to install.
+A leader Pi running in a bb thread (bb 0.50+, Pi provider) gets its members as
+**child threads** of its own thread, so the team appears as a tree in bb's sidebar. Each member
+thread runs in the member's workspace on the leader's machine, is titled with the member's role,
+and is archived together with the leader's thread. Nothing has to be installed in bb: bb already
+loads this extension into every Pi it starts.
+
+- **Team name**: `/team init` without `--name` names the team after the leader's thread title.
+- **Identity**: bb starts member Pi itself and has no per-thread environment, so the controller
+  writes a one-time claim (`pi-team-claim.json`: the member's enrollment file path, agent and run
+  IDs, launch token) into the new thread's storage directory (`$BB_THREAD_STORAGE`). The member's
+  extension consumes it like an enrollment file. If the member's first prompt (the controller's
+  bootstrap prompt) arrives before the claim, it waits for it.
+- **Lifecycle**: a small supervisor process (`src/executor/bb-member.ts`) owns each member
+  thread and is the process the controller tracks. Stopping a member stops the thread's Pi
+  (`bb thread stop`); a restart reuses the thread (`bb thread tell` with the resume prompt), so
+  the bb transcript and the Pi session stay one; closing or cancelling archives the thread. A
+  crashed member Pi is noticed through its heartbeat lease and restarted the same way.
+- **Waking**: members in bb are woken for new messages like terminal members (bb keeps their Pi
+  running between turns).
+- **Switching**: `/team watch focus <member>` and `/team back` open the thread in bb.
+- **Limits**: bb does not show Pi notifications, so `/team …` command output is not visible in
+  a bb thread; ask the agent instead (its `team_*` tools show their results). Members always run
+  on the leader's machine. The controller keeps `BB_CLI`, `BB_SERVER_URL` and `BB_DATA_DIR` with
+  the team's terminal settings to reach bb.
+
+`integrations/bb-plugin-thread-graph` is a separate bb plugin (bb 0.47+) that draws a
+left-to-right graph of threads and their parent/child links above bb's thread list; parentless
+threads float below. See its README to install.
 
 ## Controller API
 

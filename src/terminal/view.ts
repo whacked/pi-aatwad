@@ -5,8 +5,8 @@ import { resolve } from "node:path";
 import type { TerminalBackend, TerminalLocation, TerminalOptions, TreeNode } from "../shared/protocol.ts";
 import { backendFacts } from "./backends.ts";
 
-export interface WatchOptions { stateDir: string; runId: string; socket?: string; node?: string; location?: TerminalLocation; debug?: boolean }
-/** One member terminal. `id` is the backend handle: a tmux pane ID or a Rex block ID. */
+export interface WatchOptions { stateDir: string; runId: string; socket?: string; node?: string; location?: TerminalLocation; debug?: boolean; env?: Record<string, string> }
+/** One member terminal. `id` is the backend handle: a tmux pane, Rex block, built-in pty or bb thread ID. */
 export interface Pane { id: string; window: string; agent: string; dead: boolean }
 /** Ownership marker on a terminal: which team placed it and which member it hosts. */
 export interface PaneTag { owner?: string; agent?: string }
@@ -53,5 +53,6 @@ export async function terminalView(opts: WatchOptions & { backend?: TerminalBack
 }
 
 export function savedOptions(view: TerminalView, socket: string): TerminalOptions {
-	return { ...(backendFacts(undefined).id === view.backend ? {} : { backend: view.backend }), socket, location: view.opts.location, ...(view.opts.debug ? { debug: true } : {}) };
+	const env = view.opts.env && Object.keys(view.opts.env).length ? { env: view.opts.env } : {};
+	return { ...(backendFacts(undefined).id === view.backend ? {} : { backend: view.backend }), socket, location: view.opts.location, ...(view.opts.debug ? { debug: true } : {}), ...env };
 }

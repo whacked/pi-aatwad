@@ -5,6 +5,7 @@ import type { NativeView } from "../terminal/native.ts";
 import { attachMember } from "./attach.ts";
 import { currentHost, describeHost } from "../terminal/hosts.ts";
 import { BACKENDS } from "../terminal/backends.ts";
+import { bbControlFrom, showThread } from "../terminal/bb-cli.ts";
 // `/team` command with subcommands. Human-facing; uses the operator token unless this is a managed worker.
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -100,9 +101,21 @@ function runLabel(run: RunSummary): string {
 /** The project a session works in: its git top-level, else its working directory (shared with team ID stamps). */
 export { projectRoot };
 
+/** "≤$5" for a cap, "no limit" for an unlimited (null) one. */
+function cap(unit: string, value: number | null | undefined): string {
+	return value === null || value === undefined ? "no limit" : `≤${unit}${value}`;
+}
+
+/** A bb thread's title, once bb has given it one. */
+async function bbThreadTitle(thread: string): Promise<string | undefined> {
+	try { return (await showThread(bbControlFrom(process.env), thread))?.thread.title?.trim() || undefined; }
+	catch { return undefined; }
+}
+
 export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 	const out = (ctx: ExtensionCommandContext, text: string, level: "info" | "warning" | "error" = "info") => {
 		rt.ctx = rt.ctx ?? ctx;
+		// Note: bb (0.50) shows neither notifications nor custom messages, so /team output is not visible there.
 		if (ctx.hasUI) ctx.ui.notify(text, level);
 		else process.stderr.write(`${text}\n`);
 	};
@@ -354,14 +367,16 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				{ token: op, idempotencyKey: `init:${pis.id}:${randomUUID()}` },
 			);
 			initializedRunId = r.run_id;
-			if (name) await rt.client.post(`/runs/${encodeURIComponent(r.run_id)}/settings`, { name }, { token: op }).catch(() => {});
+			// In bb the team is named after the leader's thread, the name the human already sees there.
+			const teamName = name ?? (currentHost().host === "bb" ? await bbThreadTitle(process.env.BB_THREAD_ID!) : undefined);
+			if (teamName) await rt.client.post(`/runs/${encodeURIComponent(r.run_id)}/settings`, { name: teamName }, { token: op }).catch(() => {});
 			rt.adoptNew({ run_id: r.run_id, agent_id: r.root_agent_id, session_id: r.session_id, token: r.token, managed: false, role: "root", pi_session_id: pis.id });
 			await rt.refreshRole();
 			const e = r.envelope;
 			out(
 				ctx,
 				`team run ${r.run_id} created${spawned ? " (controller started)" : ""}; you are root agent ${r.root_agent_id}.\n` +
-					(config?.operator_unlimited ? "policy: UNLIMITED, authorized by the human operator (no numeric resource caps)\n" : `budget: ≤$${e.max_subtree_usd} subtree spend, ≤${e.max_subtree_slots} live descendants, single grant ≤${e.max_grant_slots} slots/$${e.max_grant_usd}\n`) +
+					(config?.operator_unlimited ? "policy: UNLIMITED, authorized by the human operator (no numeric resource caps)\n" : `budget: ${cap("$", e.max_subtree_usd)} subtree spend, ${cap("", e.max_subtree_slots)} live descendants, single grant ${cap("", e.max_grant_slots)} slots/${cap("$", e.max_grant_usd)}\n`) +
 					"This is a new empty team. Ask the leader to create members, or use /team resume to choose an existing team.",
 			);
 		},
