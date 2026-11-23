@@ -10,6 +10,7 @@ import { basename } from "node:path";
 import { isFullAgentId, matchesAgentWords } from "./agent-reference.ts";
 import {
 	ENV_STATE_DIR,
+	ENV_EXISTING_STATE,
 	HDR_IDEMPOTENCY,
 	HDR_PROTOCOL,
 	PROTOCOL_VERSION,
@@ -250,6 +251,8 @@ export interface EnsureOptions {
 	pingTimeoutMs?: number;
 	/** Extra env for the spawned controller. */
 	env?: Record<string, string>;
+	/** Never create a missing state dir; fail as unavailable instead (callers holding a session token). */
+	existingStateDir?: boolean;
 	/**
 	 * Package version this caller runs (default LOADED_VERSION). A running controller that reports an
 	 * older (or no) package version is gracefully shut down and replaced, because it may lack routes this
@@ -427,6 +430,9 @@ async function ensureOnce(paths: StatePaths, opts: EnsureOptions): Promise<Ensur
 	}
 	// Nothing answered: launch a controller. It owns lock/socket/singleton logic and exits quietly
 	// if another instance holds the lock, in which case we simply keep polling the winner.
+	// A session token was issued by the controller whose database is in this dir; without that database
+	// (the dir is gone or being deleted) a new controller could only run empty and orphaned.
+	if (opts.existingStateDir && !existsSync(paths.db)) throw new ControllerUnavailableError(`the team state in ${paths.dir} no longer exists`, "ENOENT");
 	ensureStateDir(paths);
 	const entry = opts.entry ?? controllerEntry();
 	const logFd = openSync(paths.log, "a", 0o600);
@@ -436,7 +442,7 @@ async function ensureOnce(paths: StatePaths, opts: EnsureOptions): Promise<Ensur
 		const child = spawn(resolveNode(opts.nodePath), nodeArgsFor(entry), {
 			detached: true,
 			stdio: ["ignore", logFd, logFd],
-			env: { ...process.env, ...opts.env, [ENV_STATE_DIR]: paths.dir },
+			env: { ...process.env, ...opts.env, [ENV_STATE_DIR]: paths.dir, ...(opts.existingStateDir ? { [ENV_EXISTING_STATE]: "1" } : {}) },
 			cwd: paths.dir,
 		});
 		bumpSpawnCount();
@@ -593,7 +599,9 @@ export class TeamClient {
 				}
 				throw last;
 			}
-			const r = await ensureController(this.paths, this.opts.ensure);
+			// A session token belongs to the controller whose database is in this state dir: if a new
+			// controller is needed, it must find that database (never re-create a deleted state dir).
+			const r = await ensureController(this.paths, { ...this.opts.ensure, ...(token ? { existingStateDir: true } : {}) });
 			this.opts.onReconnect?.(r);
 			return await send();
 		}

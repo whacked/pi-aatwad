@@ -23,6 +23,8 @@ const CONTROLLER_LEASE_MS = 30_000;
 
 export interface ControllerOptions {
 	stateDir?: string;
+	/** Start only if the state dir already holds a database (see ENV_EXISTING_STATE). */
+	existingState?: boolean;
 	executor: Executor;
 	/** Idle self-shutdown after this long without work/requests. 0 disables. Default env PI_TEAM_IDLE_MS or 0 (no idle shutdown). */
 	idleMs?: number;
@@ -42,6 +44,11 @@ export interface ControllerHandle {
 	ctx: Ctx;
 	/** Graceful stop. `crash: true` simulates a hard crash (no waiting, DB left as-is) but still releases the lock so tests can restart in-process. */
 	close(opts?: { crash?: boolean; reason?: string }): Promise<void>;
+}
+
+/** The team state this controller was started for no longer exists. */
+export class StateGoneError extends Error {
+	constructor(dir: string) { super(`no team state in ${dir}; not starting a controller`); this.name = "StateGoneError"; }
 }
 
 export class ControllerAlreadyRunning extends Error {
@@ -208,6 +215,9 @@ export function probeHealth(socket: string, timeoutMs = 1000): Promise<HealthRes
 // ---- start -----------------------------------------------------------------------
 
 export async function startController(opts: ControllerOptions): Promise<ControllerHandle> {
+	// Started for a client that holds a session token: the team state must still be there. Checked
+	// before anything is created, so a dir deleted meanwhile is not brought back empty.
+	if (opts.existingState && !existsSync(statePaths(opts.stateDir).db)) throw new StateGoneError(statePaths(opts.stateDir).dir);
 	const paths = ensureStateDir(statePaths(opts.stateDir));
 	if (Buffer.byteLength(paths.socket) > 103) throw new Error(`socket path too long for AF_UNIX (${paths.socket})`);
 	const controllerId = `ctl-${randomBytes(6).toString("hex")}`;

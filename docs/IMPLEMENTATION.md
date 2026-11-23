@@ -620,3 +620,13 @@ on that directory. Deleting the directory (as every test does with its temp stat
 the controller running forever. Housekeeping (every 5 s, or a quarter of the idle timeout) now stops
 the controller, reason `orphaned`, when its lock file or socket is gone. A lock held by a rival
 controller is not checked here: the database lease already fences that case.
+
+## No controllers for deleted team state (v0.1.46)
+
+The orphan check (v0.1.45) stops a controller whose lock or socket disappears, but a client could
+still start a new controller after the state dir was deleted: a heartbeat in flight while a test
+removed its temp dir re-created the dir and started an empty controller that nothing would ever
+stop. A client holding a session token now calls `ensureController` with `existingStateDir`: it
+spawns only if the state dir still has its database, and passes `PI_TEAM_EXISTING_STATE=1`, so the
+controller itself re-checks before creating anything (`StateGoneError`, exit 0). Clients without a
+token (first start, operator commands) still create the state dir as before.

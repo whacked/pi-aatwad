@@ -353,6 +353,17 @@ describe("ensureController", () => {
 		}
 	});
 
+	test("a client with a session token never re-creates a deleted state dir (no orphaned controller)", async () => {
+		const { paths, cleanup } = makeState();
+		cleanup();
+		const c = new TeamClient({ paths, token: () => "agent-session-token", ensure: { entry: FAKE } });
+		let reconnected = false;
+		c.opts.onReconnect = () => (reconnected = true);
+		await assert.rejects(c.health(), (e: unknown) => e instanceof ControllerUnavailableError);
+		assert.equal(reconnected, false);
+		assert.equal(existsSync(paths.dir), false);
+	});
+
 	test("reports a clear error when the controller never becomes ready", async () => {
 		const { paths, cleanup } = makeState();
 		try {

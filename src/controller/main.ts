@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { statePaths } from "../shared/paths.ts";
 import type { Executor } from "../executor/types.ts";
-import { ControllerAlreadyRunning, probeHealth, startController } from "./bootstrap.ts";
+import { ControllerAlreadyRunning, probeHealth, StateGoneError, startController } from "./bootstrap.ts";
+import { ENV_EXISTING_STATE } from "../shared/protocol.ts";
 import type { ControllerTunables } from "./context.ts";
 
 async function loadExecutor(): Promise<Executor> {
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
 	try {
 		const h = await startController({
 			executor,
+			existingState: process.env[ENV_EXISTING_STATE] === "1",
 			tunables: tunablesFromEnv(),
 			onClosed: (reason) => {
 				process.exitCode = 0;
@@ -80,6 +82,10 @@ async function main(): Promise<void> {
 		process.on("SIGTERM", () => stop("SIGTERM"));
 		process.on("SIGINT", () => stop("SIGINT"));
 	} catch (e) {
+		if (e instanceof StateGoneError) {
+			process.stderr.write(`${e.message}\n`);
+			process.exit(0);
+		}
 		if (e instanceof ControllerAlreadyRunning) {
 			const socket = statePaths().socket;
 			const deadline = Date.now() + 15_000;

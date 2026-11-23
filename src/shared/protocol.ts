@@ -95,6 +95,8 @@ export interface ApiError {
 export const ENV_ENROLL_FILE = "PI_TEAM_ENROLL_FILE";
 /** Overrides the state directory (tests, demo). */
 export const ENV_STATE_DIR = "PI_TEAM_STATE_DIR";
+/** Set on a controller started for a client holding a session token: start only if the team state still exists. */
+export const ENV_EXISTING_STATE = "PI_TEAM_EXISTING_STATE";
 /** Overrides the executor used for workers: "pi" (default) or path to a node script (tests). */
 export const ENV_EXECUTOR = "PI_TEAM_EXECUTOR";
 export const ENROLL_TTL_MS = 10 * 60_000;
