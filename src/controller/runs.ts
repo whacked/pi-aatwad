@@ -428,6 +428,12 @@ function nodeOf(db: DB, a: Row): Omit<TreeNode, "children"> {
 	return { agent_id: a.id, role: a.role, status: a.status, desired_state: a.desired_state, observed_state: a.observed_state, model: current.model ? `${current.provider}/${current.model}` : null, ...(meta.model_change ? { pending_model: `${meta.model_change.provider}/${meta.model_change.model}` } : {}), parent_id: getCurrentManager(db, a.id) };
 }
 
+/** What a lead needs to route work to an agent of another team linked under it: which team, which project. */
+function linkedTeam(db: DB, a: Row): { run_id: string; team_name?: string; project?: string } {
+	const name = runConfig(db, a.run_id).name;
+	return { run_id: a.run_id, ...(name ? { team_name: name } : {}), ...(a.cwd ? { project: a.cwd } : {}) };
+}
+
 export function tree(ctx: Ctx, p: Principal, runId: string, activeOnly = false, linked = false): TreeResponse {
 	assertRunRead(ctx.db, p, runId);
 	const db = ctx.db;
@@ -439,7 +445,7 @@ export function tree(ctx: Ctx, p: Principal, runId: string, activeOnly = false, 
 		const a = getAgent(db, id);
 		const kids = (linked ? getDirectSubs(db, id) : getChildren(db, id)).filter((child) => !seen.has(child) && (!activeOnly || !isTerminal(getAgent(db, child).status)));
 		const node = nodeOf(db, a);
-		return { ...node, ...(a.run_id !== runId ? { run_id: a.run_id, parent_id: node.parent_id ?? getLinkParent(db, id) } : {}), children: kids.map(build) };
+		return { ...node, ...(a.run_id !== runId ? { ...linkedTeam(db, a), parent_id: node.parent_id ?? getLinkParent(db, id) } : {}), children: kids.map(build) };
 	};
 	const history = all(db, "SELECT child_id, parent_id, valid_from, valid_to FROM reporting_edges WHERE run_id = ? AND parent_run_id IS NULL ORDER BY valid_from, rowid", runId) as TreeResponse["history"];
 	return { run_id: runId, topology_version: r.topology_version, root: build(r.root_agent_id), history };
@@ -453,7 +459,7 @@ export function me(ctx: Ctx, p: Principal): OrgContext {
 	// The lead may be in another team when this team is linked under it.
 	const leadId = parentId ?? getLinkParent(db, a.actor_id);
 	const parent = leadId ? getAgent(db, leadId) : null;
-	const brief = (x: Row) => ({ agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state, ...(x.run_id !== a.run_id ? { run_id: x.run_id } : {}) });
+	const brief = (x: Row) => ({ agent_id: x.id, role: x.role, status: x.status, observed_state: x.observed_state, ...(x.run_id !== a.run_id ? linkedTeam(db, x) : {}) });
 	return {
 		run_id: a.run_id,
 		agent_id: a.actor_id,

@@ -136,6 +136,9 @@ export class Reconciler {
 			const cfg = runConfig(db, r.id);
 			if (cfg.on_leader_exit === "keep" || ["STOPPED", "CLEANING", "REMOVED"].includes(cfg.team_lifecycle?.state ?? "")) continue;
 			if (r.last_heartbeat_at && now - Date.parse(r.last_heartbeat_at) < quiet) continue;
+			// Just resumed: /team resume attaches the leader next. Pausing in between makes the attach fail.
+			const lc = cfg.team_lifecycle;
+			if (lc?.state === "RESUMED" && now - Date.parse(lc.at) < quiet) continue;
 			const members = all(db, `SELECT id, observed_state FROM agents WHERE run_id = ? AND id <> ? AND status NOT IN ${TERMINAL_SQL}`, r.id, r.root_agent_id);
 			if (!members.length) continue;
 			const quietSince = (id: string, live: boolean) => {

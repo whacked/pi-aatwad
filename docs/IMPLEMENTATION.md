@@ -680,3 +680,27 @@ leader thread -> `/team init` (team named after the thread) -> recruit -> member
 child thread enrolled by claim, completed its task and woke the leader; cancel stopped and archived
 the thread. Not shown in bb: `/team` command output (bb ignores Pi notifications and custom
 messages; it logs them as `provider/unhandled`).
+
+## Teams that outlive their leader's process (v0.1.49)
+
+Found from a bb leader that silently lost its team and an EasyCard `/team resume` that failed with
+`CONFLICT: team … is stopped; resume it first`.
+
+- **bb leaders keep their team.** `onQuit` applies the exit policy only when the human quits. Under
+  bb (`BB_THREAD_ID`), the thread outlives its Pi process: bb restarts and idle eviction end Pi with
+  `reason: "quit"`, which used to stop the team. Now it does nothing there.
+- **Resume, then attach, without a pause in between.** `/team resume` calls `POST /runs/:id/resume`
+  and then `POST /runs/:id/attach`. The leaderless-team sweep (`pauseLeaderlessTeams`) saw a
+  RUNNING team whose root had no recent heartbeat and idle members, and stopped it again before the
+  attach. It now skips a team resumed less than `leaderlessIdleMs` ago.
+- **A session that returns to a stopped team says so.** Restoring a persisted identity attaches
+  without resuming (attach must not revive a stopped team). On `team_stopped` it now sets the
+  notice `Team … was stopped while this session was away; run /team resume <run> <agent>`. Team
+  tools put the notice in their `not enrolled` error, so a model can relay the exact command. bb
+  shows no Pi notifications, so that error was the only place it could surface.
+- **Choosing a team.** `/team resume` choices and run completions list this project's teams first
+  (`projectFirst`) and show each team's directory.
+- **Routing work to linked teams.** `/me` children and peers, and linked nodes of
+  `GET /runs/:id/tree?linked=1`, carry `team_name` and `project` (the linked agent's working
+  directory). The context block and tree show `linked team "<name>" <run> in <dir>`, so a lead with
+  several linked teams can tell which one owns which project.

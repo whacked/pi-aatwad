@@ -3,7 +3,7 @@ import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { TeamRuntime, __resetProcessStateForTests, IDENTITY_ENTRY, INBOX_MESSAGE, NOT_ENROLLED, MAX_SETTLE_CONTINUATIONS, MANAGED_NO_STATE_DIR } from "../../src/extension/runtime.ts";
+import { TeamRuntime, __resetProcessStateForTests, IDENTITY_ENTRY, INBOX_MESSAGE, MAX_SETTLE_CONTINUATIONS, MANAGED_NO_STATE_DIR } from "../../src/extension/runtime.ts";
 import { BB_CLAIM_FILE, ENV_ENROLL_FILE, MEMBER_BOOTSTRAP_PREFIX } from "../../src/shared/protocol.ts";
 import type { EnrollmentFile, Envelope, OrgContext } from "../../src/shared/protocol.ts";
 import { formatOrgContext, MAX_CONTEXT_CHARS } from "../../src/extension/format.ts";
@@ -146,7 +146,7 @@ describe("TeamRuntime identity", () => {
 			assert.equal(m.requests.length, 0, "no controller traffic at all");
 			assert.match(rt.notice ?? "", /forked\/cloned.*\/team resume run1 ag-root/);
 			assert.equal(ctx.notes[0].level, "warning");
-			await assert.rejects(rt.requireIdentity(10), new RegExp(NOT_ENROLLED.slice(0, 20)));
+			await assert.rejects(rt.requireIdentity(10), /not enrolled: This Pi session was forked\/cloned.*\/team resume run1 ag-root/, "tools tell the model why and how to take over");
 		} finally {
 			rt.stop();
 			await m.close();

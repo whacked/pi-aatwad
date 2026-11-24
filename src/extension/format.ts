@@ -25,10 +25,15 @@ export function formatBudget(b: BudgetView): string {
 	].join("\n");
 }
 
+/** A linked team as a lead sees it: name, run and project directory. */
+function linkedLabel(n: { run_id?: string; team_name?: string; project?: string }): string {
+	return [n.team_name && n.team_name !== n.run_id ? `"${n.team_name}"` : "", n.run_id, n.project ? `in ${shortPath(n.project)}` : ""].filter(Boolean).join(" ");
+}
+
 function nodeLine(n: TreeNode, me?: string): string {
 	const mark = n.agent_id === me ? " ← you" : "";
 	// Agents of other teams linked under their lead are shown with their team.
-	const team = n.run_id ? ` ⇢ team ${n.run_id}` : "";
+	const team = n.run_id ? ` ⇢ team ${linkedLabel(n)}` : "";
 	return `${n.role} [${n.agent_id}]${team} ${n.status}/${n.observed_state}${n.desired_state !== "RUNNING" ? ` (desired ${n.desired_state})` : ""}${n.model ? ` · ${n.model}` : ""}${n.pending_model ? ` → ${n.pending_model} (pending)` : ""}${mark}`;
 }
 
@@ -108,12 +113,12 @@ export function formatOrgContext(c: OrgContext, maxChars = MAX_CONTEXT_CHARS): s
 		if (r.links.length) lines.push("Links between teams: a lead can assign tasks (team_delegate_task) and send messages one step down to the agent linked directly under it; that agent reports up with progress, completion, questions and answers; peers under the same lead can exchange questions, answers and progress. Leads never reach deeper than one step, and each team keeps its own recruitment, approvals and budget. Use exact agent IDs. Maintain consolidated status for teams linked under you, follow up on blockers and decisions, and avoid acknowledgement loops. team_reporting manages links and history.");
 	}
 	if (c.children.length) {
-		const shown = c.children.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}] ${k.status}/${k.observed_state}${k.run_id ? ` (linked team ${k.run_id})` : ""}`);
+		const shown = c.children.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}] ${k.status}/${k.observed_state}${k.run_id ? ` (linked team ${linkedLabel(k)})` : ""}`);
 		lines.push(`Direct reports (${c.children.length}): ${shown.join("; ")}${c.children.length > MAX_LIST ? "; …" : ""}`);
 	} else lines.push("Direct reports: none");
 	const peers = c.peers ?? [];
 	if (peers.length) {
-		const shown = peers.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}]${k.run_id ? ` (team ${k.run_id})` : ""}`);
+		const shown = peers.slice(0, MAX_LIST).map((k) => `${k.role} [${k.agent_id}]${k.run_id ? ` (team ${linkedLabel(k)})` : ""}`);
 		lines.push(`Teammates (same manager; message them directly with team_send_message): ${shown.join("; ")}${peers.length > MAX_LIST ? "; …" : ""}`);
 	}
 	if (c.tasks.length) {
@@ -143,7 +148,7 @@ function ago(iso: string | null | undefined, now: number): string {
 	return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86_400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86_400)}d ago`;
 }
 
-function shortPath(path: string | null | undefined, home = process.env.HOME): string {
+export function shortPath(path: string | null | undefined, home = process.env.HOME): string {
 	if (!path) return "";
 	return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
 }
@@ -164,6 +169,11 @@ export function sameProject(teamCwd: string | null | undefined, project: string)
 	if (!teamCwd) return false;
 	const a = teamCwd.replace(/\/+$/, ""), b = project.replace(/\/+$/, "");
 	return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/** Teams of this project first (same directory, or one inside the other); otherwise the given order is kept. */
+export function projectFirst<T extends { cwd?: string | null }>(runs: T[], project: string): T[] {
+	return [...runs.filter((r) => sameProject(r.cwd, project)), ...runs.filter((r) => !sameProject(r.cwd, project))];
 }
 
 export function listTeams(runs: RunSummary[], opts: { project?: string; all?: boolean; current?: string; now?: number }): { lines: string[]; shown: RunSummary[]; hidden: number } {

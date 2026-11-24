@@ -286,6 +286,8 @@ export class TeamRuntime {
 
 	/** On quit: apply the team's exit policy and leave a one-paragraph note. Never throws. */
 	async onQuit(write: (text: string) => void): Promise<void> {
+		// bb keeps the thread and starts Pi again for it (restarts, idle eviction): that is not the human leaving.
+		if (this.env.BB_THREAD_ID) return;
 		const led = await this.ledTeam();
 		if (!led) return;
 		const act = led.activity;
@@ -393,7 +395,15 @@ export class TeamRuntime {
 				this.updateStatus();
 				return;
 			}
-			await this.attach(entry.run_id, entry.agent_id, { quiet: true });
+			try {
+				await this.attach(entry.run_id, entry.agent_id, { quiet: true });
+			} catch (e) {
+				const reason = e instanceof TeamApiError ? (e.details as { reason?: string } | undefined)?.reason : undefined;
+				if (reason !== "team_stopped") throw e;
+				this.notice = `Team ${entry.run_id} was stopped while this session was away; run /team resume ${entry.run_id} ${entry.agent_id} to continue it.`;
+				this.say(this.notice, "warning");
+				this.updateStatus();
+			}
 			return;
 		}
 		// (c) unenrolled standalone: nothing is started or created.
@@ -653,7 +663,8 @@ export class TeamRuntime {
 		await Promise.race([this.ready, new Promise((r) => setTimeout(r, waitMs).unref?.())]);
 		if (!this.identity) {
 			if (this.fenced) throw new Error(`session fenced: another session attempt represents this agent now. ${NOT_ENROLLED}`);
-			throw new Error(NOT_ENROLLED);
+			// The notice says why this session has no identity (a stopped team, a fork), which the model must relay.
+			throw new Error(this.notice ? `not enrolled: ${this.notice}` : NOT_ENROLLED);
 		}
 		return this.identity;
 	}

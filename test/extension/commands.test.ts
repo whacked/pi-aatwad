@@ -566,7 +566,7 @@ test("a session working as a member moves to another team: /team join leaves its
 test("quitting Pi stops the team by default (resumable), keeps it running when the policy says so, and the guard sees working members", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();
-	const a = commandSession(hs, "quit-a", ""), b = commandSession(hs, "quit-b", "");
+	const a = commandSession(hs, "quit-a", ""), b = commandSession(hs, "quit-b", ""), c = commandSession(hs, "quit-c", "");
 	try {
 		for (const s of [a, b]) { await s.rt.start(s.ctx); await s.command.handler("init --name Alpha", s.ctx); }
 		const state = (run: string) => JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id = ?", run)[0].config_json).team_lifecycle?.state ?? "RUNNING";
@@ -593,7 +593,38 @@ test("quitting Pi stops the team by default (resumable), keeps it running when t
 		await b.rt.onQuit((t) => kept.push(t));
 		assert.match(kept.join(""), /keeps running in the background/);
 		assert.equal(state(b.rt.identity!.run_id), "RUNNING");
-	} finally { a.rt.stop(); b.rt.stop(); await hs.cleanup(); }
+
+		// bb owns the thread: its Pi process exiting (bb restart, idle eviction) is not the human leaving.
+		await c.rt.start(c.ctx); await c.command.handler("init --name Gamma", c.ctx);
+		c.rt.env.BB_THREAD_ID = "thr_leader";
+		const third = (await hs.call("POST", "/members", { token: (c.rt.identity as any).token, body: { name: "Reader", responsibility: "Read" } })).body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(third));
+		const bbOut: string[] = [];
+		await c.rt.onQuit((t) => bbOut.push(t));
+		assert.deepEqual(bbOut, []);
+		assert.equal(state(c.rt.identity!.run_id), "RUNNING", "a bb leader's team survives its Pi process");
+	} finally { a.rt.stop(); b.rt.stop(); c.rt.stop(); await hs.cleanup(); }
+});
+
+test("a session that comes back to a team stopped while it was away says how to resume it", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "comes-back", "");
+	let again: TeamRuntime | undefined;
+	try {
+		await s.rt.start(s.ctx); await s.command.handler("init", s.ctx);
+		const { run_id, agent_id } = s.rt.identity!;
+		s.rt.stop(); // the Pi process died without applying its exit policy
+		assert.equal((await hs.call("POST", `/runs/${run_id}/stop`, { token: hs.op, body: {} })).status, 200);
+		__resetProcessStateForTests(); // a new process: no in-memory credential
+		const notes: string[] = [];
+		again = new TeamRuntime({ appendEntry: () => {}, sendMessage: () => {} } as any, { paths: statePaths(hs.dir), env: {}, heartbeatMs: 60000 });
+		await again.start({ ...s.ctx, ui: { ...s.ctx.ui, notify: (t: string) => notes.push(t) } });
+		assert.equal(again.identity, undefined);
+		const expected = `/team resume ${run_id} ${agent_id}`;
+		assert.ok(notes.some((n) => n.includes(expected)), notes.join("\n"));
+		await assert.rejects(again.requireIdentity(100), (e: Error) => e.message.includes(expected) && e.message.includes("was stopped while this session was away"));
+	} finally { again?.stop(); await hs.cleanup(); }
 });
 
 test("/team prune closes only idle members with no open tasks, after confirmation", async () => {

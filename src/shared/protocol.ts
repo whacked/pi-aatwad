@@ -514,6 +514,7 @@ export interface HeartbeatResponse {
 }
 
 /** GET /me (agent) - who am I + effective org context (bounded, fresh from SQLite). */
+export interface LinkedBrief { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState; run_id?: string; team_name?: string; project?: string }
 export interface OrgContext {
 	reporting?: ReportingStatus;
 	run_id: string;
@@ -524,9 +525,10 @@ export interface OrgContext {
 	/** Your lead: the in-team manager, or for a linked team's root the agent it is linked under (run_id set). */
 	parent: { agent_id: string; role: string; run_id?: string } | null;
 	/** Direct subs: in-team reports and agents of other teams linked under you (run_id set). */
-	children: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState; run_id?: string }[];
+	/** Leads of linked teams carry run_id, team_name and project (their working directory) for routing. */
+	children: LinkedBrief[];
 	/** Live agents with the same lead, in this team or another. Messageable directly (team_send_message). */
-	peers?: { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState; run_id?: string }[];
+	peers?: LinkedBrief[];
 	tasks: { task_id: string; title: string; status: TaskStatus; parent_task_id: string | null }[];
 	envelope: Envelope_Limits;
 	budget: BudgetView;
@@ -578,6 +580,9 @@ export interface TreeNode {
 	parent_id: string | null;
 	/** Set on agents of another team shown under the lead they are linked to (tree ?linked=1). */
 	run_id?: string;
+	/** Linked teams only: the team's name and its working directory, so a lead can tell which team does what. */
+	team_name?: string;
+	project?: string;
 	children: TreeNode[];
 }
 /** GET /runs/:id/tree */

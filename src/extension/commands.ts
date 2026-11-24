@@ -14,7 +14,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
-import { formatAway, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, teamLabel, type AwaySummary } from "./format.ts";
+import { formatAway, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
 import { projectRoot } from "../shared/readable-id.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
@@ -95,7 +95,7 @@ function resumable(run: RunSummary): boolean {
 	return !TERMINAL_STATUSES.has(run.status) && !TERMINAL_STATUSES.has(run.root_status ?? "");
 }
 function runLabel(run: RunSummary): string {
-	return `${teamLabel(run)} · ${run.run_id}`;
+	return `${teamLabel(run)} · ${run.run_id}${run.cwd ? ` · ${shortPath(run.cwd)}` : ""}`;
 }
 
 /** The project a session works in: its git top-level, else its working directory (shared with team ID stamps). */
@@ -475,7 +475,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const runs = (await rt.client.listRuns({ token: op })).runs;
 			let target = a[0];
 			if (!target) {
-				const choices = runs.filter(resumable).sort((x, y) => (y.active_members ?? y.agents - 1) - (x.active_members ?? x.agents - 1) || y.created_at.localeCompare(x.created_at));
+				const choices = projectFirst(runs.filter(resumable).sort((x, y) => (y.active_members ?? y.agents - 1) - (x.active_members ?? x.agents - 1) || y.created_at.localeCompare(x.created_at)), projectRoot(ctx.cwd));
 				if (!choices.length) { out(ctx, "No resumable teams. Use /team init to create a new team, then ask the leader to add members."); return; }
 				if (choices.length === 1) target = choices[0].run_id;
 				else {
@@ -682,7 +682,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (sub === "resume" && parts.length === 3) return await agentCompletions(sub, parts[2], `resume ${partial}`, partial);
 			if (sub === "join" || sub === "resume" || sub === "tree" || sub === "events" || (["stop", "remove"].includes(sub) && parts.length === 2)) {
 				if (parts.length > 2) return null;
-				const runs = await runCompletions();
+				const runs = projectFirst(await runCompletions(), projectRoot(rt.ctx?.cwd ?? process.cwd()));
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&
 					((sub !== "stop" && sub !== "resume") || resumable(r)) && (sub !== "stop" || !r.stopped)).map((r) => ({ value: `${typed} ${r.run_id}`, label: r.run_id, description: `${r.status} · ${runLabel(r)}` }));
 				return items.length ? items : null;

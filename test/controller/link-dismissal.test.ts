@@ -16,6 +16,12 @@ test("dismissing a joined team only severs the link by default; the team keeps r
 		const lead = await newRun(h), sub = await newRun(h), stranger = await newRun(h);
 		await connect(h, sub, lead);
 		assert.equal(activeLink(h, sub).terminatable, 0, "joins default to not terminatable");
+		// With several teams linked under it, a lead routes work by each team's name and project.
+		ok(await h.call("POST", `/runs/${sub.run_id}/settings`, { token: sub.token, body: { name: "Parser team" } }));
+		const linked = ok(await h.call("GET", "/me", { token: lead.token })).children.find((c: any) => c.agent_id === sub.root);
+		assert.deepEqual({ run: linked.run_id, name: linked.team_name, project: linked.project }, { run: sub.run_id, name: "Parser team", project: h.dir });
+		const node = ok(await h.call("GET", `/runs/${lead.run_id}/tree?linked=1`, { token: lead.token })).root.children.find((c: any) => c.agent_id === sub.root);
+		assert.deepEqual({ name: node.team_name, project: node.project }, { name: "Parser team", project: h.dir });
 		assert.equal((await h.call("POST", `/agents/${sub.root}/dismiss`, { token: stranger.token, body: {} })).status, 403);
 		assert.equal((await h.call("POST", `/agents/${lead.root}/dismiss`, { token: sub.token, body: {} })).status, 404, "a lead is not linked under its sub");
 		assert.equal((await h.call("POST", `/agents/${sub.root}/dismiss`, { token: lead.token, body: { stop: true } })).status, 403, "only the operator overrides");
@@ -162,6 +168,13 @@ test("a team whose leader left is paused once every member is idle; busy members
 		await new Promise((r) => setTimeout(r, 600));
 		assert.equal(state(working), "RUNNING", "a working member is never interrupted");
 		assert.equal(state(kept), "RUNNING", "exit policy keep opts out");
+
+		// /team resume: resume, then attach. The sweep must not pause the team again in between.
+		await waitFor(() => state(gone) === "STOPPED", "cleanup settled", 5000);
+		ok(await h.call("POST", `/runs/${gone.run_id}/resume`, { token: h.op, body: {} }));
+		await new Promise((r) => setTimeout(r, 150)); // a few reconcile ticks, as a slow client would take
+		ok(await h.call("POST", `/runs/${gone.run_id}/attach`, { token: h.op, body: {} }));
+		assert.equal(sql(h, "SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = 'run.auto_paused'", gone.run_id)[0].n, 1, "not paused again");
 	} finally { await h.cleanup(); }
 });
 

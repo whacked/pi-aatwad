@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatEnvelope, MAX_MESSAGE_CHARS } from "../../src/extension/format.ts";
+import { formatEnvelope, MAX_MESSAGE_CHARS, projectFirst } from "../../src/extension/format.ts";
 import type { Envelope } from "../../src/shared/protocol.ts";
 
 const env = (payload: Record<string, unknown>): Envelope => ({ version: 1, message_id: "msg-1", run_id: "run1", type: "question", from: "ag-lead", to: "ag-sub", payload });
@@ -20,4 +20,9 @@ test("only a pathological message hits the ceiling, and then it says so", () => 
 	const huge = "y".repeat(MAX_MESSAGE_CHARS + 10);
 	const text = formatEnvelope(env({ text: huge }));
 	assert.match(text, new RegExp(`\\[message cut at ${MAX_MESSAGE_CHARS} of ${MAX_MESSAGE_CHARS + 10} characters; ask ag-lead to send the rest in a file\\]$`));
+});
+
+test("team choices list this project's teams first, keeping the order within each group", () => {
+	const runs = [{ run_id: "a", cwd: "/w/other" }, { run_id: "b", cwd: "/w/easycard" }, { run_id: "c", cwd: null }, { run_id: "d", cwd: "/w/easycard/sub" }];
+	assert.deepEqual(projectFirst(runs, "/w/easycard").map((r) => r.run_id), ["b", "d", "a", "c"]);
 });
