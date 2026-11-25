@@ -732,3 +732,18 @@ The reconciler now notices a stall: when a tick runs more than one lease period 
 one, it judges no absence for one lease period (`waking()`): no lease expiry (LOST), no restarts,
 no leaderless pauses. Live sessions heartbeat within that period; anything still silent afterwards
 is handled as before.
+
+## Leads resume stopped linked teams (v0.1.52)
+
+A lead could message a team linked under it but not bring it back once it stopped, so a paused
+sub-team needed a human at its own terminal.
+
+- `POST /agents/:id/resume-team` (`resumeLinked`): the lead the agent's team is linked directly
+  under, or the operator, resumes that team (`resumeWithCascade`, so teams that stopped with it
+  come back too). 409 when the team is not stopped. Tools: `team_resume_team` (Pi) and the same
+  name in the Claude Code MCP server; the leader context mentions it.
+- The stopped team's leader session re-attaches by itself (`watchForResume`). A non-managed session
+  that lost its identity to a stop (credentials revoked, or restored onto a stopped team) checks
+  each heartbeat interval; once the team is resumed it attaches to its agent again, unless the
+  agent's latest session belongs to another Pi session (someone ran `/team resume` elsewhere), in
+  which case it only says so. `GET /agents/:id` sessions now carry `pi_session_id` for that check.

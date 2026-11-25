@@ -792,7 +792,7 @@ export interface EventView {
 /** GET /agents/:id (inspect) */
 export interface InspectResponse {
 	agent: TreeNode & { metadata: Record<string, unknown>; created_at: string; last_heartbeat_at: string | null };
-	sessions: { session_id: string; status: SessionStatus; provider: string; model: string; pi_session_path: string | null; started_at: string | null; ended_at: string | null; pid: number | null; process_started_at?: string | null }[];
+	sessions: { session_id: string; status: SessionStatus; provider: string; model: string; pi_session_path: string | null; pi_session_id?: string | null; started_at: string | null; ended_at: string | null; pid: number | null; process_started_at?: string | null }[];
 	tasks: { task_id: string; title: string; status: TaskStatus }[];
 	reporting_history: { parent_id: string; valid_from: string; valid_to: string | null }[];
 	budget: BudgetView;

@@ -20,7 +20,7 @@ import { changeReporting, readReporting } from "./reporting.ts";
 import { agentAttentionRoute, runAttentionRoute } from "./attention.ts";
 import { joinTeam, leaveSession, secede } from "./external.ts";
 import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
-import { dismiss, setLinkPolicy } from "./links.ts";
+import { dismiss, resumeLinked, setLinkPolicy } from "./links.ts";
 import { recall, rehire, roster } from "./roster.ts";
 import { hostStatus, reportHost, requestHostRefresh } from "./host.ts";
 
@@ -88,6 +88,7 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/agents/:id/reparent", "any", ({ p, scope, params, body }) => reparent(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/lifecycle", "any", ({ p, scope, params, body }) => lifecycle(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/dismiss", "any", ({ p, scope, params, body }) => dismiss(ctx, p, scope, params[0], body)),
+		R("POST", "/agents/:id/resume-team", "any", ({ p, scope, params }) => resumeLinked(ctx, p, scope, params[0])),
 		R("POST", "/agents/:id/link", "operator", ({ p, params, body }) => setLinkPolicy(ctx, p, params[0], body)),
 		R("GET", "/agents/:id/roster", "any", ({ p, params }) => roster(ctx, p, params[0])),
 		R("POST", "/roster/recall", "any", ({ p, scope, body }) => recall(ctx, p, scope, body)),

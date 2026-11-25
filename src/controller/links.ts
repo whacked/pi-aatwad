@@ -2,13 +2,13 @@
 // Dismissing an agent linked under you severs the link; on a terminatable link it also stops
 // the agent's team, resumably, cascading through terminatable links and severing the rest.
 import type { Ctx, Principal, ReqScope } from "./context.ts";
-import type { DismissResponse, ReportingLink } from "../shared/protocol.ts";
+import type { DismissResponse, ReportingLink, TeamLifecycleResponse } from "../shared/protocol.ts";
 import { all, emit, get, run } from "./db.ts";
 import { fail } from "./errors.ts";
 import { obj, onlyKeys, str } from "./validate.ts";
 import { getAgent, isTerminal } from "./queries.ts";
 import { closeLink, LINK_COLUMNS, linkOfChild } from "./reporting.ts";
-import { cascadeStop, suspendTeam } from "./team-lifecycle.ts";
+import { cascadeStop, resumeWithCascade, suspendTeam, teamLifecycleState } from "./team-lifecycle.ts";
 
 export function dismiss(ctx: Ctx, p: Principal, scope: ReqScope, agentId: string, body: unknown): DismissResponse {
 	const db = ctx.db;
@@ -54,4 +54,19 @@ export function setLinkPolicy(ctx: Ctx, p: Principal, agentId: string, body: unk
 	const row = get(db, `SELECT ${LINK_COLUMNS} FROM reporting_edges e WHERE e.id = ?`, edge.id)!;
 	emit(db, { run_id: getAgent(db, agentId).run_id, actor_id: p.actor_id, type: "link.policy", entity_id: edge.id, payload: { agent_id: agentId, terminatable: b.terminatable } });
 	return { ...row, child_run_id: row.child_run_id, parent_run_id: row.parent_run_id ?? row.child_run_id, terminatable: !!row.terminatable } as ReportingLink;
+}
+
+/**
+ * A lead resumes a stopped team linked directly under it (for example one paused while its leader
+ * was away). Its members restart; its leader's open session re-attaches on its own. Teams that
+ * stopped with it come back too. The human operator may do the same.
+ */
+export function resumeLinked(ctx: Ctx, p: Principal, scope: ReqScope, agentId: string): TeamLifecycleResponse {
+	getAgent(ctx.db, agentId);
+	const link = linkOfChild(ctx.db, agentId);
+	if (!link) fail("NOT_FOUND", "agent is not linked under another team; /team resume resumes your own team");
+	if (p.kind === "agent" && p.actor_id !== link.parent_agent_id) fail("FORBIDDEN", "only the team's lead or the human operator may resume it");
+	const state = teamLifecycleState(ctx.db, link.child_run_id)?.state;
+	if (state !== "STOPPED" && state !== "CLEANING") fail("CONFLICT", `team ${link.child_run_id} is not stopped`, { reason: "team_not_stopped" });
+	return resumeWithCascade(ctx, scope, link.child_run_id, p.actor_id);
 }

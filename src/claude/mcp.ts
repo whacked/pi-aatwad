@@ -254,6 +254,17 @@ export class ClaudeTeamServer {
 				},
 			},
 			{
+				name: "team_resume_team",
+				description: "Resume a stopped team linked directly under you (for example paused while its leader was away). Its members restart and its leader's open session attaches again by itself.",
+				inputSchema: obj({ agent: S("Leader of the linked team, as listed among your direct reports") }, ["agent"]),
+				run: async (a) => {
+					this.requireIdentity();
+					const target = await this.agentRef(String(a.agent));
+					const r = await this.api.post<{ run_id: string; state: string }>(`/agents/${encodeURIComponent(target)}/resume-team`, {}, { idempotencyKey: `claude-resume-team:${randomUUID()}` });
+					return `Team ${r.run_id}: ${r.state}.`;
+				},
+			},
+			{
 				name: "team_close_member",
 				description: "Actually terminate a member in your subtree (cancels its tasks, stops its process). For a team linked under you it dismisses that team instead: it detaches, or stops resumably if the human made its link terminatable. Only when requested.",
 				inputSchema: obj({ agent: S("Member to close"), reason: S("Why") }, ["agent"]),

@@ -114,6 +114,8 @@ export class TeamRuntime {
 	lastInboxPending = 0;
 	fenced = false;
 	private timer: ReturnType<typeof setInterval> | undefined;
+	/** While this session's team is stopped: checks whether someone (its lead, the human) resumed it. */
+	private resumeWatch: ReturnType<typeof setInterval> | undefined;
 	/** Latest host detection not yet accepted by the controller. */
 	private unreportedHost: HostDetection | undefined;
 	private delivering = false;
@@ -348,6 +350,46 @@ export class TeamRuntime {
 		this.ctx = undefined;
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
+		this.unwatchResume();
+	}
+
+	/**
+	 * This session led (or was) an agent of a team that is now stopped. When the team is resumed from
+	 * elsewhere (its lead, or /team resume in another terminal), attach again, but only if no other
+	 * session has taken the agent over meanwhile.
+	 */
+	private watchForResume(runId: string, agentId: string): void {
+		if (this.managed) return; // the controller restarts managed members itself
+		this.unwatchResume();
+		const check = async () => {
+			if (this.stopped || this.identity) return this.unwatchResume();
+			try {
+				const op = await this.operatorToken(0);
+				const run = (await this.client.listRuns({ token: op })).runs.find((r) => r.run_id === runId);
+				if (!run || run.status === "CANCELLED") return this.unwatchResume();
+				if (run.stopped) return;
+				const latest = (await this.client.inspect(agentId, { token: op })).sessions.at(-1);
+				if (latest?.pi_session_id && latest.pi_session_id !== this.piSession().id) {
+					this.unwatchResume();
+					this.notice = `Team ${runId} was resumed and is led from another session now.`;
+					this.updateStatus();
+					return;
+				}
+				this.unwatchResume();
+				if (this.identity || this.stopped) return;
+				await this.attach(runId, agentId, { quiet: true });
+				this.say(`Team ${runId} was resumed; this session is ${agentId} again.`);
+			} catch {
+				/* the controller may be restarting; try again on the next check */
+			}
+		};
+		this.resumeWatch = setInterval(() => void check(), this.opts.heartbeatMs ?? HEARTBEAT_INTERVAL_MS);
+		this.resumeWatch.unref?.();
+	}
+
+	private unwatchResume(): void {
+		if (this.resumeWatch) clearInterval(this.resumeWatch);
+		this.resumeWatch = undefined;
 	}
 
 	private async resolveIdentity(): Promise<void> {
@@ -372,6 +414,7 @@ export class TeamRuntime {
 		if (entry) {
 			if (entry.suspended) {
 				this.notice = `Team ${entry.run_id} is stopped; run /team resume ${entry.run_id} ${entry.agent_id} to continue with fresh credentials.`;
+				if (!entry.managed) this.watchForResume(entry.run_id, entry.agent_id);
 				this.updateStatus();
 				return;
 			}
@@ -402,6 +445,7 @@ export class TeamRuntime {
 				if (reason !== "team_stopped") throw e;
 				this.notice = `Team ${entry.run_id} was stopped while this session was away; run /team resume ${entry.run_id} ${entry.agent_id} to continue it.`;
 				this.say(this.notice, "warning");
+				this.watchForResume(entry.run_id, entry.agent_id);
 				this.updateStatus();
 			}
 			return;
@@ -590,8 +634,9 @@ export class TeamRuntime {
 		this.fenced = false;
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
-		this.notice = `Team ${runId} is stopped, not removed. Run /team resume ${runId} ${id.agent_id} to continue.`;
+		this.notice = `Team ${runId} is stopped, not removed. Run /team resume ${runId} ${id.agent_id} to continue; if its lead resumes it, this session attaches again by itself.`;
 		this.pi.appendEntry(IDENTITY_ENTRY, { version: 1, run_id: runId, agent_id: id.agent_id, pi_session_id: id.pi_session_id, managed: id.managed, role: id.role, suspended: true } satisfies IdentityEntry);
+		if (!id.managed) this.watchForResume(runId, id.agent_id);
 		this.updateStatus();
 	}
 

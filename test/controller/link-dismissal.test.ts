@@ -200,6 +200,23 @@ test("after the host sleeps, a leader that heartbeats on wake keeps its team", a
 	} finally { await h.cleanup(); }
 });
 
+test("a lead resumes a stopped team linked under it; others cannot", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), sub = await newRun(h), stranger = await newRun(h);
+		await connect(h, sub, lead);
+		const resume = (token: string) => h.call("POST", `/agents/${sub.root}/resume-team`, { token, body: {} });
+		assert.equal((await resume(lead.token)).status, 409, "a running team is not resumed");
+		ok(await h.call("POST", `/runs/${sub.run_id}/stop`, { token: h.op, body: {} }));
+		assert.equal((await resume(stranger.token)).status, 403);
+		assert.equal((await resume(sub.token)).status, 401, "the stopped team's own credential was revoked");
+		assert.equal(ok(await resume(lead.token)).state, "RESUMED");
+		assert.equal(state(h, sub).state, "RESUMED");
+		assert.equal(sql(h, "SELECT actor_id FROM events WHERE run_id = ? AND type = 'run.resumed'", sub.run_id)[0].actor_id, lead.root);
+		assert.equal((await h.call("POST", `/agents/${lead.root}/resume-team`, { token: stranger.token, body: {} })).status, 404, "only teams linked under someone");
+	} finally { await h.cleanup(); }
+});
+
 test("the away summary reports what happened since the leader's previous session ended", async () => {
 	const h = await harness();
 	try {

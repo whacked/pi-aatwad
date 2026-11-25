@@ -499,6 +499,7 @@ export function inspect(ctx: Ctx, p: Principal, agentId: string): InspectRespons
 			provider: s.provider,
 			model: s.model,
 			pi_session_path: s.pi_session_path ?? null,
+			pi_session_id: s.pi_session_id ?? null,
 			started_at: s.started_at ?? null,
 			ended_at: s.ended_at ?? null,
 			pid: s.pid ?? null,

@@ -644,6 +644,40 @@ test("a session that comes back to a team stopped while it was away says how to 
 	} finally { again?.stop(); await hs.cleanup(); }
 });
 
+test("a stopped team's leader session attaches again by itself when the team is resumed, unless another session took over", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "away-leader", ""), t = commandSession(hs, "other-leader", "");
+	const runtimes: TeamRuntime[] = [];
+	const comeBack = async (session: typeof s) => {
+		__resetProcessStateForTests();
+		const rt = new TeamRuntime({ appendEntry: () => {}, sendMessage: () => {} } as any, { paths: statePaths(hs.dir), env: {}, heartbeatMs: 100 });
+		runtimes.push(rt);
+		await rt.start(session.ctx);
+		return rt;
+	};
+	try {
+		await s.rt.start(s.ctx); await s.command.handler("init", s.ctx);
+		const { run_id, agent_id } = s.rt.identity!;
+		s.rt.stop();
+		assert.equal((await hs.call("POST", `/runs/${run_id}/stop`, { token: hs.op, body: {} })).status, 200);
+		const back = await comeBack(s);
+		assert.equal(back.identity, undefined);
+		assert.equal((await hs.call("POST", `/runs/${run_id}/resume`, { token: hs.op, body: {} })).status, 200); // as its lead would
+		await waitFor(() => back.identity?.agent_id === agent_id, "re-attached after the resume", 3000);
+
+		// Stopped again, and this time another session takes the agent over before the resume.
+		back.stop();
+		assert.equal((await hs.call("POST", `/runs/${run_id}/stop`, { token: hs.op, body: {} })).status, 200);
+		const again = await comeBack(s);
+		await t.rt.start(t.ctx); await t.command.handler(`resume ${run_id} ${agent_id}`, t.ctx);
+		assert.equal(t.rt.identity?.agent_id, agent_id);
+		await new Promise((r) => setTimeout(r, 400));
+		assert.equal(again.identity, undefined, "never takes the agent back from the session that resumed it");
+		assert.match(again.notice ?? "", /led from another session/);
+	} finally { for (const rt of runtimes) rt.stop(); s.rt.stop(); t.rt.stop(); await hs.cleanup(); }
+});
+
 test("/team prune closes only idle members with no open tasks, after confirmation", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();

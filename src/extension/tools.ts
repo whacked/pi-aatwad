@@ -362,6 +362,17 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	);
 
 	reg(
+		"team_resume_team", "Team: resume linked team",
+		"Resume a team linked directly under you that was stopped (for example paused while its leader was away, or dismissed with stop). Its members restart and its leader's open session attaches again by itself; then reassign or follow up on its work. agent_id is that team's leader as it appears among your direct reports. Only for teams linked under you; it fails when the team is not stopped.",
+		Type.Object({ agent_id: Type.String() }),
+		async (p, id) => {
+			const target = await agent(p.agent_id);
+			const r = await rt.client.post<Record<string, unknown>>(`/agents/${encodeURIComponent(target)}/resume-team`, {}, { idempotencyKey: key("team_resume_team", id) });
+			return json("Linked team resumed", r);
+		},
+	);
+
+	reg(
 		"team_close_member", "Team: close member",
 		"Actually terminate a member in your subtree when requested. For a team linked under you, this dismisses it instead: it detaches, or stops resumably if its link is terminatable. For your own members it cancels its tasks, revokes credentials, stops its Pi process (and descendants), releases reservations and removes its pane. Completing tasks or setting budgets to zero does NOT close a member. agent_id accepts an exact member name, full ID, or unique whole ID words; ambiguous short references require more words or a full ID. Repeating a close is harmless. The closed member leaves the active tree; history remains inspectable. Recruit replacements with team_create_member or team_request_expansion.",
 		Type.Object({ agent_id: Type.String(), reason: Type.Optional(Type.String()) }),
