@@ -101,9 +101,28 @@ export class Reconciler {
 		while (this.running) await this.running.catch(() => {});
 	}
 
+	/** When the previous tick ran, and when the controller last resumed after a long stall (host sleep). */
+	private lastTickAt = 0;
+	private wokeAt = 0;
+
+	/**
+	 * After the host sleeps, every lease looks expired and every leader looks long gone, though the
+	 * sessions are fine and heartbeat within seconds of waking. For one lease period after a stall,
+	 * absence is not judged: no LOST, no restarts, no leaderless pauses.
+	 */
+	private waking(now = Date.now()): boolean {
+		if (this.lastTickAt && now - this.lastTickAt > this.ctx.t.leaseMs) {
+			this.wokeAt = now;
+			this.ctx.log("info", "controller resumed after a stall; not judging absence for one lease period", { stalled_ms: now - this.lastTickAt });
+		}
+		this.lastTickAt = now;
+		return this.wokeAt > 0 && now - this.wokeAt < this.ctx.t.leaseMs;
+	}
+
 	async tick(): Promise<void> {
 		if (this.stopped || !this.isLeader()) return;
 		const db = this.ctx.db;
+		const waking = this.waking();
 		this.wtx(() => releaseExpiredClaims(db));
 		this.publishOutbox();
 		await this.recoverUncertain(false);
@@ -111,15 +130,17 @@ export class Reconciler {
 		await this.checkTerminals();
 		await this.promoteTerminals();
 		await this.observeExits();
-		this.expireLeases();
-		await this.scheduleRestarts();
+		if (!waking) {
+			this.expireLeases();
+			await this.scheduleRestarts();
+		}
 		const pending = all(db, "SELECT id FROM spawn_intents WHERE status = 'PENDING' ORDER BY created_at, role_index, ordinal");
 		for (const r of pending) {
 			if (this.stopped) return;
 			await this.launch(r.id);
 		}
 		await this.syncTerminals();
-		this.pauseLeaderlessTeams();
+		if (!waking) this.pauseLeaderlessTeams();
 	}
 
 	/**

@@ -720,3 +720,15 @@ Found from a bb leader that silently lost its team and an EasyCard `/team resume
   deleted, then `usage.reported` events older than 7 days and `agent.lost`/`agent.reconnected`
   older than 30 days (`pruneEvents`). Spend lives on allocations, so nothing reads those back.
   All other events remain the audit trail.
+
+## Host sleep does not stop teams (v0.1.51)
+
+Found when an EasyCard team stopped mid-job: the laptop slept for 23 minutes, and the controller's
+first tick on wake ran 10 ms before the leader's first heartbeat. Every lease had expired and the
+leader's last heartbeat was older than `leaderlessIdleMs`, so the team was paused and the leader's
+heartbeat came back 401.
+
+The reconciler now notices a stall: when a tick runs more than one lease period after the previous
+one, it judges no absence for one lease period (`waking()`): no lease expiry (LOST), no restarts,
+no leaderless pauses. Live sessions heartbeat within that period; anything still silent afterwards
+is handled as before.

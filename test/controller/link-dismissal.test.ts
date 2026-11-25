@@ -178,6 +178,28 @@ test("a team whose leader left is paused once every member is idle; busy members
 	} finally { await h.cleanup(); }
 });
 
+test("after the host sleeps, a leader that heartbeats on wake keeps its team", async () => {
+	const h = await harness({ tunables: { tickMs: 50, leaderlessIdleMs: 400, leaseMs: 1500 } as any });
+	try {
+		const t = await newRun(h);
+		const worker = ok(await h.call("POST", "/members", { token: t.token, body: { name: "Worker", responsibility: "Work" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(worker));
+		await h.call("POST", "/sessions/heartbeat", { token: h.ex.tokens.get(worker)!, body: { busy: false } });
+		// The laptop slept for a minute: the controller's ticks stopped, and every heartbeat is old.
+		const slept = new Date(Date.now() - 60_000).toISOString();
+		h.h.db.prepare("UPDATE agents SET last_heartbeat_at = ?, lease_until = ? WHERE run_id = ?").run(slept, slept, t.run_id);
+		(h.h.reconciler as any).lastTickAt = Date.now() - 60_000;
+		await new Promise((r) => setTimeout(r, 300)); // several ticks on wake, before the leader's next heartbeat
+		// The leader's session is alive: it heartbeats from now on, as Pi does every few seconds.
+		const beat = setInterval(() => void h.call("POST", "/sessions/heartbeat", { token: t.token, body: { busy: false } }), 200);
+		try { await new Promise((r) => setTimeout(r, 2_000)); } finally { clearInterval(beat); } // past the wake grace
+		const state = JSON.parse(sql(h, "SELECT config_json FROM runs WHERE id = ?", t.run_id)[0].config_json).team_lifecycle?.state ?? "RUNNING";
+		assert.equal(state, "RUNNING");
+		assert.equal(sql(h, "SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = 'run.auto_paused'", t.run_id)[0].n, 0);
+		assert.equal(sql(h, "SELECT COUNT(*) AS n FROM events WHERE entity_id = ? AND type = 'agent.lost'", t.root)[0].n, 0, "the leader was never marked lost");
+	} finally { await h.cleanup(); }
+});
+
 test("the away summary reports what happened since the leader's previous session ended", async () => {
 	const h = await harness();
 	try {
