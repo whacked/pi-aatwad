@@ -606,6 +606,23 @@ test("quitting Pi stops the team by default (resumable), keeps it running when t
 	} finally { a.rt.stop(); b.rt.stop(); c.rt.stop(); await hs.cleanup(); }
 });
 
+test("/team init in a project whose team is led by another open session warns, with commands for each option", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const first = commandSession(hs, "first-session", ""), second = commandSession(hs, "second-session", "");
+	try {
+		await first.rt.start(first.ctx); await first.command.handler("init", first.ctx);
+		const theirs = first.rt.identity!.run_id;
+		await second.rt.start(second.ctx); await second.command.handler("init", second.ctx);
+		const mine = second.rt.identity!.run_id;
+		const warning = second.notes.find((n) => n.includes("still led by another open session"));
+		assert.ok(warning, second.notes.join("\n"));
+		assert.match(warning!, new RegExp(`/team resume ${theirs}`));
+		assert.match(warning!, new RegExp(`/team join ${theirs}`));
+		assert.match(warning!, new RegExp(`in the other session, /team join ${mine}`));
+	} finally { first.rt.stop(); second.rt.stop(); await hs.cleanup(); }
+});
+
 test("a session that comes back to a team stopped while it was away says how to resume it", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();

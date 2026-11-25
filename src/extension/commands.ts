@@ -14,7 +14,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
-import { formatAway, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
+import { formatAway, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
 import { projectRoot } from "../shared/readable-id.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
@@ -379,6 +379,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 					(config?.operator_unlimited ? "policy: UNLIMITED, authorized by the human operator (no numeric resource caps)\n" : `budget: ${cap("$", e.max_subtree_usd)} subtree spend, ${cap("", e.max_subtree_slots)} live descendants, single grant ${cap("", e.max_grant_slots)} slots/${cap("$", e.max_grant_usd)}\n`) +
 					"This is a new empty team. Ask the leader to create members, or use /team resume to choose an existing team.",
 			);
+			const others = await rt.client.listRuns({ token: op }).then((l) => openLeaderHints(l.runs, projectRoot(ctx.cwd), r.run_id), () => undefined);
+			if (others) out(ctx, others, "warning");
 		},
 
 		prune: async (_a, ctx, yes) => {
@@ -717,6 +719,8 @@ export async function projectTeamsNotice(rt: TeamRuntime, ctx: { cwd: string; ha
 	try {
 		if (rt.managed || rt.identity || !ctx.hasUI || !existsSync(rt.paths.db)) return;
 		const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs;
+		const hints = openLeaderHints(runs, projectRoot(ctx.cwd));
+		if (hints) { ctx.ui.notify(hints, "warning"); return; }
 		const { shown } = listTeams(runs, { project: projectRoot(ctx.cwd) });
 		if (!shown.length) return;
 		const names = shown.slice(0, 3).map((r) => `${r.name ?? r.run_id} (${r.stopped ? "stopped" : (r.live_members ?? 0) > 0 ? `${r.live_members} live` : "idle"})`).join(", ");

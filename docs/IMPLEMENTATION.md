@@ -704,3 +704,19 @@ Found from a bb leader that silently lost its team and an EasyCard `/team resume
   `GET /runs/:id/tree?linked=1`, carry `team_name` and `project` (the linked agent's working
   directory). The context block and tree show `linked team "<name>" <run> in <dir>`, so a lead with
   several linked teams can tell which one owns which project.
+
+## Open-session warnings, log and event retention (v0.1.50)
+
+- **Another open session already leads a team here.** `GET /runs` reports `leader_live` (the root
+  agent is LIVE). At startup, and after `/team init`, a Pi session in a project with such a team
+  gets a warning that lists each option with its full command: lead that team from here
+  (`/team resume <run>`, the other session loses it), link under its leader (`/team join <run>`),
+  or put that team under this one (in the other session, `/team join <this run>`). Doing nothing
+  keeps the session as it is. Nothing is blocked (`openLeaderHints`).
+- **Controller log.** Successful heartbeats and GET requests are no longer logged (they were 96% of
+  all lines); writes and every failure still are (`logged`). The log rolls over to
+  `controller.log.1` at 20 MB.
+- **Event retention.** Hourly, from housekeeping: published outbox rows older than a day are
+  deleted, then `usage.reported` events older than 7 days and `agent.lost`/`agent.reconnected`
+  older than 30 days (`pruneEvents`). Spend lives on allocations, so nothing reads those back.
+  All other events remain the audit trail.

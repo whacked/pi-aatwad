@@ -263,7 +263,7 @@ async function handle(ctx: Ctx, deps: ServerDeps, table: Route[], req: IncomingM
 		status = err.status;
 		if (!res.headersSent) send(res, status, err.toBody());
 	} finally {
-		if (url.pathname !== "/health") ctx.log("debug", "request", { method, path: url.pathname, status, actor_id: actor, duration_ms: Date.now() - started });
+		if (logged(method, url.pathname, status)) ctx.log("debug", "request", { method, path: url.pathname, status, actor_id: actor, duration_ms: Date.now() - started });
 	}
 }
 
@@ -279,4 +279,14 @@ function reissue(ctx: Ctx, sessionId: string): string {
 	if (!get(ctx.db, "SELECT 1 FROM auth_tokens WHERE session_id = ? AND revoked_at IS NULL", sessionId)) fail("STALE_SESSION", "session token has been revoked");
 	run(ctx.db, "UPDATE auth_tokens SET revoked_at = ?, revoke_reason = 'reissued' WHERE session_id = ? AND revoked_at IS NULL", nowIso(), sessionId);
 	return issueSessionToken(ctx.db, { run_id: s.run_id, agent_id: s.agent_id, session_id: sessionId, generation: s.generation });
+}
+
+/**
+ * Successful reads and heartbeats are routine polling: every session sends one every few seconds,
+ * so logging them buried everything else. Writes and every failure are kept.
+ */
+export function logged(method: string, path: string, status: number): boolean {
+	if (path === "/health") return false;
+	if (status >= 400) return true;
+	return method !== "GET" && path !== "/sessions/heartbeat";
 }

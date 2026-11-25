@@ -176,6 +176,32 @@ export function projectFirst<T extends { cwd?: string | null }>(runs: T[], proje
 	return [...runs.filter((r) => sameProject(r.cwd, project)), ...runs.filter((r) => !sameProject(r.cwd, project))];
 }
 
+/**
+ * Another open session already leads a team in this project. Warn, and list what the human can do,
+ * each with its full command. Nothing happens unless they run one. `own` is this session's new team, if any.
+ */
+export function openLeaderHints(runs: RunSummary[], project: string, own?: string): string | undefined {
+	const open = runs.filter((r) => r.leader_live && r.run_id !== own && r.status !== "CANCELLED" && !r.stopped && sameProject(r.cwd, project));
+	if (!open.length) return undefined;
+	const lines: string[] = [];
+	for (const r of open.slice(0, 3)) {
+		const id = r.run_id;
+		lines.push(
+			`Team "${r.name ?? id}" (${id}${r.cwd ? `, ${shortPath(r.cwd)}` : ""}) is still led by another open session (${r.root_agent_id}).`,
+			`  To lead that team from this session instead (the other session loses it): /team resume ${id}`,
+			own
+				? `  To link your new team under its leader: /team join ${id}`
+				: `  To lead your own team under its leader: /team init, then /team join ${id}`,
+			own
+				? `  To put that team under yours (you become its leader's lead): in the other session, /team join ${own}`
+				: `  To put that team under yours (you become its leader's lead): /team init, then in the other session /team join <your new run_id>`,
+		);
+	}
+	if (open.length > 3) lines.push(`…and ${open.length - 3} more; /team list shows them.`);
+	lines.push(own ? "Doing nothing keeps your new team separate." : "Doing nothing keeps this session as it is.");
+	return lines.join("\n");
+}
+
 export function listTeams(runs: RunSummary[], opts: { project?: string; all?: boolean; current?: string; now?: number }): { lines: string[]; shown: RunSummary[]; hidden: number } {
 	const now = opts.now ?? Date.now();
 	const visible = (r: RunSummary) => {

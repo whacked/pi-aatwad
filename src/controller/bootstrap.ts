@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { ensureStateDir, migrationsDir as defaultMigrationsDir, statePaths, type StatePaths } from "../shared/paths.ts";
 import { HEARTBEAT_LEASE_MS, ENROLL_TTL_MS, PROTOCOL_VERSION, HDR_PROTOCOL, SCHEMA_VERSION, type HealthResponse } from "../shared/protocol.ts";
 import type { Executor } from "../executor/types.ts";
-import { type DB, openDb, get, run, tx, nowIso, isoPlus } from "./db.ts";
+import { type DB, openDb, get, run, tx, nowIso, isoPlus, pruneEvents } from "./db.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureOperatorToken } from "./auth.ts";
 import type { Ctx, ControllerTunables } from "./context.ts";
@@ -292,6 +292,7 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 	await reconciler.recoverOnStartup();
 
 	let lastActivity = Date.now();
+	let lastPrune = 0;
 	let closing: Promise<void> | null = null;
 	let server: Server;
 	let housekeeping: NodeJS.Timeout | undefined;
@@ -391,6 +392,12 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 				}
 				// Idempotency rows older than a day are no longer useful.
 				run(db, "DELETE FROM idempotency WHERE created_at < ?", isoPlus(-24 * 3600_000));
+				// Old high-volume events, at most hourly (the events table otherwise grows forever).
+				if (Date.now() - lastPrune > 3600_000) {
+					lastPrune = Date.now();
+					const removed = pruneEvents(db);
+					if (removed) log("info", "pruned old events", { removed });
+				}
 			} catch (e) {
 				log("warn", "housekeeping failed", { err: String(e) });
 			}

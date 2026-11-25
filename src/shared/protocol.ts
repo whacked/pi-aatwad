@@ -403,6 +403,8 @@ export interface RunSummary {
 	/** Nobody was ever recruited or linked under the leader. */
 	empty?: boolean;
 	on_leader_exit?: "stop" | "keep";
+	/** The leader's session is open right now (heartbeating). */
+	leader_live?: boolean;
 	run_id: string;
 	status: RunStatus;
 	root_agent_id: string;

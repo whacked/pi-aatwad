@@ -155,7 +155,7 @@ export function listRuns(ctx: Ctx, p: Principal): RunListResponse {
 /** What a human needs to recognize a team in a list. */
 function teamIdentity(db: DB, r: Row): Partial<RunSummary> {
 	const cfg = parseJson<RunConfig>(r.config_json, {} as RunConfig);
-	const root = get(db, "SELECT cwd, provider, model, metadata_json FROM agents WHERE id = ?", r.root_agent_id);
+	const root = get(db, "SELECT cwd, provider, model, metadata_json, observed_state FROM agents WHERE id = ?", r.root_agent_id);
 	const actual = parseJson<{ actual_model?: { provider: string; model: string } }>(root?.metadata_json ?? "{}", {}).actual_model;
 	const model = actual ? `${actual.provider}/${actual.model}` : root?.model && root.model !== "default" ? `${root.provider}/${root.model}` : null;
 	const cwd = root?.cwd ?? cfg.workspace_root ?? null;
@@ -171,6 +171,7 @@ function teamIdentity(db: DB, r: Row): Partial<RunSummary> {
 		summary: summary ? (summary.length > 140 ? `${summary.slice(0, 139)}…` : summary) : null,
 		empty: Number(r.n) <= 1 && linked === 0,
 		on_leader_exit: cfg.on_leader_exit ?? "stop",
+		leader_live: root?.observed_state === "LIVE",
 	};
 }
 
