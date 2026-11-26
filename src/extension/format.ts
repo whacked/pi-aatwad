@@ -1,5 +1,5 @@
 // Pure text renderers for /team output and the bounded org-context prompt section.
-import type { BudgetView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, RunSummary, TreeNode, TreeResponse } from "../shared/protocol.ts";
+import type { BriefResponse, BudgetView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, RunSummary, TreeNode, TreeResponse } from "../shared/protocol.ts";
 
 export const MAX_CONTEXT_CHARS = 2_000;
 const MAX_LIST = 8;
@@ -237,5 +237,36 @@ export function formatAway(a: AwaySummary): string {
 	if (a.progress_reports) lines.push(`  ${a.progress_reports} progress report(s)`);
 	if (a.messages_waiting) lines.push(`  ${a.messages_waiting} message(s) waiting for you; they arrive with your next turn (or /team inbox)`);
 	if (a.auto_paused_at) lines.push(`  The team was paused at ${a.auto_paused_at.slice(11, 16)} UTC because you were gone and everyone was idle; resuming brought it back.`);
+	return lines.join("\n");
+}
+
+/** The team brief as text: what needs the reader, who is doing what, and what changed since it last looked. */
+export function formatBrief(b: BriefResponse): string {
+	const hhmm = (iso: string) => iso.slice(11, 16);
+	const lines: string[] = [];
+	const needs: string[] = [];
+	for (const m of b.needs_you.messages.slice(0, 5)) needs.push(`${m.type} from ${m.from}${m.preview ? `: ${clip(m.preview, 100)}` : ""}`);
+	if (b.needs_you.messages.length > 5) needs.push(`${b.needs_you.messages.length - 5} more message(s)`);
+	if (b.needs_you.proposals_to_review) needs.push(`${b.needs_you.proposals_to_review} expansion proposal(s) to review`);
+	for (const r of b.needs_you.stopped_linked_teams) needs.push(`linked team ${r} is stopped (team_resume_team resumes it)`);
+	lines.push(needs.length ? "Needs you:" : "Needs you: nothing.", ...needs.map((n) => `  • ${n}`));
+	if (b.needs_you.other_unread) lines.push(`  (${b.needs_you.other_unread} other unread message(s), such as progress and notices; they arrive with the next turn)`);
+	if (b.members.length) {
+		lines.push("Members:");
+		for (const m of b.members) {
+			const state = m.state === "idle" && m.idle_ms !== null ? `idle ${Math.round(m.idle_ms / 60_000)}m` : m.state;
+			const work = m.tasks.length ? m.tasks.map((t) => `"${clip(t.title, 60)}" ${t.status}${t.picked_up ? "" : " (not picked up yet)"}`).join("; ") : "no open tasks";
+			lines.push(`  • ${m.role}${m.linked_run_id ? ` (linked team ${m.linked_run_id})` : ""}: ${state} · ${work}`);
+		}
+	} else lines.push("Members: none.");
+	if (b.deeper_open_tasks) lines.push(`  + ${b.deeper_open_tasks} open task(s) further down`);
+	if (b.since_seq === null) lines.push("Changes: (first look; from now on, only what changed since the last look)");
+	else if (!b.changes.length && !b.progress_reports) lines.push("Changes since you last looked: none.");
+	else {
+		lines.push("Changes since you last looked:");
+		if (b.changes_omitted) lines.push(`  … ${b.changes_omitted} earlier change(s)`);
+		for (const c of b.changes) lines.push(`  • ${hhmm(c.at)} ${c.text}`);
+		if (b.progress_reports) lines.push(`  + ${b.progress_reports} progress report(s)`);
+	}
 	return lines.join("\n");
 }

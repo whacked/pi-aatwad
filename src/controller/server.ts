@@ -21,6 +21,7 @@ import { agentAttentionRoute, runAttentionRoute } from "./attention.ts";
 import { joinTeam, leaveSession, secede } from "./external.ts";
 import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
 import { dismiss, resumeLinked, setLinkPolicy } from "./links.ts";
+import { brief, markBriefSeen } from "./brief.ts";
 import { recall, rehire, roster } from "./roster.ts";
 import { hostStatus, reportHost, requestHostRefresh } from "./host.ts";
 
@@ -101,6 +102,8 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("GET", "/agents/:id/host", "any", ({ p, params }) => hostStatus(ctx, p, params[0])),
 		R("POST", "/agents/:id/host/refresh", "any", ({ p, params }) => requestHostRefresh(ctx, p, params[0])),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
+		R("GET", "/agents/:id/brief", "any", ({ p, params, q }) => brief(ctx, p, params[0], q)),
+		R("POST", "/agents/:id/brief/seen", "any", ({ p, params, body }) => markBriefSeen(ctx, p, params[0], (body ?? {}) as { seq?: unknown; reader?: unknown })),
 		R("POST", "/budgets/:id", "any", ({ p, scope, params, body }) => updateBudget(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/model", "any", ({ p, params, body }) => updateModel(ctx, p, params[0], body)),
 		R("POST", "/sessions/model", "agent", ({ p, body }) => selectedModel(ctx, p, body)),

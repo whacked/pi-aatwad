@@ -516,6 +516,21 @@ export interface HeartbeatResponse {
 }
 
 /** GET /me (agent) - who am I + effective org context (bounded, fresh from SQLite). */
+/** GET /agents/:id/brief: the state under an agent and what changed since it last looked (no model involved). */
+export interface BriefResponse {
+	agent_id: string;
+	/** The newest event this brief reflects; mark it seen to get only later changes next time. */
+	as_of_seq: number;
+	/** Changes are listed after this event; null when the reader never marked a brief seen. */
+	since_seq: number | null;
+	members: { agent_id: string; role: string; state: string; idle_ms: number | null; linked_run_id?: string; tasks: { task_id: string; title: string; status: string; picked_up: boolean }[] }[];
+	deeper_open_tasks: number;
+	/** messages: unread questions and answers; other_unread: progress, completions and notices not yet delivered. */
+	needs_you: { messages: { message_id: string; type: string; from: string; preview: string; at: string }[]; other_unread: number; proposals_to_review: number; stopped_linked_teams: string[] };
+	changes: { seq: number; at: string; type: string; text: string }[];
+	changes_omitted: number;
+	progress_reports: number;
+}
 export interface LinkedBrief { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState; run_id?: string; team_name?: string; project?: string }
 export interface OrgContext {
 	reporting?: ReportingStatus;

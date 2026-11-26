@@ -7,6 +7,7 @@ export const TOOL_NAMES = [
 	"team_request_expansion",
 	"team_review_expansion",
 	"team_get_tree",
+	"team_brief",
 	"team_get_inbox",
 	"team_report_progress",
 	"team_complete_task",

@@ -763,3 +763,21 @@ sub-team needed a human at its own terminal.
   the slowest consumer that holds retention. Cursors are in memory for now; a consumer that must
   not miss events across restarts needs a durable cursor table, added with the next schema change
   (which can also drop the unused `outbox` table). No schema change in this release.
+
+## Team brief; progress no longer wakes (v0.1.54)
+
+- **Brief** (`src/controller/brief.ts`, `GET /agents/:id/brief`): what is going on under an agent,
+  built from the database and the event log with no model involved. Members with state and open
+  tasks; what needs the reader (unread questions and answers, proposals to review, stopped linked
+  teams); and notable changes since the reader last looked (tasks completed, members joining,
+  closed, failing or out of budget, teams stopping, resuming or auto-pausing) plus a count of
+  progress reports. Scope: the agent's subtree and the teams linked directly under it. Readable by
+  the agent, its leads (including the lead it is linked under) and the operator.
+- **Seen markers**: `POST /agents/:id/brief/seen {seq, reader}` stores the last event the reader saw
+  in the agent's metadata (`brief_seen_seq`, `brief_seen_seq_human`), so the leader's model and the
+  human looking at its session never hide changes from each other. No schema change.
+- **Where it shows**: `team_brief` (Pi tool and Claude Code MCP tool; marks the model's marker),
+  `/team brief [--all]` (the human's marker). Stall prompts point at `team_brief`.
+- **Progress reports alone no longer wake an idle agent** (`decideWake`). They are still delivered
+  with the next turn and counted in the brief; questions, answers, completions and notices wake as
+  before. This removes the most frequent "nothing to do" turns.

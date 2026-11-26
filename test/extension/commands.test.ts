@@ -678,6 +678,28 @@ test("a stopped team's leader session attaches again by itself when the team is 
 	} finally { for (const rt of runtimes) rt.stop(); s.rt.stop(); t.rt.stop(); await hs.cleanup(); }
 });
 
+test("/team brief shows the human what changed since they last looked, separately from the leader's model", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "brief-leader", "");
+	try {
+		await s.rt.start(s.ctx); await s.command.handler("init", s.ctx);
+		const member = (await hs.call("POST", "/members", { token: (s.rt.identity as any).token, body: { name: "Reader", responsibility: "Read" } })).body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(member));
+		await s.command.handler("brief", s.ctx);
+		assert.match(s.notes.at(-1)!, /Team brief for root .*\nNeeds you: nothing\.\n(  \(\d+ other unread .*\n)?Members:\n  • Reader: /);
+		assert.match(s.notes.at(-1)!, /first look/);
+		const task = (await hs.call("POST", "/tasks", { token: (s.rt.identity as any).token, body: { owner_id: member, title: "Read chapter 1" } })).body;
+		await hs.call("POST", `/tasks/${task.task_id}/complete`, { token: hs.ex.tokens.get(member)!, body: { summary: "done reading" } });
+		await s.command.handler("brief", s.ctx);
+		assert.match(s.notes.at(-1)!, /Changes since you last looked:\n  • \d\d:\d\d Reader finished "Read chapter 1": done reading/);
+		await s.command.handler("brief", s.ctx);
+		assert.match(s.notes.at(-1)!, /Changes since you last looked: none\./);
+		const model = (await hs.call("GET", `/agents/${s.rt.identity!.agent_id}/brief`, { token: (s.rt.identity as any).token })).body;
+		assert.equal(model.since_seq, null, "the leader's model has its own marker");
+	} finally { s.rt.stop(); await hs.cleanup(); }
+});
+
 test("/team prune closes only idle members with no open tasks, after confirmation", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();

@@ -47,6 +47,8 @@ export const ROUTE_SUMMARIES: Record<string, string> = {
 	"POST /agents/:id/reparent": "Move an agent under another parent",
 	"POST /agents/:id/lifecycle": "Pause, resume or cancel an agent (optionally its children)",
 	"POST /agents/:id/dismiss": "Dismiss a linked team from under its lead",
+	"GET /agents/:id/brief": "What is going on under an agent and what changed since it last looked (no model)",
+	"POST /agents/:id/brief/seen": "Mark the brief read up to an event sequence number",
 	"POST /agents/:id/resume-team": "A lead resumes a stopped team linked directly under it",
 	"POST /agents/:id/link": "Set a link's policy (e.g. terminatable)",
 	"GET /agents/:id/roster": "Closed members that can be recalled or rehired",

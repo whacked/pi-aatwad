@@ -41,6 +41,22 @@ test("an empty heartbeat never wakes; messages wake an idle leader once the batc
 	} finally { await h.cleanup(); }
 });
 
+test("progress reports alone do not wake an idle lead; they ride along with the next turn", async () => {
+	const h = await harness();
+	try {
+		const t = await team(h);
+		ok(await setRun(h, t.token, t.run_id, { batch_seconds: 0, stall_seconds: 0 }));
+		const task = ok(await h.call("POST", "/tasks", { token: t.token, body: { owner_id: t.worker, title: "Scan pages" } }));
+		ok(await h.call("GET", "/inbox", { token: t.token })); // clear the recruitment notices
+		ok(await h.call("POST", `/tasks/${task.task_id}/progress`, { token: t.workerToken, body: { note: "page 10 of 93" } }));
+		const quiet = await beat(h, t.token);
+		assert.equal(quiet.wake, undefined, "progress alone is no reason for a turn");
+		assert.ok(quiet.inbox_pending >= 1, "but it is waiting for the next one");
+		ok(await h.call("POST", "/messages", { token: t.workerToken, body: { to: t.root, type: "question", payload: { text: "Skip blank pages?" } } }));
+		assert.deepEqual((await beat(h, t.token)).wake, { reason: "message" }, "a question wakes it, and the progress comes along");
+	} finally { await h.cleanup(); }
+});
+
 test("delegation returns a handoff ack; a stalled team wakes its manager once per distinct state, within the hourly cap", async () => {
 	const h = await harness();
 	try {

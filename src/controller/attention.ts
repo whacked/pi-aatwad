@@ -199,7 +199,9 @@ export function decideWake(db: DB, agentId: string, busy: boolean, now = Date.no
 	const fire = (w: Wake): Wake => { st.wakes.push(now); return w; };
 
 	if (policy.on_message === "wake") {
-		const oldest = get(db, `SELECT MIN(m.created_at) AS at FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient_id = ? AND d.status = 'PENDING'`, agentId)?.at as string | null | undefined;
+		// Progress reports alone never wake an idle agent: they ride along with the next turn and are
+		// counted in the team brief. Questions, answers, completions and notices still wake it.
+		const oldest = get(db, `SELECT MIN(m.created_at) AS at FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient_id = ? AND d.status = 'PENDING' AND m.type <> 'task.progress'`, agentId)?.at as string | null | undefined;
 		if (oldest && now - Date.parse(oldest) >= policy.batch_seconds * 1000) return fire({ reason: "message" });
 	}
 	const needsDigest = policy.stall_seconds > 0 || policy.tick_seconds > 0 || policy.checkin_seconds > 0;
@@ -209,7 +211,7 @@ export function decideWake(db: DB, agentId: string, busy: boolean, now = Date.no
 		const stalled = d.reports.every((r) => !r.busy && (r.idleFor ?? 0) >= policy.stall_seconds * 1000);
 		if (stalled && st.stallSig !== d.sig) {
 			st.stallSig = d.sig;
-			return fire({ reason: "stall", text: `Your team has been idle for at least ${fmtAge(policy.stall_seconds * 1000)} with open work. Decide the next step: reassign, unblock, message a member, or report to the human. If nothing is needed, say so briefly and stop.\n${d.text}` });
+			return fire({ reason: "stall", text: `Your team has been idle for at least ${fmtAge(policy.stall_seconds * 1000)} with open work. Decide the next step: reassign, unblock, message a member, or report to the human. team_brief shows what changed without asking anyone. If nothing is needed, say so briefly and stop.\n${d.text}` });
 		}
 		if (!stalled) st.stallSig = undefined;
 	}

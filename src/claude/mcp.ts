@@ -9,7 +9,7 @@ import { ensureController, readOperatorToken, TeamApiError, type TeamClient } fr
 import { HEARTBEAT_INTERVAL_MS, type MessageType } from "../shared/protocol.ts";
 import { LOADED_VERSION } from "../shared/version.ts";
 import { formatAttention, handoffText } from "../shared/attention-format.ts";
-import { formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
+import { formatBrief, formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
 import { HARNESS, claudePid, clearIdentity, client, readIdentity, readPidState, writeIdentity, writeWake, type Identity } from "./session.ts";
 
 type Json = Record<string, unknown>;
@@ -251,6 +251,17 @@ export class ClaudeTeamServer {
 					const id = this.requireIdentity();
 					const r = await this.api.setReporting(id.run_id, a.run_id === "none" ? { action: "disconnect" } : { action: "connect", parent_run_id: String(a.run_id) }, { idempotencyKey: `claude-report:${randomUUID()}` });
 					return JSON.stringify(r, null, 2);
+				},
+			},
+			{
+				name: "team_brief",
+				description: "What needs you, who is doing what, and what changed since you last called this (completed tasks, members joining or failing, teams stopping or resuming, waiting messages). Built from team records without asking anyone: instant, and costs your members nothing. Read it instead of asking members for status. Each call marks the brief read.",
+				inputSchema: obj({}),
+				run: async () => {
+					const id = this.requireIdentity();
+					const b = await this.api.get<import("../shared/protocol.ts").BriefResponse>(`/agents/${encodeURIComponent(id.agent_id)}/brief`);
+					await this.api.post(`/agents/${encodeURIComponent(id.agent_id)}/brief/seen`, { seq: b.as_of_seq });
+					return formatBrief(b);
 				},
 			},
 			{

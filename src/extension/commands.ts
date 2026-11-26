@@ -14,7 +14,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
-import { formatAway, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
+import { formatAway, formatBrief, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
 import { projectRoot } from "../shared/readable-id.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
@@ -35,6 +35,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "resume", args: "[run_id] [name|agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
 	{ name: "tree", args: "[run_id] [--all]", help: "live logical hierarchy" },
 	{ name: "status", args: "", help: "controller, run, agent and pending work" },
+	{ name: "brief", args: "[--all]", help: "what needs you, who is doing what, and what changed since you last looked (no model involved); --all repeats everything" },
 	{ name: "version", args: "", help: "loaded extension and controller versions, source and state paths" },
 	{ name: "budget", args: "[name|agent_id] [total_usd|none] [--resume]", help: "show budget, set a total spend ceiling, or remove it with none" },
 	{ name: "inbox", args: "", help: "deliver pending team messages into this session" },
@@ -527,6 +528,17 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		tree: async (a, ctx) => {
 			const t = await rt.client.tree(await runId(ctx, a.find((arg) => arg !== "--all")), { token: await rt.commandToken() }, !a.includes("--all"), true);
 			out(ctx, formatTree(t, rt.identity?.agent_id));
+		},
+
+		brief: async (a, ctx) => {
+			await rt.ready;
+			const id = rt.identity;
+			if (!id) throw new Error(rt.notice ?? "not in a team: /team init or /team resume first");
+			const token = await rt.commandToken();
+			const q = a.includes("--all") ? "since_seq=0&reader=human" : "reader=human";
+			const b = await rt.client.get<import("../shared/protocol.ts").BriefResponse>(`/agents/${encodeURIComponent(id.agent_id)}/brief?${q}`, { token });
+			await rt.client.post(`/agents/${encodeURIComponent(id.agent_id)}/brief/seen`, { seq: b.as_of_seq, reader: "human" }, { token });
+			out(ctx, `Team brief for ${id.role ?? "agent"} ${id.agent_id}:\n${formatBrief(b)}`);
 		},
 
 		status: async (_a, ctx) => {

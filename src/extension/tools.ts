@@ -13,7 +13,7 @@ import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageTyp
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import type { ToolName } from "./names.ts";
-import { formatBudget, formatEnvelope, formatProposal, formatTree } from "./format.ts";
+import { formatBrief, formatBudget, formatEnvelope, formatProposal, formatTree } from "./format.ts";
 
 export { TOOL_NAMES };
 
@@ -358,6 +358,18 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const terminalWarning = await autoOpenTerminals(rt, rt.identity!.run_id);
 			const result = await rt.client.post<Record<string, unknown>>("/members", body, { idempotencyKey: key("team_create_member", id) });
 			return json("Member provisioned", { ...result, ...(terminalWarning ? { terminal_warning: terminalWarning } : {}) });
+		},
+	);
+
+	reg(
+		"team_brief", "Team: brief",
+		"What needs you, who is doing what, and what changed since you last called this: completed tasks, members joining or failing, teams stopping or resuming, waiting messages and proposals. Built from team records without asking anyone, so it is instant and costs your members nothing. Read it instead of asking members for status; message a member only about something specific. Each call marks the brief read.",
+		Type.Object({}),
+		async () => {
+			const me = rt.identity!.agent_id;
+			const b = await rt.client.get<import("../shared/protocol.ts").BriefResponse>(`/agents/${encodeURIComponent(me)}/brief`);
+			await rt.client.post(`/agents/${encodeURIComponent(me)}/brief/seen`, { seq: b.as_of_seq });
+			return text(formatBrief(b), b);
 		},
 	);
 

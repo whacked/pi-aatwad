@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.53, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.54, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -733,6 +733,7 @@ Then ask Claude to use the `team_*` tools.
 | Link your existing team under another leader | `team_report_to` `run_id` (`none` detaches) |
 | Move a member under another manager | `team_reassign` |
 | Resume a stopped team linked under you | `team_resume_team` |
+| What needs you and what changed since you last looked | `team_brief` |
 | Leave (identity and tasks remain; manager notified) | `team_leave` |
 
 Members a Claude Code leader creates with `team_create_member` run as Pi workers. A Claude Code
