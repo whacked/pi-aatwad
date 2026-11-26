@@ -2,6 +2,7 @@
 import type { DB } from "./db.ts";
 import type { Logger } from "./log.ts";
 import type { StatePaths } from "../shared/paths.ts";
+import type { Summarize } from "./summaries.ts";
 
 export interface ControllerTunables {
 	/** Heartbeat lease length granted to sessions. */
@@ -37,6 +38,8 @@ export interface Ctx {
 	kick: () => void;
 	/** Stop a worker process via the executor (call only after commit, i.e. from ReqScope.after). */
 	stopProcess: (pid: number, processStartedAt: string) => Promise<void>;
+	/** The model call that writes team summaries (a one-shot Pi by default; stubbed in tests). */
+	summarize: Summarize;
 }
 
 /** Per-request scratch: callbacks run only after the request transaction committed. */

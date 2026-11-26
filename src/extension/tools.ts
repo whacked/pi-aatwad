@@ -13,7 +13,7 @@ import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageTyp
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import type { ToolName } from "./names.ts";
-import { formatBrief, formatBudget, formatEnvelope, formatProposal, formatTree } from "./format.ts";
+import { formatBrief, formatSummaries, formatThread, formatBudget, formatEnvelope, formatProposal, formatTree } from "./format.ts";
 
 export { TOOL_NAMES };
 
@@ -370,6 +370,23 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const b = await rt.client.get<import("../shared/protocol.ts").BriefResponse>(`/agents/${encodeURIComponent(me)}/brief`);
 			await rt.client.post(`/agents/${encodeURIComponent(me)}/brief/seen`, { seq: b.as_of_seq });
 			return text(formatBrief(b), b);
+		},
+	);
+
+	reg(
+		"team_history", "Team: history",
+		"Look back without asking anyone. member: one member's stream with you (messages both ways and its task progress and completions, oldest first), pulled out of everything else arriving; use it to catch up on one member instead of re-reading your whole inbox. summaries: model-written summaries of the team's activity, newest first, optionally only those mentioning query words (available when the human enabled summaries for the project). Page back with before (a time for member, an event number for summaries).",
+		Type.Object({ member: Type.Optional(Type.String()), query: Type.Optional(Type.String()), before: Type.Optional(Type.String()) }),
+		async (p) => {
+			const me = rt.identity!;
+			if (p.member) {
+				const member = await agent(p.member);
+				const t = await rt.client.get<import("../shared/protocol.ts").MemberThread>(`/agents/${encodeURIComponent(me.agent_id)}/thread/${encodeURIComponent(member)}${p.before ? `?before=${encodeURIComponent(p.before)}` : ""}`);
+				return text(formatThread(t), t);
+			}
+			const qs = [p.query ? `q=${encodeURIComponent(p.query)}` : "", p.before ? `before_seq=${encodeURIComponent(p.before)}` : ""].filter(Boolean).join("&");
+			const r = await rt.client.get<{ summaries: import("../shared/protocol.ts").SummaryView[] }>(`/runs/${encodeURIComponent(me.run_id)}/summaries${qs ? `?${qs}` : ""}`);
+			return text(r.summaries.length ? formatSummaries(r.summaries) : p.query ? `No summaries mention "${p.query}".` : "No summaries yet (the human enables them per project with /team summarizer). Use member to read one member's stream.", r);
 		},
 	);
 

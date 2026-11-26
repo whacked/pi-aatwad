@@ -9,7 +9,7 @@ import { ensureController, readOperatorToken, TeamApiError, type TeamClient } fr
 import { HEARTBEAT_INTERVAL_MS, type MessageType } from "../shared/protocol.ts";
 import { LOADED_VERSION } from "../shared/version.ts";
 import { formatAttention, handoffText } from "../shared/attention-format.ts";
-import { formatBrief, formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
+import { formatBrief, formatSummaries, formatThread, formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
 import { HARNESS, claudePid, clearIdentity, client, readIdentity, readPidState, writeIdentity, writeWake, type Identity } from "./session.ts";
 
 type Json = Record<string, unknown>;
@@ -262,6 +262,22 @@ export class ClaudeTeamServer {
 					const b = await this.api.get<import("../shared/protocol.ts").BriefResponse>(`/agents/${encodeURIComponent(id.agent_id)}/brief`);
 					await this.api.post(`/agents/${encodeURIComponent(id.agent_id)}/brief/seen`, { seq: b.as_of_seq });
 					return formatBrief(b);
+				},
+			},
+			{
+				name: "team_history",
+				description: "Look back without asking anyone. member: one member's stream with you (messages both ways and its task progress and completions, oldest first), pulled out of everything else arriving; use it to catch up on one member instead of re-reading your whole inbox. summaries: model-written summaries of the team's activity, newest first, optionally only those mentioning query words (available when the human enabled summaries for the project). Page back with before (a time for member, an event number for summaries).",
+				inputSchema: obj({ member: S("Member whose stream to read"), query: S("Words the summaries must mention"), before: S("Page back: a time (member) or event number (summaries)") }),
+				run: async (a) => {
+					const id = this.requireIdentity();
+					if (a.member) {
+						const member = await this.agentRef(String(a.member));
+						const t = await this.api.get<import("../shared/protocol.ts").MemberThread>(`/agents/${encodeURIComponent(id.agent_id)}/thread/${encodeURIComponent(member)}${a.before ? `?before=${encodeURIComponent(String(a.before))}` : ""}`);
+						return formatThread(t);
+					}
+					const qs = [a.query ? `q=${encodeURIComponent(String(a.query))}` : "", a.before ? `before_seq=${encodeURIComponent(String(a.before))}` : ""].filter(Boolean).join("&");
+					const r = await this.api.get<{ summaries: import("../shared/protocol.ts").SummaryView[] }>(`/runs/${encodeURIComponent(id.run_id)}/summaries${qs ? `?${qs}` : ""}`);
+					return r.summaries.length ? formatSummaries(r.summaries) : a.query ? `No summaries mention "${String(a.query)}".` : "No summaries yet (the human enables them per project with /team summarizer in Pi).";
 				},
 			},
 			{

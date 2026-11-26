@@ -14,8 +14,9 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
-import { formatAway, formatBrief, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
+import { formatAway, formatBrief, formatSummaries, formatThread, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
 import { projectRoot } from "../shared/readable-id.ts";
+import { readSummarizer, setupSummarizer, SUMMARIZER_OFFER, summarizerLine, writeSummarizer } from "./summarizer.ts";
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
@@ -35,6 +36,8 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "resume", args: "[run_id] [name|agent_id]", help: "choose a resumable team or attach to one directly; init is not required" },
 	{ name: "tree", args: "[run_id] [--all]", help: "live logical hierarchy" },
 	{ name: "status", args: "", help: "controller, run, agent and pending work" },
+	{ name: "summarizer", args: "[status|setup|use <provider/model>|off]", help: "team summaries for this project (recommended, opt-in): which small model condenses team activity; setup detects a suitable one" },
+	{ name: "history", args: "[summaries [words...]|<member> [--before <time>]]", help: "look back: model-written summaries (search with words), or one member's messages and task events with you" },
 	{ name: "brief", args: "[--all]", help: "what needs you, who is doing what, and what changed since you last looked (no model involved); --all repeats everything" },
 	{ name: "version", args: "", help: "loaded extension and controller versions, source and state paths" },
 	{ name: "budget", args: "[name|agent_id] [total_usd|none] [--resume]", help: "show budget, set a total spend ceiling, or remove it with none" },
@@ -382,6 +385,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			);
 			const others = await rt.client.listRuns({ token: op }).then((l) => openLeaderHints(l.runs, projectRoot(ctx.cwd), r.run_id), () => undefined);
 			if (others) out(ctx, others, "warning");
+			const summaries = await summarizerNotice(rt, ctx.cwd, true);
+			if (summaries) out(ctx, summaries);
 		},
 
 		prune: async (_a, ctx, yes) => {
@@ -517,6 +522,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			initializedRunId = undefined;
 			// Teams created before limits became opt-in still carry their saved caps: say so up front.
 			const saved = await rt.client.get<{ limits?: string[] }>(`/runs/${target}/admin`, { token: op }).then((r) => r.limits ?? [], () => []);
+			const summaries = await summarizerNotice(rt, ctx.cwd, true);
+			if (summaries) out(ctx, summaries);
 			out(ctx, `Resumed ${runLabel(run)}. Use /team tree to inspect members, then /team watch to open their Pi panes.${saved.length ? `\nThis team has ${saved.length} saved limit(s) that can block or pause members. /team admin limits lists them; /team admin clear-limits removes them all.` : ""}`);
 			if (!member) {
 				const away = await rt.client.get<AwaySummary>(`/runs/${encodeURIComponent(target)}/away`, { token: await rt.commandToken() }).catch(() => undefined);
@@ -528,6 +535,50 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		tree: async (a, ctx) => {
 			const t = await rt.client.tree(await runId(ctx, a.find((arg) => arg !== "--all")), { token: await rt.commandToken() }, !a.includes("--all"), true);
 			out(ctx, formatTree(t, rt.identity?.agent_id));
+		},
+
+		summarizer: async (a, ctx) => {
+			await rt.ready;
+			if (rt.managed) throw new Error("only the human's Pi sets up team summaries");
+			const project = projectRoot(ctx.cwd);
+			const sub = a[0] ?? "status";
+			if (sub === "status") {
+				const { project: p, setting } = await readSummarizer(rt, project);
+				out(ctx, summarizerLine(setting, p) ?? SUMMARIZER_OFFER);
+			} else if (sub === "setup") out(ctx, await setupSummarizer(rt, ctx, project));
+			else if (sub === "use") {
+				if (!a[1]) throw new Error("usage: /team summarizer use <provider/model>");
+				const model = resolveAvailableModel(ctx, a[1]).id;
+				await writeSummarizer(rt, project, { state: "enabled", model });
+				out(ctx, `Team summaries are on for ${project}, written by ${model}.`);
+			} else if (sub === "off") {
+				await writeSummarizer(rt, project, { state: "declined" });
+				out(ctx, `Team summaries declined for ${project}. /team summarizer setup turns them on later.`);
+			} else throw new Error("usage: /team summarizer [status|setup|use <provider/model>|off]");
+		},
+
+		history: async (a, ctx) => {
+			await rt.ready;
+			const id = rt.identity;
+			if (!id) throw new Error(rt.notice ?? "not in a team: /team init or /team resume first");
+			const token = await rt.commandToken();
+			if (!a.length || a[0] === "summaries") {
+				const words = a.slice(1).join(" ");
+				const r = await rt.client.get<{ summaries: import("../shared/protocol.ts").SummaryView[] }>(`/runs/${encodeURIComponent(id.run_id)}/summaries?limit=10${words ? `&q=${encodeURIComponent(words)}` : ""}`, { token });
+				if (!r.summaries.length) {
+					const { setting } = await readSummarizer(rt, projectRoot(ctx.cwd));
+					out(ctx, words ? `No summaries mention "${words}".` : setting?.state === "enabled" ? "No summaries yet: one is made when someone reads the brief and enough has happened." : SUMMARIZER_OFFER);
+					return;
+				}
+				out(ctx, formatSummaries(r.summaries));
+				return;
+			}
+			const beforeAt = a.indexOf("--before");
+			const before = beforeAt >= 0 ? a[beforeAt + 1] : undefined;
+			const name = (beforeAt >= 0 ? a.filter((_x, i) => i !== beforeAt && i !== beforeAt + 1) : a).join(" ");
+			const member = await rt.client.resolveAgent(name, id.run_id, { token });
+			const t = await rt.client.get<import("../shared/protocol.ts").MemberThread>(`/agents/${encodeURIComponent(id.agent_id)}/thread/${encodeURIComponent(member)}${before ? `?before=${encodeURIComponent(before)}` : ""}`, { token });
+			out(ctx, formatThread(t));
 		},
 
 		brief: async (a, ctx) => {
@@ -727,6 +778,28 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 }
 
 /** On startup in a project that already has teams, say so once (never blocks, never creates state). */
+/** What summaries do in this project: on with which model, declined, or (if teams exist here) the offer. Never throws. */
+export async function summarizerNotice(rt: TeamRuntime, cwd: string, offer: boolean): Promise<string | undefined> {
+	try {
+		if (rt.managed || !existsSync(rt.paths.db)) return undefined;
+		const { project, setting } = await readSummarizer(rt, projectRoot(cwd));
+		return summarizerLine(setting, project) ?? (offer ? SUMMARIZER_OFFER : undefined);
+	} catch {
+		return undefined;
+	}
+}
+
+/** On session start: say which model summarizes here (or that it was declined), or offer it where teams exist. */
+export async function summarizerStartNotice(rt: TeamRuntime, ctx: { cwd: string; hasUI: boolean; ui: { notify(text: string, level?: "info" | "warning" | "error"): void } }): Promise<void> {
+	if (!ctx.hasUI || rt.managed) return;
+	let teamsHere = !!rt.identity;
+	if (!teamsHere) {
+		try { teamsHere = listTeams((await rt.client.listRuns({ token: await rt.commandToken() })).runs, { project: projectRoot(ctx.cwd) }).shown.length > 0; } catch { /* no controller yet */ }
+	}
+	const line = await summarizerNotice(rt, ctx.cwd, teamsHere);
+	if (line) ctx.ui.notify(line, "info");
+}
+
 export async function projectTeamsNotice(rt: TeamRuntime, ctx: { cwd: string; hasUI: boolean; ui: { notify(text: string, level?: "info" | "warning" | "error"): void } }): Promise<void> {
 	try {
 		if (rt.managed || rt.identity || !ctx.hasUI || !existsSync(rt.paths.db)) return;

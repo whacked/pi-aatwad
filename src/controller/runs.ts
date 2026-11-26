@@ -391,9 +391,18 @@ export function reportUsage(ctx: Ctx, p: Principal, body: unknown): UsageReportR
 	onlyKeys(b, ["cost_usd", "input_tokens", "output_tokens", "model"]);
 	const cost = b.cost_usd;
 	if (typeof cost !== "number" || !(cost >= 0)) fail("INVALID", "cost_usd must be a non-negative number");
+	return chargeUsage(db, { actor_id: a.actor_id, run_id: a.run_id }, cost, { input_tokens: b.input_tokens ?? null, output_tokens: b.output_tokens ?? null });
+}
+
+/**
+ * Charge model spend to an agent's budget and enforce its limits: pools that ran out pause their
+ * subtree, and an agent over its own ceiling is paused with a notice to its manager. Call inside a
+ * write transaction. Used by usage reports and by the controller's own model calls (summaries).
+ */
+export function chargeUsage(db: DB, a: { actor_id: string; run_id: string }, cost: number, detail: Record<string, unknown> = {}, reporter = a.actor_id): UsageReportResponse {
 	run(db, "UPDATE allocations SET consumed_usd = consumed_usd + ? WHERE agent_id = ?", cost, a.actor_id);
 	const consumed = getAllocation(db, a.actor_id).consumed_usd;
-	emit(db, { run_id: a.run_id, actor_id: a.actor_id, type: "usage.reported", entity_id: a.actor_id, payload: { cost_usd: cost, input_tokens: b.input_tokens ?? null, output_tokens: b.output_tokens ?? null, consumed_usd: consumed } });
+	emit(db, { run_id: a.run_id, actor_id: reporter, type: "usage.reported", entity_id: a.actor_id, payload: { cost_usd: cost, ...detail, consumed_usd: consumed } });
 	const own = ownBudgetUsd(db, a.actor_id);
 	// Inherited pools charge actual spend once; exhausting one pauses the whole affected subtree.
 	const cfg = runConfig(db, a.run_id);

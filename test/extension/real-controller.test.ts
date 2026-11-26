@@ -67,7 +67,7 @@ test("real Pi + real controller: /team init auto-starts the controller; status/t
 		assert.notEqual(h.pid, child.pid, "controller is a separate process");
 
 		const st = await cmd("status", /^controller:/);
-		assert.match(st.message, /controller: up .*schema 5/);
+		assert.match(st.message, /controller: up .*schema 6/);
 		assert.match(st.message, new RegExp(`identity: root ${agentId} · run ${runId}`));
 		assert.match((await cmd("tree", /topology v\d+/)).message, new RegExp(`root \\[${agentId}\\].*← you`));
 		assert.match((await cmd("budget", /^budget for/)).message, /available unbounded/);

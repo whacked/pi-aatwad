@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.54, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.55, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -707,6 +707,27 @@ and resume receiving assignments when it returns. Old log viewers are replaced b
 real Pi processes during promotion. If there is insufficient space, enlarge the terminal
 rather than creating more windows. Managed members cannot manage the team terminal session.
 
+
+## Brief, summaries and history
+
+A lead does not have to ask its members what is going on, and team traffic does not have to pile
+into one stream.
+
+- `/team brief` (tool `team_brief`): what needs you (unread questions and answers, proposals to
+  review, stopped linked teams), each member's state and open tasks, and what changed since you last
+  looked. Built from team records, with no model involved. The human and the leader's model keep
+  separate "last looked" markers.
+- `/team history <member>` (tool `team_history` with `member`): one member's messages and task
+  progress with you, oldest first, pulled out of everything else arriving.
+- **Summaries** (recommended, opt-in per project): `/team summarizer setup` detects a small model
+  among the ones Pi can use and suggests it; you accept, pick another, or decline. A summary is
+  written when someone reads the brief and enough has happened. It covers that stretch of the team's
+  event log and keeps a rolling overview, which the brief shows. Summaries are charged to the
+  team's budget. `/team history summaries [words]` (tool `team_history` with `query`) lists and
+  searches them. Every session start says which model summarizes the project, or that summaries
+  were declined.
+
+Progress reports alone do not wake an idle lead: they arrive with its next turn and count in the brief.
 
 ## Claude Code interop
 

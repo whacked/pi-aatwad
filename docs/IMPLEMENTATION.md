@@ -781,3 +781,37 @@ sub-team needed a human at its own terminal.
 - **Progress reports alone no longer wake an idle agent** (`decideWake`). They are still delivered
   with the next turn and counted in the brief; questions, answers, completions and notices wake as
   before. This removes the most frequent "nothing to do" turns.
+
+## Summaries and member threads (v0.1.55, schema 6)
+
+- **Schema 6** (`db/006_summaries.sql`): `project_settings` (per-project JSON, today the summarizer
+  choice), `summaries` (one row per summarized window `(from_seq, to_seq]` of a team's events:
+  `window_text`, rolling `overview_text`, model, cost), and the unused `outbox` table is dropped.
+  Older controllers cannot open a schema-6 database; running sessions on older code get a
+  "newer controller" error until they reload.
+- **Settings** (`/projects/settings`, operator): `{summarizer: {state: "enabled", model} |
+  {state: "declined"}}` keyed by project directory; a team uses the innermost configured project
+  containing its leader's working directory.
+- **Making summaries** (`summarizeIfDue`): on demand, after a brief or summaries read, when the
+  project enabled them, at least `SUMMARY_MIN_EVENTS` (8) records happened since the last summary
+  (the summarizer's own traces and liveness noise excluded), the team is within budget, and none is
+  in flight; a failure waits 10 minutes. Input: the previous overview plus the new records as lines
+  (time, who, what, with message and task text). The model answers two sections, `## Window` and
+  `## Overview` (`splitSections` tolerates sloppy output). Cost goes through `chargeUsage` (shared
+  with usage reports, so budget limits apply); events `summary.created` / `summary.failed`.
+- **The model call** (`piSummarize`): `pi --mode json --no-session --no-tools --no-extensions
+  --no-skills --no-prompt-templates --no-context-files --no-mcp --no-themes --model <m>
+  --system-prompt <instructions>` with the records on stdin; the answer and cost come from the
+  final assistant `message_end`. Injectable (`ControllerOptions.summarize`) for tests; tested for
+  real against a fake OpenAI-compatible server.
+- **Setup** (`src/extension/summarizer.ts`): `suggestSummarizer` picks from Pi's model registry a
+  small model (name hints such as mini, haiku, flash, or up to 14B parameters), cheapest first,
+  else the cheapest priced model. `/team summarizer setup` offers detect (confirm or pick another),
+  pick, or decline; without a UI it prints the commands (`use <provider/model>`, `off`). Session
+  start, `/team init` and `/team resume` say which model summarizes, that summaries were declined,
+  or offer them.
+- **Reading**: `GET /runs/:id/summaries?q=&before_seq=` (the team's agents, the lead it is linked
+  under, the operator), `GET /agents/:id/thread/:member` (one member's messages both ways plus its
+  task progress and completions, deduplicated against the messages that carry them, `?before=`
+  pages back). Tools `team_history` (Pi and Claude Code), commands `/team history`, and the brief
+  shows the latest overview.

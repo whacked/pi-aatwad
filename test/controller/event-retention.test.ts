@@ -14,14 +14,12 @@ test("old usage reports and liveness flaps are pruned; the rest of the audit tra
 			emit(db, { run_id: t.run_id, actor_id: t.root, type, entity_id: t.root, payload: {} });
 			db.prepare("UPDATE events SET created_at = ? WHERE seq = (SELECT MAX(seq) FROM events)").run(at);
 		}
-		// A row left by the outbox that controllers before v0.1.53 wrote for every event.
-		db.prepare("INSERT INTO outbox(id, event_id, topic, payload_json, status, available_at) SELECT 'obx-legacy', id, type, '{}', 'PUBLISHED', ? FROM events WHERE type = 'agent.lost'").run(old);
 		const count = (type: string) => Number(sql(h, "SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = ?", t.run_id, type)[0].n);
 		assert.equal(pruneEvents(db), 2);
 		assert.equal(count("usage.reported"), 1, "recent usage kept");
 		assert.equal(count("agent.lost"), 0);
 		assert.equal(count("task.completed"), 1, "task history is never pruned");
-		assert.equal(Number(sql(h, "SELECT COUNT(*) AS n FROM outbox")[0].n), 0, "old published outbox rows are gone, and no new ones are written");
+		assert.equal(sql(h, "SELECT name FROM sqlite_master WHERE name = 'outbox'").length, 0, "the outbox table is gone");
 	} finally { await h.cleanup(); }
 });
 

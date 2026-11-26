@@ -10,6 +10,7 @@ import { HEARTBEAT_LEASE_MS, ENROLL_TTL_MS, PROTOCOL_VERSION, HDR_PROTOCOL, SCHE
 import type { Executor } from "../executor/types.ts";
 import { type DB, openDb, get, run, tx, nowIso, isoPlus } from "./db.ts";
 import { pruneEvents } from "./history.ts";
+import { piSummarize, type Summarize } from "./summaries.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { ensureOperatorToken } from "./auth.ts";
 import type { Ctx, ControllerTunables } from "./context.ts";
@@ -18,7 +19,7 @@ import { Reconciler } from "./reconciler.ts";
 import { liveWorkerCount, pendingSpawnCount } from "./queries.ts";
 import { LOADED_SOURCE, LOADED_VERSION } from "../shared/version.ts";
 
-/** Number of migrations this controller applies (db/001..005) = protocol SCHEMA_VERSION. */
+/** Number of migrations this controller applies (db/001..006) = protocol SCHEMA_VERSION. */
 export const CONTROLLER_SCHEMA_VERSION = SCHEMA_VERSION;
 const CONTROLLER_LEASE_MS = 30_000;
 
@@ -33,6 +34,8 @@ export interface ControllerOptions {
 	tunables?: Partial<ControllerTunables>;
 	/** Called once after the controller fully stopped (main.ts exits the process). */
 	onClosed?: (reason: string) => void;
+	/** Writes team summaries. Default: a one-shot, tool-free Pi call with the project's chosen model. */
+	summarize?: Summarize;
 }
 
 export interface ControllerHandle {
@@ -279,6 +282,7 @@ export async function startController(opts: ControllerOptions): Promise<Controll
 			const identity = { pid, process_started_at: st };
 			if (await opts.executor.probe(identity) === "alive") await opts.executor.stop(identity);
 		},
+		summarize: opts.summarize ?? piSummarize(),
 	};
 	reconciler = new Reconciler(ctx, opts.executor);
 	reconciler.isLeader = () => {

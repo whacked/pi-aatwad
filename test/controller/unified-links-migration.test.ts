@@ -33,7 +33,7 @@ test("schema 5 turns leader-to-leader links and joined members into unified link
 		db.prepare("INSERT INTO messages(id, run_id, sender_id, recipient_id, type, payload_json) VALUES ('msg-1', 'run-top', 'root-mid', 'root-top', 'task.progress', '{}')").run();
 		db.prepare("INSERT INTO team_reporting_messages(message_id, link_id) VALUES ('msg-1', 'report-active')").run();
 
-		assert.equal(migrate(db as never, join(packageRoot(), "db")), 5);
+		assert.equal(migrate(db as never, join(packageRoot(), "db")), 6);
 		const links = db.prepare("SELECT id, run_id, parent_run_id, parent_id, child_id, valid_from, valid_to, origin, terminatable, close_reason FROM reporting_edges WHERE parent_run_id IS NOT NULL ORDER BY id").all();
 		assert.deepEqual(links.map((l) => ({ ...l })), [
 			{ id: "report-active", run_id: "run-mid", parent_run_id: "run-top", parent_id: "root-top", child_id: "root-mid", valid_from: "2026-02-01", valid_to: null, origin: "joined", terminatable: 0, close_reason: null },

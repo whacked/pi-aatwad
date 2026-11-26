@@ -1,5 +1,5 @@
 // Pure text renderers for /team output and the bounded org-context prompt section.
-import type { BriefResponse, BudgetView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, RunSummary, TreeNode, TreeResponse } from "../shared/protocol.ts";
+import type { BriefResponse, BudgetView, MemberThread, SummaryView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, RunSummary, TreeNode, TreeResponse } from "../shared/protocol.ts";
 
 export const MAX_CONTEXT_CHARS = 2_000;
 const MAX_LIST = 8;
@@ -244,6 +244,7 @@ export function formatAway(a: AwaySummary): string {
 export function formatBrief(b: BriefResponse): string {
 	const hhmm = (iso: string) => iso.slice(11, 16);
 	const lines: string[] = [];
+	if (b.summary) lines.push(`Overview (written by ${b.summary.model}, ${hhmm(b.summary.created_at)} UTC; /team history summaries for earlier ones):`, ...b.summary.overview.split("\n").map((l) => `  ${l}`));
 	const needs: string[] = [];
 	for (const m of b.needs_you.messages.slice(0, 5)) needs.push(`${m.type} from ${m.from}${m.preview ? `: ${clip(m.preview, 100)}` : ""}`);
 	if (b.needs_you.messages.length > 5) needs.push(`${b.needs_you.messages.length - 5} more message(s)`);
@@ -268,5 +269,25 @@ export function formatBrief(b: BriefResponse): string {
 		for (const c of b.changes) lines.push(`  • ${hhmm(c.at)} ${c.text}`);
 		if (b.progress_reports) lines.push(`  + ${b.progress_reports} progress report(s)`);
 	}
+	return lines.join("\n");
+}
+
+/** Summaries, newest first: each window's events range, when, and what happened. */
+export function formatSummaries(list: SummaryView[]): string {
+	const lines: string[] = [];
+	for (const s of list) {
+		lines.push(`— ${s.created_at.slice(0, 16).replace("T", " ")} UTC · events ${s.from_seq + 1}–${s.to_seq} · ${s.model}`);
+		lines.push(...s.window.split("\n").map((l) => `  ${l}`));
+	}
+	lines.push(`Latest overview:`, ...list[0].overview.split("\n").map((l) => `  ${l}`));
+	return lines.join("\n");
+}
+
+/** One member's stream with the reader, oldest first. */
+export function formatThread(t: MemberThread): string {
+	if (!t.items.length) return `Nothing between you and ${t.member_role} yet.`;
+	const lines = [`${t.member_role} [${t.member_id}], oldest first:`];
+	if (t.more_before) lines.push(`  (earlier: /team history ${t.member_role} --before ${t.more_before})`);
+	for (const i of t.items) lines.push(`  ${i.at.slice(5, 16).replace("T", " ")} ${i.from} · ${i.kind}: ${clip(i.text.replace(/\s+/g, " "), 300)}`);
 	return lines.join("\n");
 }

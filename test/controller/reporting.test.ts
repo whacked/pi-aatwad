@@ -136,13 +136,15 @@ test("migration from schema 3 preserves existing team identity and tasks", async
   // Reconstruct the prior schema without touching any existing team records.
   h.h.db.exec(`DROP VIEW team_reporting_links; DROP TABLE team_reporting_messages; DROP TABLE team_reporting_settings; DROP INDEX cross_team_links;
    ALTER TABLE reporting_edges DROP COLUMN parent_run_id; ALTER TABLE reporting_edges DROP COLUMN origin; ALTER TABLE reporting_edges DROP COLUMN terminatable; ALTER TABLE reporting_edges DROP COLUMN close_reason;
+   DROP TABLE project_settings; DROP TABLE summaries;
+   CREATE TABLE outbox (id TEXT PRIMARY KEY, event_id TEXT NOT NULL REFERENCES events(id), topic TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, attempts INTEGER NOT NULL DEFAULT 0);
    DELETE FROM schema_migrations WHERE version >= 4;`);
   await h.restart({ crash: true });
   const me = await h.call("GET", "/me", { token: p.token });
   ok(me);
   assert.equal(me.body.tasks[0].task_id, task);
   assert.deepEqual(me.body.reporting.links, []);
-  assert.equal(sql(h, "SELECT MAX(version) AS v FROM schema_migrations")[0].v, 5);
+  assert.equal(sql(h, "SELECT MAX(version) AS v FROM schema_migrations")[0].v, 6);
  } finally { await h.cleanup(); }
 });
 

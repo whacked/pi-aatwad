@@ -4,7 +4,7 @@
 
 export const PROTOCOL_VERSION = 1;
 /** Number of applied SQL migrations (db/001, db/002, ...). */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 // ---------------------------------------------------------------------------
 // Transport
@@ -516,6 +516,12 @@ export interface HeartbeatResponse {
 }
 
 /** GET /me (agent) - who am I + effective org context (bounded, fresh from SQLite). */
+/** Which model summarizes a project's teams, or that the human declined summaries there. */
+export type SummarizerSetting = { state: "enabled"; model: string } | { state: "declined" };
+/** Per-project settings (GET/POST /projects/settings, operator). */
+export interface ProjectSettings { summarizer?: SummarizerSetting }
+/** A summarized window of a team's event log: (from_seq, to_seq]. */
+export interface SummaryView { summary_id: string; run_id: string; from_seq: number; to_seq: number; window: string; overview: string; model: string; cost_usd: number; created_at: string }
 /** GET /agents/:id/brief: the state under an agent and what changed since it last looked (no model involved). */
 export interface BriefResponse {
 	agent_id: string;
@@ -530,6 +536,17 @@ export interface BriefResponse {
 	changes: { seq: number; at: string; type: string; text: string }[];
 	changes_omitted: number;
 	progress_reports: number;
+	/** The latest model-written overview of the team, when summaries are enabled for its project. */
+	summary?: { summary_id: string; to_seq: number; overview: string; created_at: string; model: string };
+}
+/** GET /agents/:id/thread/:member: one member's messages and task events with the agent, oldest first. */
+export interface MemberThread {
+	agent_id: string;
+	member_id: string;
+	member_role: string;
+	items: { at: string; from: string; kind: string; text: string; message_id?: string }[];
+	/** Pass as ?before= to page further back; null when this is the start. */
+	more_before: string | null;
 }
 export interface LinkedBrief { agent_id: string; role: string; status: AgentStatus; observed_state: ObservedState; run_id?: string; team_name?: string; project?: string }
 export interface OrgContext {

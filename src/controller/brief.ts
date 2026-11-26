@@ -3,13 +3,14 @@
 // no context it did not ask for: a lead (or the human) reads it instead of polling members, and
 // heartbeats or idle check-ins never need to reach anyone's transcript to keep them informed.
 import type { Ctx, Principal } from "./context.ts";
-import type { BriefResponse } from "../shared/protocol.ts";
+import type { BriefResponse, MemberThread, SummaryView } from "../shared/protocol.ts";
 import { type DB, all, get, parseJson, run } from "./db.ts";
 import { fail } from "./errors.ts";
 import { getAgent, getLinkChildren, getLinkParent, getSubtree, isAncestor } from "./queries.ts";
 import { headSeq, payloadOf, scanEvents } from "./history.ts";
 import { statusDigest } from "./attention.ts";
 import { teamLifecycleState } from "./team-lifecycle.ts";
+import { latestSummary, listSummaries, summarizeIfDue } from "./summaries.ts";
 
 /** Event kinds worth telling a lead about, and how to say them. Everything else is plumbing. */
 const NOTABLE = ["task.completed", "agent.created", "agent.terminated", "agent.restart_exhausted", "spawn.failed", "budget.exhausted", "agent.deadline_exceeded", "run.stopped", "run.resumed", "run.auto_paused", "link.dismissed"] as const;
@@ -91,9 +92,14 @@ export function brief(ctx: Ctx, p: Principal, agentId: string, q: URLSearchParam
 	const proposals = Number(get(db, "SELECT COUNT(*) AS n FROM proposals WHERE reviewer_id = ? AND status IN ('PENDING','UNDER_REVIEW','ESCALATED')", agentId)!.n);
 	const stoppedTeams = linked.map((id) => String(getAgent(db, id).run_id)).filter((r) => ["STOPPED", "CLEANING"].includes(teamLifecycleState(db, r)?.state ?? ""));
 
+	// A summary is made on demand: reading the brief is the signal that someone wants one.
+	const runId = String(getAgent(db, agentId).run_id);
+	setImmediate(() => void summarizeIfDue(ctx, runId, ctx.summarize));
+	const summary = latestSummary(db, runId);
 	return {
 		agent_id: agentId,
 		as_of_seq: head,
+		...(summary ? { summary: { summary_id: summary.summary_id, to_seq: summary.to_seq, overview: summary.overview, created_at: summary.created_at, model: summary.model } } : {}),
 		since_seq: sinceSeq ?? null,
 		members: d.reports.map((r) => ({
 			agent_id: r.id, role: r.role, state: r.observed !== "LIVE" ? r.observed.toLowerCase() : r.busy ? "working" : "idle", idle_ms: r.idleFor,
@@ -117,4 +123,58 @@ export function markBriefSeen(ctx: Ctx, p: Principal, agentId: string, body: { s
 	const s = typeof seq === "number" && Number.isInteger(seq) && seq >= 0 ? Math.min(seq, headSeq(db)) : headSeq(db);
 	run(db, `UPDATE agents SET metadata_json = json_set(metadata_json, '$.${SEEN_KEY[who]}', ?) WHERE id = ?`, s, agentId);
 	return { agent_id: agentId, seen_seq: s };
+}
+
+/** Who may read a team's history: its own agents, the lead it is linked under, or the operator. */
+function authorizeRun(db: DB, p: Principal, runId: string): void {
+	if (p.kind === "operator" || p.run_id === runId) return;
+	const root = String(get(db, "SELECT root_agent_id FROM runs WHERE id = ?", runId)?.root_agent_id ?? "");
+	if (!root) fail("NOT_FOUND", `team ${runId} not found`);
+	if (getLinkParent(db, root) === p.actor_id) return;
+	fail("FORBIDDEN", "only the team's agents, the lead it is linked under, or the human operator may read its history");
+}
+
+/** GET /runs/:id/summaries?q=&before_seq=&limit= : summarized windows, newest first. */
+export function summariesRoute(ctx: Ctx, p: Principal, runId: string, q: URLSearchParams): { summaries: SummaryView[]; head_seq: number } {
+	authorizeRun(ctx.db, p, runId);
+	setImmediate(() => void summarizeIfDue(ctx, runId, ctx.summarize));
+	const before = q.get("before_seq");
+	return listSummaries(ctx.db, runId, { q: q.get("q") ?? undefined, before_seq: before !== null ? Number(before) : undefined, limit: Number(q.get("limit") ?? 10) || 10 });
+}
+
+/**
+ * GET /agents/:id/thread/:member : one member's stream as the agent sees it, oldest first: the
+ * messages between them and that member's task events. Pulls one conversation out of the river.
+ */
+export function threadRoute(ctx: Ctx, p: Principal, agentId: string, memberId: string, q: URLSearchParams): MemberThread {
+	const db = ctx.db;
+	authorize(db, p, agentId);
+	getAgent(db, memberId);
+	const below = new Set([...getSubtree(db, agentId), ...getLinkChildren(db, agentId)]);
+	if (!below.has(memberId) || memberId === agentId) fail("INVALID", `${memberId} is not below ${agentId}`);
+	const limit = Math.min(Math.max(Number(q.get("limit") ?? 30) || 30, 1), 200);
+	const before = q.get("before");
+	const role = (id: string) => String(get(db, "SELECT role FROM agents WHERE id = ?", id)?.role ?? id);
+	const items: MemberThread["items"] = [];
+	for (const m of all(db, `SELECT id, sender_id, recipient_id, type, payload_json, created_at FROM messages
+		WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))${before ? " AND created_at < ?" : ""} ORDER BY created_at DESC LIMIT ?`,
+		agentId, memberId, memberId, agentId, ...(before ? [before] : []), limit)) {
+		const pl = parseJson<Record<string, unknown>>(m.payload_json, {});
+		const text = String(pl.text ?? pl.note ?? pl.summary ?? pl.title ?? "");
+		items.push({ at: String(m.created_at), from: role(String(m.sender_id)), kind: String(m.type), text: text.slice(0, 2000), message_id: String(m.id) });
+	}
+	const tasks = all(db, "SELECT id, title FROM tasks WHERE owner_id = ?", memberId);
+	const title = new Map(tasks.map((t) => [String(t.id), String(t.title)]));
+	if (tasks.length) {
+		for (const e of scanEvents(db, { types: ["task.progress", "task.completed"], entity_ids: [...title.keys()], order: "desc", limit })) {
+			if (before && e.created_at >= before) continue;
+			const pl = payloadOf<Record<string, unknown>>(e);
+			// Progress and completion also arrive as messages to the lead; keep the event only when no message carries it.
+			if (items.some((i) => i.kind === e.type && Math.abs(Date.parse(i.at) - Date.parse(e.created_at)) < 1000)) continue;
+			items.push({ at: e.created_at, from: role(memberId), kind: e.type, text: `${title.get(e.entity_id!)}: ${String(pl.note ?? pl.summary ?? "")}`.slice(0, 2000) });
+		}
+	}
+	items.sort((a, b) => a.at.localeCompare(b.at));
+	const shown = items.slice(-limit);
+	return { agent_id: agentId, member_id: memberId, member_role: role(memberId), items: shown, more_before: items.length > shown.length || shown.length === limit ? shown[0]?.at ?? null : null };
 }

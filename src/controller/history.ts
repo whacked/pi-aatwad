@@ -119,12 +119,10 @@ export const EVENT_RETENTION_MS: Record<string, number> = {
 	"agent.reconnected": 30 * 24 * 3600_000,
 };
 export function pruneEvents(db: DB, now = Date.now()): number {
-	// Pre-v0.1.53 outbox rows (no longer written) pin their events; drop the published ones.
-	run(db, "DELETE FROM outbox WHERE status = 'PUBLISHED' AND available_at < ?", new Date(now - 24 * 3600_000).toISOString());
 	const floor = Math.min(...[...consumers].filter((c) => c.db === db && c.holdsRetention).map((c) => c.cursor), Number.MAX_SAFE_INTEGER);
 	let removed = 0;
 	for (const [type, keepMs] of Object.entries(EVENT_RETENTION_MS)) {
-		removed += run(db, "DELETE FROM events WHERE type = ? AND created_at < ? AND seq <= ? AND id NOT IN (SELECT event_id FROM outbox)", type, new Date(now - keepMs).toISOString(), floor);
+		removed += run(db, "DELETE FROM events WHERE type = ? AND created_at < ? AND seq <= ?", type, new Date(now - keepMs).toISOString(), floor);
 	}
 	return removed;
 }

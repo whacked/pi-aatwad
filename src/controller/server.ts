@@ -21,7 +21,8 @@ import { agentAttentionRoute, runAttentionRoute } from "./attention.ts";
 import { joinTeam, leaveSession, secede } from "./external.ts";
 import { removeTeam, resumeTeam, stopTeam, teamLifecycle } from "./team-lifecycle.ts";
 import { dismiss, resumeLinked, setLinkPolicy } from "./links.ts";
-import { brief, markBriefSeen } from "./brief.ts";
+import { brief, markBriefSeen, summariesRoute, threadRoute } from "./brief.ts";
+import { getProjectSettingsRoute, setProjectSettingsRoute } from "./summaries.ts";
 import { recall, rehire, roster } from "./roster.ts";
 import { hostStatus, reportHost, requestHostRefresh } from "./host.ts";
 
@@ -103,6 +104,10 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/agents/:id/host/refresh", "any", ({ p, params }) => requestHostRefresh(ctx, p, params[0])),
 		R("GET", "/agents/:id", "any", ({ p, params }) => inspect(ctx, p, params[0])),
 		R("GET", "/agents/:id/brief", "any", ({ p, params, q }) => brief(ctx, p, params[0], q)),
+		R("GET", "/agents/:id/thread/:id", "any", ({ p, params, q }) => threadRoute(ctx, p, params[0], params[1], q)),
+		R("GET", "/runs/:id/summaries", "any", ({ p, params, q }) => summariesRoute(ctx, p, params[0], q)),
+		R("GET", "/projects/settings", "operator", ({ p, q }) => getProjectSettingsRoute(ctx, p, q)),
+		R("POST", "/projects/settings", "operator", ({ p, body }) => setProjectSettingsRoute(ctx, p, body)),
 		R("POST", "/agents/:id/brief/seen", "any", ({ p, params, body }) => markBriefSeen(ctx, p, params[0], (body ?? {}) as { seq?: unknown; reader?: unknown })),
 		R("POST", "/budgets/:id", "any", ({ p, scope, params, body }) => updateBudget(ctx, p, scope, params[0], body)),
 		R("POST", "/agents/:id/model", "any", ({ p, params, body }) => updateModel(ctx, p, params[0], body)),
