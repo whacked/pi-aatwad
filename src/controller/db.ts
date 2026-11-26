@@ -1,4 +1,4 @@
-// SQLite access: open + migrate, transaction helper, tiny query helpers, event/outbox emission.
+// SQLite access: open + migrate, transaction helper, tiny query helpers, event emission.
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync, SQLInputValue } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
@@ -117,13 +117,12 @@ export interface EventInput {
 	payload?: unknown;
 }
 
-/** Appends an audit event plus its outbox row. Must be called inside the mutation's transaction. */
+/** Appends an audit event. Must be called inside the mutation's transaction. Reads go through history.ts. */
 export function emit(db: DB, e: EventInput): string {
 	const id = newId("evt");
 	const payload = JSON.stringify(e.payload ?? {});
 	const ts = nowIso();
 	run(db, "INSERT INTO events(id, run_id, actor_id, type, entity_id, payload_json, created_at) VALUES (?,?,?,?,?,?,?)", id, e.run_id, e.actor_id, e.type, e.entity_id ?? null, payload, ts);
-	run(db, "INSERT INTO outbox(id, event_id, topic, payload_json, status, available_at) VALUES (?,?,?,?, 'PENDING', ?)", newId("obx"), id, e.type, payload, ts);
 	return id;
 }
 
@@ -136,23 +135,3 @@ export function parseJson<T>(s: string | null | undefined, fallback: T): T {
 	}
 }
 
-/**
- * Event retention. Events are the audit trail and are kept, except high-volume kinds nothing reads
- * back once they are old: usage reports (spend is kept on allocations) and liveness flaps.
- * Published outbox rows older than a day are removed first; they grew with every event.
- * Returns the number of events removed.
- */
-export const EVENT_RETENTION_MS: Record<string, number> = {
-	"usage.reported": 7 * 24 * 3600_000,
-	"agent.lost": 30 * 24 * 3600_000,
-	"agent.reconnected": 30 * 24 * 3600_000,
-};
-export function pruneEvents(db: DB, now = Date.now()): number {
-	// Published outbox rows have done their job (the reconciler acted on them); pending ones pin their event.
-	run(db, "DELETE FROM outbox WHERE status = 'PUBLISHED' AND available_at < ?", new Date(now - 24 * 3600_000).toISOString());
-	let removed = 0;
-	for (const [type, keepMs] of Object.entries(EVENT_RETENTION_MS)) {
-		removed += run(db, "DELETE FROM events WHERE type = ? AND created_at < ? AND id NOT IN (SELECT event_id FROM outbox)", type, new Date(now - keepMs).toISOString());
-	}
-	return removed;
-}

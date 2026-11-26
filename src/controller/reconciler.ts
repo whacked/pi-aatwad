@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type Row, all, get, run, tx, nowIso, isoPlus, emit, parseJson } from "./db.ts";
+import { EventConsumer } from "./history.ts";
 import type { Ctx } from "./context.ts";
 import type { Executor, LaunchSpec, ProcessIdentity } from "../executor/types.ts";
 import type { EnrollmentFile, TerminalOptions } from "../shared/protocol.ts";
@@ -50,6 +51,7 @@ export class Reconciler {
 
 	async stop(): Promise<void> {
 		this.stopped = true;
+		this.eventLog?.close();
 		if (this.timer) clearTimeout(this.timer);
 		if (this.running) await this.running.catch(() => {});
 	}
@@ -124,7 +126,7 @@ export class Reconciler {
 		const db = this.ctx.db;
 		const waking = this.waking();
 		this.wtx(() => releaseExpiredClaims(db));
-		this.publishOutbox();
+		this.publishEvents();
 		await this.recoverUncertain(false);
 		await this.enforceDeadlines();
 		await this.checkTerminals();
@@ -226,14 +228,13 @@ export class Reconciler {
 	}
 
 	/** Outbox: events are already durable in `events`; mark them published after logging (at-least-once). */
-	private publishOutbox(): void {
-		const db = this.ctx.db;
-		const rows = all(db, "SELECT o.id, o.topic, e.run_id, e.entity_id, e.actor_id FROM outbox o JOIN events e ON e.id = o.event_id WHERE o.status = 'PENDING' ORDER BY e.seq LIMIT 500");
-		if (!rows.length) return;
-		for (const r of rows) this.ctx.log("info", "event", { topic: r.topic, run_id: r.run_id, entity_id: r.entity_id, actor_id: r.actor_id });
-		this.wtx(() => {
-			for (const r of rows) run(db, "UPDATE outbox SET status = 'PUBLISHED', attempts = attempts + 1 WHERE id = ?", r.id);
-		});
+	/** Mirrors new events into the controller log (diagnostics; a missed line after a crash is fine). */
+	private eventLog?: EventConsumer;
+	private publishEvents(): void {
+		this.eventLog ??= new EventConsumer(this.ctx.db, "controller-log", (events) => {
+			for (const e of events) this.ctx.log("info", "event", { topic: e.type, run_id: e.run_id, entity_id: e.entity_id, actor_id: e.actor_id });
+		}, { holdsRetention: false });
+		this.eventLog.poll();
 	}
 
 	/** Change worker terminal mode once, preserving transcripts, tasks and logical IDs. */

@@ -747,3 +747,19 @@ sub-team needed a human at its own terminal.
   each heartbeat interval; once the team is resumed it attaches to its agent again, unless the
   agent's latest session belongs to another Pi session (someone ran `/team resume` elsewhere), in
   which case it only says so. `GET /agents/:id` sessions now carry `pi_session_id` for that check.
+
+## One way to read history; consumers instead of an outbox (v0.1.53)
+
+- **History boundary** (`src/controller/history.ts`): every read of the event log goes through
+  `scanEvents` / `latestEvent` / `countEvents` (filters: team, types, entities, after a sequence
+  number, since a time; oldest or newest first). Writes stay in `emit()`, inside the transaction of
+  the change. Callers (team summaries, the away summary, link notices, admin limit causes,
+  `/team events`) no longer join SQL against `events`, so the store behind the module can be
+  tiered or moved later. Readers already tolerate missing history.
+- **Outbox replaced by consumers.** `emit()` no longer writes an outbox row per event: its only
+  reader mirrored events into the controller log. An `EventConsumer` follows the log by sequence
+  number and remembers its cursor; any number can read independently. The controller log is one,
+  best effort (`holdsRetention: false`). Retention (`pruneEvents`, moved here) never deletes past
+  the slowest consumer that holds retention. Cursors are in memory for now; a consumer that must
+  not miss events across restarts needs a durable cursor table, added with the next schema change
+  (which can also drop the unused `outbox` table). No schema change in this release.

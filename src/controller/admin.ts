@@ -4,6 +4,7 @@ import type { Envelope_Limits, RunConfig } from "../shared/protocol.ts";
 import { getRun, runConfig, TERMINAL_SQL } from "./queries.ts";
 import { obj, onlyKeys, oneOf } from "./validate.ts";
 import { type DB, all, get, run, emit, tx } from "./db.ts";
+import { latestEvent } from "./history.ts";
 import { fail } from "./errors.ts";
 import { recomputeAllocations } from "./budgets.ts";
 import { lifecycle } from "./topology.ts";
@@ -60,7 +61,7 @@ function clearLimits(ctx: Ctx, p: Principal, scope: ReqScope, runId: string, cfg
 	const resumed: string[] = [], still_paused: string[] = [];
 	for (const a of all(db, `SELECT id FROM agents WHERE run_id=? AND desired_state='PAUSED' AND status NOT IN ${TERMINAL_SQL} ORDER BY created_at`, runId)) {
 		// Only pauses a limit caused are undone; a manager's or operator's pause is a decision.
-		const cause = get(db, "SELECT type FROM events WHERE run_id=? AND entity_id=? AND type IN ('budget.exhausted','agent.deadline_exceeded','agent.lifecycle') ORDER BY seq DESC LIMIT 1", runId, a.id)?.type;
+		const cause = latestEvent(db, { run_id: runId, entity_ids: [a.id], types: ["budget.exhausted", "agent.deadline_exceeded", "agent.lifecycle"] })?.type;
 		if (cause === "budget.exhausted" || cause === "agent.deadline_exceeded") {
 			lifecycle(ctx, p, scope, a.id, { action: "resume", reason: "operator cleared the limit that paused this member" });
 			resumed.push(a.id);

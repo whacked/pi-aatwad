@@ -3,6 +3,7 @@ import { reportingStatus } from "./reporting.ts";
 // Runs, sessions (attach/enroll/heartbeat/usage) and read projections (tree, me, inspect, budgets, models, events).
 import { isAbsolute } from "node:path";
 import { type DB, type Row, all, get, run, freshId, newId, nowIso, isoPlus, emit, parseJson } from "./db.ts";
+import { countEvents, latestEvent, payloadOf, scanEvents } from "./history.ts";
 import { idDate, projectName, projectRoot, teamStamp } from "../shared/readable-id.ts";
 import { fail } from "./errors.ts";
 import type { Ctx, Principal } from "./context.ts";
@@ -159,9 +160,10 @@ function teamIdentity(db: DB, r: Row): Partial<RunSummary> {
 	const actual = parseJson<{ actual_model?: { provider: string; model: string } }>(root?.metadata_json ?? "{}", {}).actual_model;
 	const model = actual ? `${actual.provider}/${actual.model}` : root?.model && root.model !== "default" ? `${root.provider}/${root.model}` : null;
 	const cwd = root?.cwd ?? cfg.workspace_root ?? null;
-	const last = get(db, "SELECT MAX(created_at) AS at FROM events WHERE run_id = ?", r.id)?.at ?? null;
+	const last = latestEvent(db, { run_id: r.id })?.created_at ?? null;
 	const open = Number(get(db, "SELECT COUNT(*) AS n FROM tasks WHERE run_id = ? AND status IN ('OPEN','ASSIGNED','IN_PROGRESS','BLOCKED')", r.id)!.n);
-	const done = get(db, "SELECT json_extract(payload_json, '$.summary') AS s FROM events WHERE run_id = ? AND type = 'task.completed' ORDER BY seq DESC LIMIT 1", r.id)?.s;
+	const doneEvent = latestEvent(db, { run_id: r.id, types: ["task.completed"] });
+	const done = doneEvent ? payloadOf<{ summary?: string }>(doneEvent).summary : undefined;
 	const pending = get(db, "SELECT title FROM tasks WHERE run_id = ? AND status IN ('ASSIGNED','IN_PROGRESS','BLOCKED') AND title NOT LIKE 'Recruit %' ORDER BY updated_at DESC LIMIT 1", r.id)?.title;
 	const linked = Number(get(db, "SELECT COUNT(*) AS n FROM reporting_edges WHERE parent_run_id = ?", r.id)!.n);
 	const summary = pending ? `working on: ${pending}` : done ? `last done: ${String(done)}` : null;
@@ -244,14 +246,16 @@ export function awaySummary(ctx: Ctx, p: Principal, runId: string): AwaySummary 
 	const current = p.kind === "agent" ? p.session_id : get(db, "SELECT current_session_id AS id FROM agents WHERE id = ?", r.root_agent_id)?.id;
 	const since = get(db, "SELECT MAX(ended_at) AS at FROM sessions WHERE agent_id = ? AND id IS NOT ? AND ended_at IS NOT NULL", r.root_agent_id, current ?? null)?.at as string | null ?? r.created_at;
 	// Tasks this team owns, including those it assigned to teams linked under it (their events live in those teams).
-	const completed = all(db, `SELECT t.id, t.title, e.payload_json, e.created_at, a.role FROM events e JOIN tasks t ON t.id = e.entity_id JOIN agents a ON a.id = e.actor_id
-		WHERE e.type = 'task.completed' AND t.run_id = ? AND e.created_at > ? ORDER BY e.seq LIMIT 20`, runId, since).map((row) => {
-		const payload = parseJson<{ status?: string; summary?: string }>(row.payload_json, {});
-		return { task_id: row.id, title: row.title, by: row.role, status: payload.status ?? "DONE", summary: String(payload.summary ?? "").slice(0, 200) };
+	const taskIds = all(db, "SELECT id FROM tasks WHERE run_id = ?", runId).map((t) => String(t.id));
+	const completed = scanEvents(db, { types: ["task.completed"], entity_ids: taskIds, since, limit: 20 }).map((e) => {
+		const payload = payloadOf<{ status?: string; summary?: string }>(e);
+		const task = get(db, "SELECT title FROM tasks WHERE id = ?", e.entity_id);
+		const by = e.actor_id ? get(db, "SELECT role FROM agents WHERE id = ?", e.actor_id)?.role : undefined;
+		return { task_id: e.entity_id!, title: task?.title ?? e.entity_id!, by: by ?? e.actor_id ?? "unknown", status: payload.status ?? "DONE", summary: String(payload.summary ?? "").slice(0, 200) };
 	});
-	const progress = Number(get(db, `SELECT COUNT(*) AS n FROM events e JOIN tasks t ON t.id = e.entity_id WHERE e.type = 'task.progress' AND t.run_id = ? AND e.created_at > ?`, runId, since)!.n);
+	const progress = countEvents(db, { types: ["task.progress"], entity_ids: taskIds, since });
 	const waiting = Number(get(db, "SELECT COUNT(*) AS n FROM deliveries WHERE recipient_id = ? AND status <> 'ACKED'", r.root_agent_id)!.n);
-	const paused = get(db, "SELECT MAX(created_at) AS at FROM events WHERE run_id = ? AND type = 'run.auto_paused' AND created_at > ?", runId, since)?.at ?? null;
+	const paused = latestEvent(db, { run_id: runId, types: ["run.auto_paused"], since })?.created_at ?? null;
 	return { since, completed, progress_reports: progress, messages_waiting: waiting, auto_paused_at: paused };
 }
 
@@ -538,7 +542,7 @@ export function events(ctx: Ctx, p: Principal, q: URLSearchParams): EventsRespon
 	if (p.kind === "agent" && q.get("run_id") && q.get("run_id") !== p.run_id) fail("FORBIDDEN", "other run");
 	const after = Number(q.get("after") ?? 0) || 0;
 	const limit = Math.min(Math.max(Number(q.get("limit") ?? 200) || 200, 1), 1000);
-	const rows = runId ? all(ctx.db, "SELECT * FROM events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?", runId, after, limit) : all(ctx.db, "SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?", after, limit);
+	const rows = scanEvents(ctx.db, { ...(runId ? { run_id: runId } : {}), after_seq: after, limit });
 	const evs = rows.map((r) => ({ seq: r.seq, id: r.id, run_id: r.run_id, actor_id: r.actor_id ?? null, type: r.type, entity_id: r.entity_id ?? null, payload: parseJson(r.payload_json, {}), created_at: r.created_at }));
 	return { events: evs, next_after: evs.length ? evs[evs.length - 1].seq : after };
 }

@@ -1,6 +1,7 @@
 // Durable cross-team links: reporting_edges rows whose parent is another team's agent
 // (parent_run_id set). They never change in-team edges, grants or budgets.
 import { all, get, run, emit, newId, nowIso, type DB, type Row } from "./db.ts";
+import { scanEvents } from "./history.ts";
 import type { Ctx, Principal } from "./context.ts";
 import type { ReportingLink, ReportingStatus } from "../shared/protocol.ts";
 import { getRun, getAgent, getAllocation, isTerminal, runConfig } from "./queries.ts";
@@ -124,7 +125,7 @@ function connect(db: DB, childRun: string, parentRun: string, actor: string, par
 		VALUES (?,?,?,?,?,?,?, 'joined', ?)`, link.id, childRun, parent, child, link.created_at, "reporting link", parentRun, terminatable ? 1 : 0);
 	const tasks = all(db, "SELECT id AS task_id, title, status FROM tasks WHERE run_id = ? AND status NOT IN ('DONE','FAILED','CANCELLED') ORDER BY created_at LIMIT 30", childRun);
 	const members = all(db, "SELECT id AS agent_id, role, status, observed_state FROM agents WHERE run_id = ? AND status NOT IN ('COMPLETED','FAILED','CANCELLED','RETIRED') ORDER BY created_at LIMIT 30", childRun);
-	const latest = all(db, "SELECT type, payload_json, created_at FROM events WHERE run_id = ? AND type IN ('task.progress','task.completed') ORDER BY seq DESC LIMIT 5", childRun);
+	const latest = scanEvents(db, { run_id: childRun, types: ["task.progress", "task.completed"], order: "desc", limit: 5 }).map((e) => ({ type: e.type, payload_json: e.payload_json, created_at: e.created_at }));
 	joinGrant(db, childRun, parentRun, child, actor);
 	notice(db, link, "reporting.connected", { tasks, members, recent_progress: latest, instruction: `Team leader ${child}: send your reporting parent an initial report using team_send_message: goal, progress, active members, blockers, pending decisions and next action. Continue sending meaningful updates. Receiving leader: maintain consolidated status and follow up with the reporting leader. This link grants coordination only; budgets, recruitment, approvals and team control remain with each team.` }, true);
 	audit(db, link, actor, "reporting.connected", {});
