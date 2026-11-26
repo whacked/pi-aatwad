@@ -7,7 +7,7 @@
 import { statePaths, type StatePaths } from "../shared/paths.ts";
 import { readOperatorToken, TeamApiError } from "../shared/client.ts";
 import type { Envelope } from "../shared/protocol.ts";
-import { formatEnvelope, formatOrgContext } from "../extension/format.ts";
+import { formatInbox, formatOrgContext } from "../extension/format.ts";
 import { HARNESS, claudePid, clearIdentity, clearWake, client, readIdentity, readPidState, readWake, updatePidState, writeIdentity, type Identity } from "./session.ts";
 
 export interface HookInput { session_id?: string; cwd?: string; hook_event_name?: string; source?: string; stop_hook_active?: boolean; prompt?: string }
@@ -33,7 +33,7 @@ async function claimAll(id: Identity, paths: StatePaths): Promise<Envelope[]> {
 
 export function messagesText(id: Identity, messages: Envelope[], digest?: string): string {
 	const parts: string[] = [];
-	if (messages.length) parts.push(`Team inbox: ${messages.length} new message(s) for ${id.agent_id}. They are durable org messages delivered by the controller.\n\n${messages.map((m) => formatEnvelope(m)).join("\n\n---\n\n")}`);
+	if (messages.length) parts.push(formatInbox(messages, id.agent_id));
 	if (digest) parts.push(digest);
 	return parts.join("\n\n");
 }

@@ -9,7 +9,7 @@ import type { ProjectSettings, SummarizerSetting, SummaryView } from "../shared/
 import { type DB, all, emit, get, newId, nowIso, parseJson, run, tx } from "./db.ts";
 import { fail } from "./errors.ts";
 import { obj, onlyKeys, str } from "./validate.ts";
-import { getAgent, getRun } from "./queries.ts";
+import { getAgent, getRun, runConfig } from "./queries.ts";
 import { headSeq, scanEvents, type EventRow } from "./history.ts";
 import { findExecutable } from "../shared/environment.ts";
 import { budgetPool, ownBudgetUsd } from "./budgets.ts";
@@ -136,11 +136,15 @@ function worthSummarizing(db: DB, runId: string, after: number): EventRow[] {
 	return scanEvents(db, { run_id: runId, after_seq: after, limit: 2000 }).filter((e) => !SKIP.has(e.type));
 }
 
-function recordLines(db: DB, runId: string, events: EventRow[]): string {
+function recordLines(db: DB, runId: string, events: EventRow[]): string[] {
 	const role = new Map<string, string>();
 	const who = (id: string | null) => {
 		if (!id) return "controller";
-		if (!role.has(id)) role.set(id, String(get(db, "SELECT role FROM agents WHERE id = ?", id)?.role ?? id));
+		if (!role.has(id)) {
+			const a = get(db, "SELECT role, run_id FROM agents WHERE id = ?", id);
+			const team = a && a.run_id !== runId ? ` (team ${runConfig(db, String(a.run_id)).name ?? a.run_id})` : "";
+			role.set(id, `${String(a?.role ?? id)}${team}`);
+		}
 		return role.get(id)!;
 	};
 	const title = (id: string | null) => (id ? String(get(db, "SELECT title FROM tasks WHERE id = ?", id)?.title ?? id) : "");
@@ -150,16 +154,25 @@ function recordLines(db: DB, runId: string, events: EventRow[]): string {
 		const t = e.created_at.slice(11, 16);
 		const detail =
 			e.type === "task.assigned" ? `assigned "${title(e.entity_id)}" to ${who(String(p.owner_id ?? p.to ?? ""))}`
-			: e.type === "task.progress" ? `progress on "${title(e.entity_id)}": ${String(p.note ?? "")}`
-			: e.type === "task.completed" ? `finished "${title(e.entity_id)}" (${String(p.status ?? "DONE")}): ${String(p.summary ?? "")}`
+			: e.type === "task.progress" ? `progress on "${title(e.entity_id)}": ${p.headline ? `${String(p.headline)}. ` : ""}${String(p.note ?? "")}`
+			: e.type === "task.completed" ? `finished "${title(e.entity_id)}" (${String(p.status ?? "DONE")}): ${p.headline ? `${String(p.headline)}. ` : ""}${String(p.summary ?? "")}${p.briefing ? ` Briefing: ${String(p.briefing).replace(/\s+/g, " ").slice(0, 400)}` : ""}`
 			: e.type === "agent.created" ? `${who(e.entity_id)} joined the team`
 			: e.type === "message.sent" ? messageLine(db, e, who)
 			: `${e.type}${e.entity_id ? ` ${who(e.entity_id)}` : ""}`;
-		lines.push(`${t} ${who(e.actor_id)}: ${detail}`.slice(0, 600));
+		lines.push(`${t} ${who(e.actor_id)}: ${detail}`.slice(0, 800));
 	}
-	let text = lines.join("\n");
-	if (text.length > MAX_INPUT_CHARS) text = `[${text.length - MAX_INPUT_CHARS} characters of older records omitted]\n${text.slice(-MAX_INPUT_CHARS)}`;
-	return text;
+	return lines;
+}
+
+/** As many records, oldest first, as fit the model input; the rest go into the next summary. Never drops any. */
+export function fitWindow(lines: string[], maxChars = MAX_INPUT_CHARS): number {
+	let used = 0, n = 0;
+	for (const l of lines) {
+		if (n > 0 && used + l.length + 1 > maxChars) break;
+		used += l.length + 1;
+		n++;
+	}
+	return n;
 }
 
 function messageLine(db: DB, e: EventRow, who: (id: string | null) => string): string {
@@ -167,6 +180,22 @@ function messageLine(db: DB, e: EventRow, who: (id: string | null) => string): s
 	const m = e.entity_id ? get(db, "SELECT payload_json FROM messages WHERE id = ?", e.entity_id) : undefined;
 	const body = m ? parseJson<{ text?: string }>(m.payload_json, {}).text : undefined;
 	return `${p.type ?? "message"} to ${who(p.to ?? null)}${body ? `: ${String(body).replace(/\s+/g, " ").slice(0, 300)}` : ""}`;
+}
+
+/**
+ * Teams linked under this one are summarized by their own summarizer; the parent reads their latest
+ * overviews, not their raw events. So each level condenses its direct reports plus its own activity,
+ * and the cost per summary stays bounded however deep the organization grows.
+ */
+function linkedOverviews(db: DB, runId: string): string {
+	const parts: string[] = [];
+	for (const l of all(db, "SELECT DISTINCT run_id FROM reporting_edges WHERE parent_run_id = ? AND valid_to IS NULL", runId)) {
+		const s = get(db, "SELECT overview_text, created_at FROM summaries WHERE run_id = ? ORDER BY to_seq DESC LIMIT 1", l.run_id);
+		if (!s) continue;
+		const name = runConfig(db, String(l.run_id)).name ?? l.run_id;
+		parts.push(`Team "${name}" (linked under this team), its own overview as of ${String(s.created_at).slice(11, 16)} UTC:\n${String(s.overview_text).slice(0, 3000)}`);
+	}
+	return parts.length ? `${parts.join("\n\n")}\n\n` : "";
 }
 
 export function splitSections(text: string): { window: string; overview: string } {
@@ -193,10 +222,14 @@ export async function summarizeIfDue(ctx: Ctx, runId: string, summarize: Summari
 	// A team out of budget gets no summaries until the human raises or clears its limit.
 	const own = ownBudgetUsd(db, root);
 	if (own !== null && budgetPool(db, root).consumed >= own - 1e-9) return "skipped";
-	const toSeq = events[events.length - 1].seq;
+	// A busy team (many members, long notes) can outgrow one model call: summarize what fits, then the rest.
+	const lines = recordLines(db, runId, events);
+	const n = fitWindow(lines);
+	const toSeq = events[n - 1].seq;
+	const more = n < events.length;
 	inFlight.add(runId);
 	try {
-		const input = `${prev ? `Previous overview:\n${prev.overview_text}\n\n` : ""}Team records (time UTC, who: what):\n${recordLines(db, runId, events)}`;
+		const input = `${prev ? `Previous overview:\n${prev.overview_text}\n\n` : ""}${linkedOverviews(db, runId)}Team records (time UTC, who: what):\n${lines.slice(0, n).join("\n")}`;
 		const r = await summarize({ model: setting.model, system: SUMMARY_SYSTEM, input });
 		const { window, overview } = splitSections(r.text);
 		tx(db, () => {
@@ -207,6 +240,7 @@ export async function summarizeIfDue(ctx: Ctx, runId: string, summarize: Summari
 			emit(db, { run_id: runId, actor_id: "controller", type: "summary.created", entity_id: id, payload: { from_seq: after, to_seq: toSeq, model: setting.model } });
 		});
 		lastFailure.delete(runId);
+		if (more) setImmediate(() => void summarizeIfDue(ctx, runId, summarize));
 		return "made";
 	} catch (e) {
 		lastFailure.set(runId, now);

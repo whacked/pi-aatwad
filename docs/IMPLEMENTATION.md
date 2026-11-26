@@ -815,3 +815,25 @@ sub-team needed a human at its own terminal.
   task progress and completions, deduplicated against the messages that carry them, `?before=`
   pages back). Tools `team_history` (Pi and Claude Code), commands `/team history`, and the brief
   shows the latest overview.
+
+## A structured stream for leads (v0.1.56)
+
+- **Headlines and briefings**: `team_report_progress` takes an optional `headline` (one line, at
+  most 160 characters); `team_complete_task` takes `headline` and `briefing` (up to 20,000
+  characters). Both are recorded in the event store (and the task result). The lead's message carries
+  the headline and `has_briefing`, never the briefing itself; the brief shows headlines (marked
+  `[briefing]`), member threads show the briefing, summaries use headlines and the start of the
+  briefing. Member bootstrap instructions ask for this by default; a lead or the human may ask for
+  another way.
+- **Sender labels**: delivered envelopes carry `from_role` and, for another team, `from_team`
+  (`senderLabel`, stamped by the controller from the sender's credential). Formatting, summaries and
+  the brief name senders as "Role [id] of team "Name"".
+- **Grouped delivery** (`formatInbox`, used by Pi delivery, the Claude Code hooks and both inbox
+  tools): one batch grouped by sender, senders with questions first; each task's progress reduced to
+  the latest report, with a pointer to `team_history member` for the rest; a single sender with no
+  progress stays a plain list.
+- **Size-split summaries** (`fitWindow`): records that do not fit one model input (24,000
+  characters) go into the next summary instead of being dropped; the next one is made right away.
+- **Recursion**: a team's summary input includes the latest overview of each team linked directly
+  under it (`linkedOverviews`), not their events. The brief suggests sub-leads beyond
+  `MAX_DIRECT_REPORTS` (8).

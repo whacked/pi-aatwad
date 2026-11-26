@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harness, newRun, waitFor } from "./helpers.ts";
-import { formatBrief } from "../../src/extension/format.ts";
+import { formatBrief, formatEnvelope } from "../../src/extension/format.ts";
 
 const ok = (r: any) => { assert.equal(r.status, 200, JSON.stringify(r.body)); return r.body; };
 
@@ -40,5 +40,52 @@ test("the brief reports what needs the lead and only what changed since it last 
 		assert.equal((await h.call("GET", `/agents/${lead.root}/brief`, { token: mtoken })).status, 403, "members do not read their lead's brief");
 		ok(await h.call("GET", `/agents/${member}/brief`, { token: lead.token }));
 		assert.equal((await h.call("POST", `/agents/${lead.root}/brief/seen`, { token: mtoken, body: {} })).status, 403);
+	} finally { await h.cleanup(); }
+});
+
+test("members report with a headline; the briefing stays out of the lead's inbox and is read on demand", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h);
+		const member = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "Scanner", responsibility: "Scan" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(member));
+		const mtoken = h.ex.tokens.get(member)!;
+		ok(await h.call("POST", `/agents/${lead.root}/brief/seen`, { token: lead.token, body: {} }));
+		const task = ok(await h.call("POST", "/tasks", { token: lead.token, body: { owner_id: member, title: "Scan the document" } }));
+		ok(await h.call("POST", `/tasks/${task.task_id}/progress`, { token: mtoken, body: { note: "pages 1-40 OCRed, 2 unreadable", headline: "40 of 93 pages done" } }));
+		assert.equal((await h.call("POST", `/tasks/${task.task_id}/progress`, { token: mtoken, body: { note: "x", headline: "y".repeat(161) } })).status, 400, "headlines are one line");
+		ok(await h.call("POST", `/tasks/${task.task_id}/complete`, { token: mtoken, body: { summary: "scanned", headline: "93 pages scanned, 3 need a rescan", briefing: "## Result\nPages 12, 40 and 77 are unreadable.\n## Next\nRescan at 600 dpi." } }));
+
+		const inbox = ok(await h.call("GET", "/inbox", { token: lead.token })).messages.find((m: any) => m.type === "task.completed");
+		assert.equal(inbox.payload.headline, "93 pages scanned, 3 need a rescan");
+		assert.equal(inbox.payload.has_briefing, true);
+		assert.equal(inbox.payload.briefing, undefined, "the briefing is not pushed into the lead's context");
+
+		const b = ok(await h.call("GET", `/agents/${lead.root}/brief`, { token: lead.token }));
+		assert.ok(b.changes.some((c: any) => c.text === 'Scanner finished "Scan the document": 93 pages scanned, 3 need a rescan [briefing]'), JSON.stringify(b.changes));
+		const t = ok(await h.call("GET", `/agents/${lead.root}/thread/${member}`, { token: lead.token }));
+		const done = t.items.find((i: any) => i.kind === "task.completed");
+		assert.match(done.text, /^93 pages scanned, 3 need a rescan\nscanned\nBriefing:\n## Result\nPages 12, 40 and 77 are unreadable/);
+		assert.ok(t.items.some((i: any) => i.kind === "task.progress" && /^40 of 93 pages done\npages 1-40 OCRed/.test(i.text)));
+	} finally { await h.cleanup(); }
+});
+
+test("every delivered message names its sender's role, and its team when it is another team", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), sub = await newRun(h);
+		ok(await h.call("POST", `/runs/${sub.run_id}/settings`, { token: sub.token, body: { name: "EasyCard" } }));
+		ok(await h.call("POST", `/runs/${sub.run_id}/reporting`, { token: sub.token, body: { action: "connect", parent_run_id: lead.run_id } }));
+		const member = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "Parser", responsibility: "Parse" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(member));
+		ok(await h.call("GET", "/inbox", { token: lead.token }));
+		ok(await h.call("POST", "/messages", { token: sub.token, body: { to: lead.root, type: "question", payload: { text: "From the sub-team" } } }));
+		ok(await h.call("POST", "/messages", { token: h.ex.tokens.get(member)!, body: { to: lead.root, type: "question", payload: { text: "From my own member" } } }));
+		const msgs = ok(await h.call("GET", "/inbox", { token: lead.token })).messages;
+		const cross = msgs.find((m: any) => m.payload.text === "From the sub-team"), own = msgs.find((m: any) => m.payload.text === "From my own member");
+		assert.deepEqual([cross.from_role, cross.from_team], ["root", "EasyCard"]);
+		assert.deepEqual([own.from_role, own.from_team], ["Parser", undefined]);
+		assert.match(formatEnvelope(cross), /^\[question\] from root \[.*\] of team "EasyCard" \(message /);
+		assert.match(formatEnvelope(own), /^\[question\] from Parser \[.*\] \(message /);
 	} finally { await h.cleanup(); }
 });

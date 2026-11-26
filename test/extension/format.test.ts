@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatEnvelope, MAX_MESSAGE_CHARS, openLeaderHints, projectFirst } from "../../src/extension/format.ts";
+import { formatBrief, formatEnvelope, formatInbox, MAX_MESSAGE_CHARS, openLeaderHints, projectFirst } from "../../src/extension/format.ts";
 import type { Envelope } from "../../src/shared/protocol.ts";
 
 const env = (payload: Record<string, unknown>): Envelope => ({ version: 1, message_id: "msg-1", run_id: "run1", type: "question", from: "ag-lead", to: "ag-sub", payload });
@@ -39,4 +39,33 @@ test("a team led by another open session in this project is announced with a com
 	assert.doesNotMatch(after, /run-mine\) is still led/, "never warns about the session's own team");
 	assert.match(after, /link your new team under its leader: \/team join run-a/);
 	assert.match(after, /in the other session, \/team join run-mine/);
+});
+
+test("an inbox batch is grouped by sender, questions first, with each task's progress reduced to the latest", () => {
+	let n = 0;
+	const m = (from: string, role: string, type: string, payload: Record<string, unknown>, team?: string): Envelope => ({ version: 1, message_id: `msg-${++n}`, run_id: "run1", type: type as Envelope["type"], from, to: "lead", from_role: role, ...(team ? { from_team: team } : {}), payload });
+	const batch = [
+		m("ag-scan", "Scanner", "task.progress", { task_id: "t1", note: "page 10", headline: "10 of 93" }),
+		m("ag-ocr", "OCR", "task.progress", { task_id: "t2", note: "warming up" }),
+		m("ag-scan", "Scanner", "task.progress", { task_id: "t1", note: "page 40", headline: "40 of 93" }),
+		m("ag-sub", "root", "question", { text: "Rescan at 600 dpi?" }, "EasyCard"),
+		m("ag-scan", "Scanner", "task.completed", { task_id: "t0", status: "DONE", summary: "setup", headline: "Scanner ready" }),
+	];
+	const text = formatInbox(batch, "lead");
+	assert.match(text, /^Team inbox: 5 new message\(s\) for lead from 3 senders, grouped by sender\./);
+	const order = [...text.matchAll(/^== (.+?):/gm)].map((x) => x[1]);
+	assert.deepEqual(order, ['root [ag-sub] of team "EasyCard"', "Scanner [ag-scan]", "OCR [ag-ocr]"], "the sender with a question comes first");
+	assert.match(text, /== Scanner \[ag-scan\]: 3 message\(s\); 1 earlier progress report\(s\) not repeated here \(team_history member "Scanner" shows them\)/);
+	assert.ok(text.includes("40 of 93") && !text.includes("10 of 93"), "only the latest progress per task");
+	assert.ok(text.includes("Rescan at 600 dpi?") && text.includes("Scanner ready") && text.includes("warming up"));
+	const single = formatInbox([m("ag-x", "Solo", "question", { text: "Just one" })], "lead");
+	assert.match(single, /^Team inbox: 1 new message\(s\) for lead\. .*\n\n\[question\] from Solo \[ag-x\]/, "a single sender stays a plain list");
+});
+
+test("the brief suggests sub-leads beyond eight direct reports", () => {
+	const b = (n: number) => ({ agent_id: "lead", as_of_seq: 1, since_seq: 0, deeper_open_tasks: 0, changes: [], changes_omitted: 0, progress_reports: 0,
+		needs_you: { messages: [], other_unread: 0, proposals_to_review: 0, stopped_linked_teams: [] },
+		members: Array.from({ length: n }, (_x, i) => ({ agent_id: `m${i}`, role: `M${i}`, state: "working", idle_ms: null, tasks: [] })) });
+	assert.doesNotMatch(formatBrief(b(8) as any), /sub-lead/);
+	assert.match(formatBrief(b(9) as any), /9 direct reports is more than one lead tracks well: consider grouping related members under a sub-lead/);
 });

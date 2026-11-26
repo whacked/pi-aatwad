@@ -14,7 +14,7 @@ import { statePaths } from "../shared/paths.ts";
 import type { StatePaths } from "../shared/paths.ts";
 import { TeamApiError, TeamClient, ensureController, readOperatorToken, isUnavailable } from "../shared/client.ts";
 import type { CallOptions, EnsureOptions, EnsureResult } from "../shared/client.ts";
-import { formatEnvelope } from "./format.ts";
+import { formatInbox } from "./format.ts";
 import { installMemberStrip, MEMBER_STRIP_WIDGET, type StripMember } from "./agent-label.ts";
 
 interface TeamActivityView {
@@ -1022,9 +1022,7 @@ export class TeamRuntime {
 	}
 
 	inboxMessage(fresh: Envelope[]): { customType: string; content: string; display: boolean; details: { message_ids: string[] } } {
-		const content =
-			`Team inbox: ${fresh.length} new message(s) for ${this.identity?.agent_id}. They are durable org messages delivered by the controller.\n\n` +
-			fresh.map((m) => formatEnvelope(m)).join("\n\n---\n\n");
+		const content = formatInbox(fresh, this.identity?.agent_id);
 		return { customType: INBOX_MESSAGE, content, display: true, details: { message_ids: fresh.map((m) => m.message_id) } };
 	}
 

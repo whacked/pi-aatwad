@@ -723,12 +723,12 @@ export class TeamClient {
 	delegateTask(req: DelegateTaskRequest, o?: CallOptions): Promise<DelegateTaskResponse> {
 		return this.post("/tasks", req, o);
 	}
-	reportProgress(taskId: string, note: string, o?: CallOptions): Promise<unknown> {
-		return this.post(`/tasks/${enc(taskId)}/progress`, { note }, o);
+	reportProgress(taskId: string, note: string, o?: CallOptions, headline?: string): Promise<unknown> {
+		return this.post(`/tasks/${enc(taskId)}/progress`, { note, ...(headline ? { headline } : {}) }, o);
 	}
 	completeTask(
 		taskId: string,
-		body: { summary: string; status?: CompleteStatus; artifacts?: { kind: string; uri: string; sha256?: string }[] },
+		body: { summary: string; status?: CompleteStatus; artifacts?: { kind: string; uri: string; sha256?: string }[]; headline?: string; briefing?: string },
 		o?: CallOptions,
 	): Promise<unknown> {
 		return this.post(`/tasks/${enc(taskId)}/complete`, body, o);

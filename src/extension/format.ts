@@ -90,7 +90,13 @@ export function formatEnvelope(m: Envelope, maxPayload = MAX_MESSAGE_CHARS): str
 	else payload = JSON.stringify(m.payload);
 	const body = payload.length <= maxPayload ? payload
 		: `${payload.slice(0, maxPayload)}\n[message cut at ${maxPayload} of ${payload.length} characters; ask ${m.from} to send the rest in a file]`;
-	return `[${m.type}] from ${m.from} (message ${m.message_id}${m.correlation_id ? `, correlation ${m.correlation_id}` : ""})\n${body}`;
+	return `[${m.type}] from ${senderOf(m)} (message ${m.message_id}${m.correlation_id ? `, correlation ${m.correlation_id}` : ""})\n${body}`;
+}
+
+/** "Parser [agent-id]" or "Parser [agent-id] of team EasyCard"; just the ID when the controller sent no label. */
+export function senderOf(m: Pick<Envelope, "from" | "from_role" | "from_team">): string {
+	if (!m.from_role) return m.from;
+	return `${m.from_role} [${m.from}]${m.from_team ? ` of team "${m.from_team}"` : ""}`;
 }
 
 /** Bounded org-context section injected before each agent run. Fresh facts only. */
@@ -240,6 +246,9 @@ export function formatAway(a: AwaySummary): string {
 	return lines.join("\n");
 }
 
+/** Beyond this many direct reports, the brief suggests sub-leads. */
+export const MAX_DIRECT_REPORTS = 8;
+
 /** The team brief as text: what needs the reader, who is doing what, and what changed since it last looked. */
 export function formatBrief(b: BriefResponse): string {
 	const hhmm = (iso: string) => iso.slice(11, 16);
@@ -259,6 +268,7 @@ export function formatBrief(b: BriefResponse): string {
 			const work = m.tasks.length ? m.tasks.map((t) => `"${clip(t.title, 60)}" ${t.status}${t.picked_up ? "" : " (not picked up yet)"}`).join("; ") : "no open tasks";
 			lines.push(`  • ${m.role}${m.linked_run_id ? ` (linked team ${m.linked_run_id})` : ""}: ${state} · ${work}`);
 		}
+		if (b.members.length > MAX_DIRECT_REPORTS) lines.push(`  (${b.members.length} direct reports is more than one lead tracks well: consider grouping related members under a sub-lead, who gets its own brief and summaries and reports one headline up.)`);
 	} else lines.push("Members: none.");
 	if (b.deeper_open_tasks) lines.push(`  + ${b.deeper_open_tasks} open task(s) further down`);
 	if (b.since_seq === null) lines.push("Changes: (first look; from now on, only what changed since the last look)");
@@ -290,4 +300,31 @@ export function formatThread(t: MemberThread): string {
 	if (t.more_before) lines.push(`  (earlier: /team history ${t.member_role} --before ${t.more_before})`);
 	for (const i of t.items) lines.push(`  ${i.at.slice(5, 16).replace("T", " ")} ${i.from} · ${i.kind}: ${clip(i.text.replace(/\s+/g, " "), 300)}`);
 	return lines.join("\n");
+}
+
+/**
+ * A batch of team messages as one structured delivery instead of one interleaved stream: grouped by
+ * sender (senders with questions first), questions and answers in full, each task's progress reduced
+ * to its latest report (earlier ones stay readable with team_history), everything else in full.
+ */
+export function formatInbox(messages: Envelope[], forAgent: string | undefined): string {
+	const groups = new Map<string, Envelope[]>();
+	for (const m of messages) groups.set(m.from, [...(groups.get(m.from) ?? []), m]);
+	const asks = (ms: Envelope[]) => ms.some((m) => m.type === "question" || m.type === "answer");
+	const ordered = [...groups.values()].sort((a, b) => Number(asks(b)) - Number(asks(a)));
+	const head = `Team inbox: ${messages.length} new message(s) for ${forAgent}${groups.size > 1 ? ` from ${groups.size} senders, grouped by sender` : ""}. They are durable org messages delivered by the controller, which verifies each sender.`;
+	if (groups.size <= 1 && !messages.some((m) => m.type === "task.progress")) return `${head}\n\n${messages.map((m) => formatEnvelope(m)).join("\n\n---\n\n")}`;
+	const parts = [head];
+	for (const ms of ordered) {
+		const latestProgress = new Map<string, Envelope>();
+		for (const m of ms) if (m.type === "task.progress") latestProgress.set(String(m.payload.task_id ?? m.message_id), m);
+		const shown = ms.filter((m) => m.type !== "task.progress" || latestProgress.get(String(m.payload.task_id ?? m.message_id)) === m);
+		const hidden = ms.length - shown.length;
+		const role = ms[0].from_role ?? ms[0].from;
+		parts.push([
+			`== ${senderOf(ms[0])}: ${ms.length} message(s)${hidden ? `; ${hidden} earlier progress report(s) not repeated here (team_history member "${role}" shows them)` : ""}`,
+			...shown.map((m) => formatEnvelope(m)),
+		].join("\n\n"));
+	}
+	return parts.join("\n\n");
 }

@@ -89,3 +89,54 @@ test("summary sections are split even when the model is sloppy", () => {
 	assert.deepEqual(splitSections("## Window\n- a\n\n## Overview\n- b"), { window: "- a", overview: "- b" });
 	assert.deepEqual(splitSections("just text"), { window: "just text", overview: "just text" });
 });
+
+test("a busy stretch larger than one model call is split into consecutive summaries; no record is dropped", async () => {
+	const inputs: string[] = [];
+	const h = await harness({ summarize: async (req) => { inputs.push(req.input); return { text: `## Window\n- part ${inputs.length}\n## Overview\n- so far ${inputs.length}`, cost_usd: 0 }; } });
+	try {
+		const lead = await newRun(h);
+		ok(await h.call("POST", "/projects/settings", { token: h.op, body: { project: h.dir, summarizer: { state: "enabled", model: "local/small-1" } } }));
+		const member = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "Writer", responsibility: "Write" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(member));
+		for (let i = 0; i < 40; i++) {
+			const t = ok(await h.call("POST", "/tasks", { token: lead.token, body: { owner_id: member, title: `Chapter ${i}` } }));
+			ok(await h.call("POST", `/tasks/${t.task_id}/complete`, { token: h.ex.tokens.get(member)!, body: { summary: `chapter ${i} ` + "x".repeat(2000) } }));
+		}
+		ok(await h.call("GET", `/agents/${lead.root}/brief`, { token: lead.token }));
+		await waitFor(() => sql(h, "SELECT COUNT(*) AS n FROM summaries WHERE run_id = ?", lead.run_id)[0].n >= 2, "split into two or more", 5000);
+		assert.ok(inputs.every((i) => i.length < 26_000), "each call fits");
+		const all = inputs.join("\n");
+		for (let i = 0; i < 40; i++) assert.ok(all.includes(`"Chapter ${i}"`), `chapter ${i} was summarized`);
+		const rows = sql(h, "SELECT from_seq, to_seq FROM summaries WHERE run_id = ? ORDER BY to_seq", lead.run_id);
+		for (let i = 1; i < rows.length; i++) assert.equal(rows[i].from_seq, rows[i - 1].to_seq, "contiguous windows");
+		assert.match(inputs[1], /^Previous overview:\n- so far 1/);
+	} finally { await h.cleanup(); }
+});
+
+test("a lead's summary reads the overview of each team linked under it, not that team's raw events", async () => {
+	const inputs: { model: string; input: string }[] = [];
+	const h = await harness({ summarize: async (req) => { inputs.push(req); return { text: `## Window\n- w\n## Overview\n- overview of call ${inputs.length}`, cost_usd: 0 }; } });
+	try {
+		const lead = await newRun(h), sub = await newRun(h);
+		ok(await h.call("POST", `/runs/${sub.run_id}/settings`, { token: sub.token, body: { name: "EasyCard" } }));
+		ok(await h.call("POST", `/runs/${sub.run_id}/reporting`, { token: sub.token, body: { action: "connect", parent_run_id: lead.run_id } }));
+		ok(await h.call("POST", "/projects/settings", { token: h.op, body: { project: h.dir, summarizer: { state: "enabled", model: "local/small-1" } } }));
+		const busy = async (t: { token: string; root: string }, prefix: string) => {
+			const m = ok(await h.call("POST", "/members", { token: t.token, body: { name: `${prefix}Worker`, responsibility: "Work" } })).spawned_agent_ids[0];
+			await waitFor(() => h.ex.tokens.has(m));
+			for (let i = 0; i < 5; i++) {
+				const task = ok(await h.call("POST", "/tasks", { token: t.token, body: { owner_id: m, title: `${prefix} task ${i}` } }));
+				ok(await h.call("POST", `/tasks/${task.task_id}/complete`, { token: h.ex.tokens.get(m)!, body: { summary: "done" } }));
+			}
+		};
+		await busy(sub, "Sub");
+		ok(await h.call("GET", `/agents/${sub.root}/brief`, { token: sub.token }));
+		await waitFor(() => inputs.length === 1, "sub-team summarized");
+		await busy(lead, "Lead");
+		ok(await h.call("GET", `/agents/${lead.root}/brief`, { token: lead.token }));
+		await waitFor(() => inputs.length === 2, "lead summarized");
+		assert.match(inputs[1].input, /Team "EasyCard" \(linked under this team\), its own overview as of \d\d:\d\d UTC:\n- overview of call 1/);
+		assert.ok(!inputs[1].input.includes("Sub task"), "the sub-team's raw records stay in its own summary");
+		assert.ok(inputs[1].input.includes("Lead task 0"));
+	} finally { await h.cleanup(); }
+});

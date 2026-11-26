@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.55, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.56, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -728,6 +728,12 @@ into one stream.
   were declined.
 
 Progress reports alone do not wake an idle lead: they arrive with its next turn and count in the brief.
+When the lead does get a batch, it arrives grouped by sender (senders with questions first), each
+sender named by role and, for linked teams, team name; each task's progress is reduced to its latest
+report. Members report with a one-line `headline`; on completion they add a `briefing`, which stays
+in the team record (read with `team_history member`) instead of filling the lead's inbox. A lead's
+summaries read the overviews of teams linked under it rather than their raw activity, so each level
+condenses its direct reports, and the brief suggests sub-leads past 8 direct reports.
 
 ## Claude Code interop
 

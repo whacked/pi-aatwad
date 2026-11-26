@@ -13,7 +13,7 @@ import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageTyp
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import type { ToolName } from "./names.ts";
-import { formatBrief, formatSummaries, formatThread, formatBudget, formatEnvelope, formatProposal, formatTree } from "./format.ts";
+import { formatBrief, formatSummaries, formatThread, formatBudget, formatInbox, formatProposal, formatTree } from "./format.ts";
 
 export { TOOL_NAMES };
 
@@ -278,17 +278,17 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 				}
 			}
 			if (!r.messages.length) return text("inbox empty", r);
-			return text(r.messages.map((m) => formatEnvelope(m)).join("\n\n---\n\n"), r);
+			return text(formatInbox(r.messages, rt.identity?.agent_id), r);
 		},
 	);
 
 	reg(
 		"team_report_progress",
 		"Team: report progress",
-		"Record a progress note on one of your tasks; your manager is notified.",
-		Type.Object({ task_id: Type.String(), note: Type.String() }),
+		"Record a progress note on one of your tasks; your manager sees it with its next turn (progress alone does not interrupt it). Lead with a headline: one line saying where things stand.",
+		Type.Object({ task_id: Type.String(), note: Type.String(), headline: Type.Optional(Type.String({ description: "One line, at most 160 characters: where things stand" })) }),
 		async (p, id) => {
-			const r = await rt.client.reportProgress(p.task_id, p.note, { idempotencyKey: key("team_report_progress", id) });
+			const r = await rt.client.reportProgress(p.task_id, p.note, { idempotencyKey: key("team_report_progress", id) }, p.headline);
 			return text(`progress recorded on ${p.task_id}`, r);
 		},
 	);
@@ -296,10 +296,12 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 	reg(
 		"team_complete_task",
 		"Team: complete task",
-		"Finish one of your tasks with a summary (status DONE by default, or FAILED/BLOCKED) and optional artifact references. Your manager receives task.completed.",
+		"Finish one of your tasks (status DONE by default, or FAILED/BLOCKED) with a headline (one line your lead sees first), a summary, and a briefing: a fuller account (what was done, results, decisions, open issues, where things are) your lead reads when it needs detail. The briefing is kept in the team record rather than sent into your lead's inbox. Optional artifact references.",
 		Type.Object({
 			task_id: Type.String(),
 			summary: Type.String(),
+			headline: Type.Optional(Type.String({ description: "One line, at most 160 characters: the result" })),
+			briefing: Type.Optional(Type.String({ description: "Fuller account for your lead, markdown, up to 20,000 characters" })),
 			status: Type.Optional(StringEnum(["DONE", "FAILED", "BLOCKED"] as const)),
 			artifacts: Type.Optional(
 				Type.Array(Type.Object({ kind: Type.String(), uri: Type.String(), sha256: Type.Optional(Type.String()) }), {
@@ -308,7 +310,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			),
 		}),
 		async (p, id) => {
-			const r = await rt.client.completeTask(p.task_id, { summary: p.summary, status: p.status, artifacts: p.artifacts }, { idempotencyKey: key("team_complete_task", id) });
+			const r = await rt.client.completeTask(p.task_id, { summary: p.summary, status: p.status, artifacts: p.artifacts, headline: p.headline, briefing: p.briefing }, { idempotencyKey: key("team_complete_task", id) });
 			return text(`task ${p.task_id} marked ${p.status ?? "DONE"}`, r);
 		},
 	);

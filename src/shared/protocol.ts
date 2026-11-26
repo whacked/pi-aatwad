@@ -164,6 +164,9 @@ export interface Envelope {
 	type: MessageType;
 	from: string;
 	to: string;
+	/** The sender's role, and its team's name when it is in another team (set by the controller on delivery). */
+	from_role?: string;
+	from_team?: string;
 	correlation_id?: string;
 	causation_id?: string;
 	deadline?: string;

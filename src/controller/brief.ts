@@ -6,7 +6,7 @@ import type { Ctx, Principal } from "./context.ts";
 import type { BriefResponse, MemberThread, SummaryView } from "../shared/protocol.ts";
 import { type DB, all, get, parseJson, run } from "./db.ts";
 import { fail } from "./errors.ts";
-import { getAgent, getLinkChildren, getLinkParent, getSubtree, isAncestor } from "./queries.ts";
+import { getAgent, getLinkChildren, getLinkParent, getSubtree, isAncestor, runConfig } from "./queries.ts";
 import { headSeq, payloadOf, scanEvents } from "./history.ts";
 import { statusDigest } from "./attention.ts";
 import { teamLifecycleState } from "./team-lifecycle.ts";
@@ -52,7 +52,13 @@ export function brief(ctx: Ctx, p: Principal, agentId: string, q: URLSearchParam
 	const runs = new Set([...agents].map((id) => String(getAgent(db, id).run_id)));
 	const tasks = all(db, `SELECT id, title FROM tasks WHERE owner_id IN (${[...agents].map(() => "?").join(",")})`, ...agents);
 	const taskTitle = new Map(tasks.map((t) => [String(t.id), String(t.title)]));
-	const role = (id: string | null) => (id ? get(db, "SELECT role FROM agents WHERE id = ?", id)?.role ?? id : "controller") as string;
+	const ownRun = String(getAgent(db, agentId).run_id);
+	const role = (id: string | null): string => {
+		if (!id) return "controller";
+		const a = get(db, "SELECT role, run_id FROM agents WHERE id = ?", id);
+		if (!a) return id;
+		return a.run_id !== ownRun ? `${a.role} (team ${runConfig(db, String(a.run_id)).name ?? a.run_id})` : String(a.role);
+	};
 
 	const changes: BriefResponse["changes"] = [];
 	let progress = 0;
@@ -64,7 +70,7 @@ export function brief(ctx: Ctx, p: Principal, agentId: string, q: URLSearchParam
 				if (e.type === "task.progress") { progress++; continue; }
 				const pl = payloadOf<Record<string, unknown>>(e);
 				const text =
-					e.type === "task.completed" ? `${role(e.actor_id)} finished "${taskTitle.get(e.entity_id!)}"${pl.status && pl.status !== "DONE" ? ` (${String(pl.status)})` : ""}${pl.summary ? `: ${String(pl.summary).slice(0, 160)}` : ""}`
+					e.type === "task.completed" ? `${role(e.actor_id)} finished "${taskTitle.get(e.entity_id!)}"${pl.status && pl.status !== "DONE" ? ` (${String(pl.status)})` : ""}${pl.headline || pl.summary ? `: ${String(pl.headline ?? pl.summary).slice(0, 160)}` : ""}${pl.briefing ? " [briefing]" : ""}`
 					: e.type === "agent.created" ? `${role(e.entity_id)} joined`
 					: e.type === "agent.terminated" ? `${role(e.entity_id)} was closed`
 					: e.type === "agent.restart_exhausted" ? `${role(e.entity_id)} kept failing and was not restarted again`
@@ -160,8 +166,13 @@ export function threadRoute(ctx: Ctx, p: Principal, agentId: string, memberId: s
 		WHERE ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))${before ? " AND created_at < ?" : ""} ORDER BY created_at DESC LIMIT ?`,
 		agentId, memberId, memberId, agentId, ...(before ? [before] : []), limit)) {
 		const pl = parseJson<Record<string, unknown>>(m.payload_json, {});
-		const text = String(pl.text ?? pl.note ?? pl.summary ?? pl.title ?? "");
-		items.push({ at: String(m.created_at), from: role(String(m.sender_id)), kind: String(m.type), text: text.slice(0, 2000), message_id: String(m.id) });
+		let text = String(pl.text ?? (pl.headline ? `${pl.headline}\n${pl.note ?? pl.summary ?? ""}` : pl.note ?? pl.summary ?? pl.title ?? ""));
+		// The briefing stays out of the lead's inbox; this on-demand view is where it is read.
+		if (m.type === "task.completed" && pl.has_briefing && pl.task_id) {
+			const briefing = parseJson<{ briefing?: string }>(get(db, "SELECT result_json FROM tasks WHERE id = ?", pl.task_id)?.result_json, {}).briefing;
+			if (briefing) text += `\nBriefing:\n${briefing}`;
+		}
+		items.push({ at: String(m.created_at), from: role(String(m.sender_id)), kind: String(m.type), text: text.slice(0, 24_000), message_id: String(m.id) });
 	}
 	const tasks = all(db, "SELECT id, title FROM tasks WHERE owner_id = ?", memberId);
 	const title = new Map(tasks.map((t) => [String(t.id), String(t.title)]));
@@ -171,7 +182,8 @@ export function threadRoute(ctx: Ctx, p: Principal, agentId: string, memberId: s
 			const pl = payloadOf<Record<string, unknown>>(e);
 			// Progress and completion also arrive as messages to the lead; keep the event only when no message carries it.
 			if (items.some((i) => i.kind === e.type && Math.abs(Date.parse(i.at) - Date.parse(e.created_at)) < 1000)) continue;
-			items.push({ at: e.created_at, from: role(memberId), kind: e.type, text: `${title.get(e.entity_id!)}: ${String(pl.note ?? pl.summary ?? "")}`.slice(0, 2000) });
+			const body = [pl.headline, pl.note ?? pl.summary].filter(Boolean).join("\n") + (pl.briefing ? `\nBriefing:\n${String(pl.briefing)}` : "");
+			items.push({ at: e.created_at, from: role(memberId), kind: e.type, text: `${title.get(e.entity_id!)}: ${body}`.slice(0, 24_000) });
 		}
 	}
 	items.sort((a, b) => a.at.localeCompare(b.at));

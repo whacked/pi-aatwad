@@ -659,6 +659,7 @@ function bootstrapPrompt(a: Row, parentId: string | null, spec: { task_id?: stri
 		parentId ? `You report to ${parentId}.` : "",
 		spec.responsibility ? `Responsibility: ${spec.responsibility}` : "",
 		spec.task_id ? `Your assigned task id: ${spec.task_id}. Read your inbox (team_get_inbox) for details, report progress, and complete the task with team_complete_task.` : "",
+		"How to report: every progress report starts with a headline, one line saying where things stand. When you finish, give team_complete_task a headline, a short summary and a briefing: what was done, results, decisions, open issues and where things are. Your lead sees headlines first and reads briefings when it needs detail. If your lead or the human asks you to report differently, do as they ask.",
 		"Use the team_* tools for all coordination. Requests for more agents are proposals and may be rejected.",
 		"Completing a task does not end your membership. Remain available for new messages and assignments; do not exit Pi, kill your pane, or retire yourself. Your manager or the human decides when to close you.",
 	]

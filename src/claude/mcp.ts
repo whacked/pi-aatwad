@@ -9,7 +9,7 @@ import { ensureController, readOperatorToken, TeamApiError, type TeamClient } fr
 import { HEARTBEAT_INTERVAL_MS, type MessageType } from "../shared/protocol.ts";
 import { LOADED_VERSION } from "../shared/version.ts";
 import { formatAttention, handoffText } from "../shared/attention-format.ts";
-import { formatBrief, formatSummaries, formatThread, formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
+import { formatBrief, formatSummaries, formatThread, formatInbox, formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
 import { HARNESS, claudePid, clearIdentity, client, readIdentity, readPidState, writeIdentity, writeWake, type Identity } from "./session.ts";
 
 type Json = Record<string, unknown>;
@@ -169,7 +169,7 @@ export class ClaudeTeamServer {
 					this.requireIdentity();
 					const r = await this.api.inbox(20);
 					for (const m of r.messages) await this.api.ack(m.message_id);
-					return r.messages.length ? r.messages.map((m) => formatEnvelope(m)).join("\n\n---\n\n") : "inbox empty";
+					return r.messages.length ? formatInbox(r.messages, this.identity?.agent_id) : "inbox empty";
 				},
 			},
 			{
@@ -211,15 +211,15 @@ export class ClaudeTeamServer {
 			},
 			{
 				name: "team_report_progress",
-				description: "Report progress on a task you own to your manager.",
-				inputSchema: obj({ task_id: S("Task ID"), note: S("Progress note") }, ["task_id", "note"]),
-				run: async (a) => { this.requireIdentity(); await this.api.reportProgress(String(a.task_id), String(a.note)); return "progress reported"; },
+				description: "Report progress on a task you own to your manager; lead with a headline (one line: where things stand).",
+				inputSchema: obj({ task_id: S("Task ID"), note: S("Progress note"), headline: S("One line, at most 160 characters") }, ["task_id", "note"]),
+				run: async (a) => { this.requireIdentity(); await this.api.reportProgress(String(a.task_id), String(a.note), undefined, a.headline ? String(a.headline) : undefined); return "progress reported"; },
 			},
 			{
 				name: "team_complete_task",
-				description: "Complete (DONE), fail or block a task you own; your manager is notified. Completing a task does not end your membership.",
-				inputSchema: obj({ task_id: S("Task ID"), summary: S("Result summary"), status: S("DONE | FAILED | BLOCKED", { enum: ["DONE", "FAILED", "BLOCKED"] }) }, ["task_id", "summary"]),
-				run: async (a) => { this.requireIdentity(); const status = (a.status ?? "DONE") as "DONE" | "FAILED" | "BLOCKED"; await this.api.completeTask(String(a.task_id), { summary: String(a.summary), status }); return `task ${a.task_id} ${status}`; },
+				description: "Complete (DONE), fail or block a task you own with a headline (one line your lead sees first), a summary, and a briefing (fuller account your lead reads when it needs detail; kept in the team record, not sent into its inbox). Completing a task does not end your membership.",
+				inputSchema: obj({ task_id: S("Task ID"), summary: S("Result summary"), headline: S("One line, at most 160 characters"), briefing: S("Fuller account, markdown, up to 20,000 characters"), status: S("DONE | FAILED | BLOCKED", { enum: ["DONE", "FAILED", "BLOCKED"] }) }, ["task_id", "summary"]),
+				run: async (a) => { this.requireIdentity(); const status = (a.status ?? "DONE") as "DONE" | "FAILED" | "BLOCKED"; await this.api.completeTask(String(a.task_id), { summary: String(a.summary), status, ...(a.headline ? { headline: String(a.headline) } : {}), ...(a.briefing ? { briefing: String(a.briefing) } : {}) }); return `task ${a.task_id} ${status}`; },
 			},
 			{
 				name: "team_reassign",

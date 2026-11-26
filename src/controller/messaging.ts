@@ -90,12 +90,21 @@ export function sendMessage(ctx: Ctx, p: Principal, body: unknown): SendMessageR
 	return { message_id: id };
 }
 
-function toEnvelope(r: Row): Envelope {
-	const e: Envelope = { version: 1, message_id: r.id, run_id: r.run_id, type: r.type, from: r.sender_id, to: r.recipient_id, payload: parseJson(r.payload_json, {}) };
+function toEnvelope(db: DB, r: Row): Envelope {
+	const e: Envelope = { version: 1, message_id: r.id, run_id: r.run_id, type: r.type, from: r.sender_id, to: r.recipient_id, payload: parseJson(r.payload_json, {}), ...senderLabel(db, r.sender_id, r.recipient_id) };
 	if (r.correlation_id) e.correlation_id = r.correlation_id;
 	if (r.causation_id) e.causation_id = r.causation_id;
 	if (r.deadline) e.deadline = r.deadline;
 	return e;
+}
+
+/** Who sent it, as the recipient should read it: the sender's role, and its team when that is another team. Stamped by the controller, never self-declared. */
+export function senderLabel(db: DB, senderId: string, recipientId: string): { from_role?: string; from_team?: string } {
+	const s = get(db, "SELECT role, run_id FROM agents WHERE id = ?", senderId);
+	if (!s) return {};
+	const r = get(db, "SELECT run_id FROM agents WHERE id = ?", recipientId);
+	const team = r && r.run_id !== s.run_id ? runConfig(db, s.run_id).name ?? s.run_id : undefined;
+	return { from_role: String(s.role), ...(team ? { from_team: String(team) } : {}) };
 }
 
 export function releaseExpiredClaims(db: DB, recipient?: string): number {
@@ -117,7 +126,7 @@ export function readInbox(ctx: Ctx, p: Principal, query: URLSearchParams): Inbox
 	const lease = isoPlus(ctx.t.claimMs);
 	const ts = nowIso();
 	for (const r of rows) run(ctx.db, "UPDATE deliveries SET status = 'CLAIMED', lease_until = ?, claimed_at = ?, attempts = attempts + 1 WHERE message_id = ? AND recipient_id = ?", lease, ts, r.id, a.actor_id);
-	return { messages: rows.map(toEnvelope) };
+	return { messages: rows.map((r) => toEnvelope(ctx.db, r)) };
 }
 
 export function ackMessage(ctx: Ctx, p: Principal, messageId: string): AckResponse {
@@ -204,20 +213,30 @@ function ownTask(db: DB, a: { actor_id: string; run_id: string }, taskId: string
 	return t;
 }
 
+/** A member's own one-line headline for what it reports: shown in briefs, grouped delivery and summaries. */
+export const MAX_HEADLINE_CHARS = 160;
+export const MAX_BRIEFING_CHARS = 20_000;
+function headlineOf(b: Record<string, unknown>): string | undefined {
+	const h = str(b, "headline", { optional: true })?.replace(/\s+/g, " ").trim();
+	if (h && h.length > MAX_HEADLINE_CHARS) fail("INVALID", `headline is limited to ${MAX_HEADLINE_CHARS} characters`);
+	return h || undefined;
+}
+
 export function taskProgress(ctx: Ctx, p: Principal, taskId: string, body: unknown): TaskProgressResponse {
 	const a = requireAgent(p);
 	const b = obj(body);
-	onlyKeys(b, ["note"]);
+	onlyKeys(b, ["note", "headline"]);
 	const note = str(b, "note");
+	const headline = headlineOf(b);
 	const t = ownTask(ctx.db, a, taskId);
 	if (["DONE", "FAILED", "CANCELLED"].includes(t.status)) fail("CONFLICT", `task is ${t.status}`);
 	run(ctx.db, "UPDATE tasks SET status = 'IN_PROGRESS', updated_at = ? WHERE id = ?", nowIso(), taskId);
 	madeProgress(ctx.db, a.actor_id);
 	// Progress on a lead's cross-team task goes to that lead.
 	const mgr = t.run_id !== a.run_id ? t.assigned_by : getCurrentManager(ctx.db, a.actor_id);
-	const messageId = mgr ? postMessage(ctx.db, { run_id: getAgent(ctx.db, mgr).run_id, from: a.actor_id, to: mgr, type: "task.progress", payload: { task_id: taskId, note }, correlation_id: taskId }) : null;
+	const messageId = mgr ? postMessage(ctx.db, { run_id: getAgent(ctx.db, mgr).run_id, from: a.actor_id, to: mgr, type: "task.progress", payload: { task_id: taskId, note, ...(headline ? { headline } : {}) }, correlation_id: taskId }) : null;
 	if (messageId && t.run_id !== a.run_id) recordLinkMessage(ctx.db, messageId, linkFor(ctx.db, a.actor_id, mgr!));
-	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.progress", entity_id: taskId, payload: { note } });
+	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.progress", entity_id: taskId, payload: { note, ...(headline ? { headline } : {}) } });
 	return { task_id: taskId, status: "IN_PROGRESS", message_id: messageId };
 }
 
@@ -236,8 +255,12 @@ export function checkArtifactUri(workspaceRoot: string, uri: string): string {
 export function completeTask(ctx: Ctx, p: Principal, taskId: string, body: unknown): TaskCompleteResponse {
 	const a = requireAgent(p);
 	const b = obj(body);
-	onlyKeys(b, ["summary", "artifacts", "status"]);
+	onlyKeys(b, ["summary", "artifacts", "status", "headline", "briefing"]);
 	const summary = str(b, "summary");
+	const headline = headlineOf(b);
+	const briefing = str(b, "briefing", { optional: true });
+	if (briefing !== undefined && briefing.length > MAX_BRIEFING_CHARS) fail("INVALID", `briefing is limited to ${MAX_BRIEFING_CHARS} characters; put longer material in a file and reference it as an artifact`);
+	const told = { ...(headline ? { headline } : {}) };
 	const status = oneOf(b, "status", ["DONE", "FAILED", "BLOCKED"] as const, { optional: true }) ?? "DONE";
 	const t = ownTask(ctx.db, a, taskId);
 	if (["DONE", "FAILED", "CANCELLED"].includes(t.status)) fail("CONFLICT", `task is already ${t.status}`);
@@ -257,12 +280,13 @@ export function completeTask(ctx: Ctx, p: Principal, taskId: string, body: unkno
 		artifactIds.push(id);
 	}
 	madeProgress(ctx.db, a.actor_id);
-	run(ctx.db, "UPDATE tasks SET status = ?, result_json = ?, updated_at = ? WHERE id = ?", status, JSON.stringify({ summary, artifact_ids: artifactIds }), nowIso(), taskId);
+	run(ctx.db, "UPDATE tasks SET status = ?, result_json = ?, updated_at = ? WHERE id = ?", status, JSON.stringify({ summary, ...told, ...(briefing ? { briefing } : {}), artifact_ids: artifactIds }), nowIso(), taskId);
 	const mgr = t.run_id !== a.run_id ? t.assigned_by : getCurrentManager(ctx.db, a.actor_id) ?? t.assigned_by;
 	const messageId =
-		mgr && mgr !== a.actor_id ? postMessage(ctx.db, { run_id: getAgent(ctx.db, mgr).run_id, from: a.actor_id, to: mgr, type: "task.completed", payload: { task_id: taskId, status, summary, artifact_ids: artifactIds }, correlation_id: taskId }) : null;
+		mgr && mgr !== a.actor_id ? postMessage(ctx.db, { run_id: getAgent(ctx.db, mgr).run_id, from: a.actor_id, to: mgr, type: "task.completed", payload: { task_id: taskId, status, summary, ...told, ...(briefing ? { has_briefing: true } : {}), artifact_ids: artifactIds }, correlation_id: taskId }) : null;
 	if (messageId && t.run_id !== a.run_id) recordLinkMessage(ctx.db, messageId, linkFor(ctx.db, a.actor_id, mgr!));
-	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.completed", entity_id: taskId, payload: { status, summary, artifact_ids: artifactIds } });
+	// The briefing lives in the event store, not in the lead's inbox: the lead reads it when it needs it (team_history).
+	emit(ctx.db, { run_id: a.run_id, actor_id: a.actor_id, type: "task.completed", entity_id: taskId, payload: { status, summary, ...told, ...(briefing ? { briefing } : {}), artifact_ids: artifactIds } });
 	return { task_id: taskId, status, message_id: messageId, artifact_ids: artifactIds };
 }
 
