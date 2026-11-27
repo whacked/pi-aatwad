@@ -519,6 +519,26 @@ export interface HeartbeatResponse {
 }
 
 /** GET /me (agent) - who am I + effective org context (bounded, fresh from SQLite). */
+/** GET /agents/:id/roster: one person ever linked under a lead. */
+export interface RosterEntry {
+	agent_id: string;
+	role: string;
+	/** Set when the agent leads another team that was linked under this lead. */
+	run_id?: string;
+	origin: "spawned" | "joined";
+	terminatable: boolean;
+	active: boolean;
+	status: string;
+	/** Lifecycle of a linked team (STOPPED after a terminating dismissal). */
+	team_state?: string;
+	responsibility?: string;
+	/** What this member worked on: its tasks (newest first) and their results, for finding a past member suited to a new job. */
+	missions: { tasks: number; recent: { title: string; status: string; result?: string }[] };
+	since: string;
+	ended_at: string | null;
+	close_reason: string | null;
+}
+
 /** Which model summarizes a project's teams, or that the human declined summaries there. */
 export type SummarizerSetting = { state: "enabled"; model: string } | { state: "declined" };
 /** Per-project settings (GET/POST /projects/settings, operator). */

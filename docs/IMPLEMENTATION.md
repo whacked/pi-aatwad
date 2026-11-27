@@ -866,3 +866,19 @@ Found on a team with 41 members, 38 of them live with no open tasks (37 idle Pi 
   everyone ever linked under you.
 - **Idle members**: the brief points out members idle over 30 minutes with no open task (each keeps a
   Pi process running) and the commands that close (`/team prune`) and bring back (`/team recall`) them.
+
+## Former members are searchable; takeovers say what happened (v0.1.60)
+
+- **Closing a member** already stops its process and keeps its identity, transcript and task history;
+  `/team recall` brings it back with that context. What was missing was finding the right one.
+  Roster entries now carry `missions` (task count; the five newest non-cancelled tasks with status
+  and headline or summary), and `GET /agents/:id/roster?q=` keeps entries whose role,
+  responsibility, task titles, summaries, headlines or briefings mention every word.
+  `/team roster [all] [words…]` and `team_roster list` (`query`, `all`) use them
+  (`formatRoster`); `team_create_member` and `team_roster` tell the lead to search former members
+  before recruiting for similar work.
+- **Takeovers**: "this session was FENCED" is replaced by what happened and what to do: another
+  session took over the agent; this one no longer acts for it; `/team resume <run> <agent>` takes
+  it back; `/team inspect <agent>` finds the other one. Where the controller can tell, a second line
+  says when that session started, its process and its Pi transcript. The status line reads "taken
+  over by another session".

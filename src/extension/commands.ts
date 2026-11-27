@@ -14,7 +14,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
-import { GLOBAL_HINT, inScope, orphansLine, formatAway, formatBrief, formatSummaries, formatThread, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
+import { GLOBAL_HINT, inScope, orphansLine, formatRoster, formatAway, formatBrief, formatSummaries, formatThread, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
 import { projectRoot } from "../shared/readable-id.ts";
 import { readSummarizer, setupSummarizer, SUMMARIZER_OFFER, summarizerLine, writeSummarizer } from "./summarizer.ts";
 import type { TeamRuntime } from "./runtime.ts";
@@ -25,7 +25,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "join", args: "<run_id|agent_id|none> [--terminatable]", help: "link this team under another team's leader or agent: it can assign you work and dismiss you (only detaching, unless --terminatable); none detaches. In a member: leave its team (leading your own), then join" },
 	{ name: "report-to", args: "<run_id|agent_id|none>", help: "alias for join" },
 	{ name: "dismiss", args: "<name|agent_id> [--stop|--keep] [reason]", help: "end a team linked under you: it detaches, or stops (resumably) when its link is terminatable; --stop/--keep override" },
-	{ name: "roster", args: "[all]", help: "your current members; all: everyone ever linked under you, including detached, dismissed or closed" },
+	{ name: "roster", args: "[all] [words...]", help: "your current members; all: everyone ever linked under you; words: search what current and former members worked on" },
 	{ name: "recall", args: "<name|agent_id>", help: "bring a former member back with its context (a dismissed team resumes and links again)" },
 	{ name: "rehire", args: "<name|agent_id>", help: "fill a former member's position with a new agent and a fresh context" },
 	{ name: "link", args: "<name|agent_id> terminatable on|off", help: "human operator: whether dismissing this linked team or joined member may stop it" },
@@ -262,20 +262,10 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 		roster: async (a, ctx) => {
 			await rt.requireIdentity();
-			type Entry = { agent_id: string; role: string; run_id?: string; origin: string; terminatable: boolean; active: boolean; status: string; team_state?: string; close_reason: string | null };
-			const r = await rt.client.get<{ entries: Entry[] }>(`/agents/${encodeURIComponent(rt.identity!.agent_id)}/roster`, { token: rt.managed ? undefined : await rt.commandToken() });
-			if (!r.entries.length) { out(ctx, "Roster: nobody has been linked under you yet."); return; }
-			// The roster keeps everyone ever linked under you; by default only current members are listed.
 			const all = a[0] === "all";
-			const shown = all ? r.entries : r.entries.filter((e) => e.active);
-			const former = r.entries.length - r.entries.filter((e) => e.active).length;
-			const line = (e: Entry) => `  ${e.active ? "●" : "○"} ${e.role} [${e.agent_id}] ${e.origin}${e.terminatable ? ", terminatable" : ""}${e.run_id ? `, team ${e.run_id} (${e.team_state})` : `, ${e.status}`}${e.active ? "" : ` — ${e.close_reason ?? "closed"}`}`;
-			out(ctx, [
-				all ? `Roster: everyone ever linked under you (${r.entries.length}):` : `Roster: ${shown.length} current member(s):`,
-				...shown.map(line),
-				...(!all && former ? [`${former} former member(s) not listed: /team roster all`] : []),
-				"Bring one back: /team recall <name>; fill a position fresh: /team rehire <name>; close idle members without open tasks: /team prune.",
-			].join("\n"));
+			const query = (all ? a.slice(1) : a).join(" ").trim() || undefined;
+			const r = await rt.client.get<{ entries: import("../shared/protocol.ts").RosterEntry[] }>(`/agents/${encodeURIComponent(rt.identity!.agent_id)}/roster${query ? `?q=${encodeURIComponent(query)}` : ""}`, { token: rt.managed ? undefined : await rt.commandToken() });
+			out(ctx, formatRoster(r.entries, { all, query }));
 		},
 
 		recall: async (a, ctx) => {

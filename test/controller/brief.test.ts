@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harness, newRun, waitFor } from "./helpers.ts";
-import { formatBrief, formatEnvelope } from "../../src/extension/format.ts";
+import { formatBrief, formatEnvelope, formatRoster } from "../../src/extension/format.ts";
 
 const ok = (r: any) => { assert.equal(r.status, 200, JSON.stringify(r.body)); return r.body; };
 
@@ -87,5 +87,29 @@ test("every delivered message names its sender's role, and its team when it is a
 		assert.deepEqual([own.from_role, own.from_team], ["Parser", undefined]);
 		assert.match(formatEnvelope(cross), /^\[question\] from root \[.*\] of team "EasyCard" \(message /);
 		assert.match(formatEnvelope(own), /^\[question\] from Parser \[.*\] \(message /);
+	} finally { await h.cleanup(); }
+});
+
+test("the roster finds a former member by what it worked on, so the lead can recall that experience", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h);
+		const ocr = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "OCR", responsibility: "Read scanned receipts" } })).spawned_agent_ids[0];
+		const fonts = ok(await h.call("POST", "/members", { token: lead.token, body: { name: "Fonts", responsibility: "Match typefaces" } })).spawned_agent_ids[0];
+		await waitFor(() => h.ex.tokens.has(ocr) && h.ex.tokens.has(fonts));
+		const t = ok(await h.call("POST", "/tasks", { token: lead.token, body: { owner_id: ocr, title: "Extract EasyCard transactions" } }));
+		ok(await h.call("POST", `/tasks/${t.task_id}/complete`, { token: h.ex.tokens.get(ocr)!, body: { summary: "done", headline: "412 transactions from 93 pages", briefing: "Tesseract at 600 dpi worked best" } }));
+		ok(await h.call("POST", `/agents/${ocr}/lifecycle`, { token: lead.token, body: { action: "cancel", reason: "pruned: idle", children_policy: "cascade" } }));
+
+		const found = ok(await h.call("GET", `/agents/${lead.root}/roster?q=${encodeURIComponent("tesseract dpi")}`, { token: lead.token })).entries;
+		assert.deepEqual(found.map((e: any) => e.role), ["OCR"], "found by words in its briefing");
+		assert.equal(found[0].active, false);
+		assert.deepEqual(found[0].missions.recent[0], { title: "Extract EasyCard transactions", status: "DONE", result: "412 transactions from 93 pages" });
+		assert.equal(ok(await h.call("GET", `/agents/${lead.root}/roster?q=typefaces`, { token: lead.token })).entries[0].role, "Fonts");
+		assert.equal(ok(await h.call("GET", `/agents/${lead.root}/roster?q=unicorn`, { token: lead.token })).entries.length, 0);
+		const text = formatRoster(ok(await h.call("GET", `/agents/${lead.root}/roster`, { token: lead.token })).entries);
+		assert.match(text, /^Roster: 1 current member\(s\):\n  ● Fonts .*\n1 former member\(s\) not listed: \/team roster all, or \/team roster <words> to search/);
+		const all = formatRoster(found, { query: "tesseract dpi" });
+		assert.match(all, /○ OCR \[.*\] · closed.* · 2 task\(s\)\n      - Extract EasyCard transactions \(DONE\): 412 transactions from 93 pages/);
 	} finally { await h.cleanup(); }
 });

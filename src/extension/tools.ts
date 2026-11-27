@@ -13,7 +13,7 @@ import type { CreateExpansionRequest, DecisionRequest, ExpansionRole, MessageTyp
 import type { TeamRuntime } from "./runtime.ts";
 import { TOOL_NAMES } from "./names.ts";
 import type { ToolName } from "./names.ts";
-import { formatBrief, formatSummaries, formatThread, formatBudget, formatInbox, formatProposal, formatTree } from "./format.ts";
+import { formatBrief, formatRoster, formatSummaries, formatThread, formatBudget, formatInbox, formatProposal, formatTree } from "./format.ts";
 
 export { TOOL_NAMES };
 
@@ -345,7 +345,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_create_member", "Team: create member",
-		"Root only: create one named member and assign its responsibility in one operation, with normal budget and governance checks. Omit model to inherit the leader session's current model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. There are no implicit member limits. Omit max_cost_usd and max_runtime_seconds unless the human explicitly asked for a spend or time limit: omitted limits inherit the leader's (unbounded if the leader is unbounded), and an explicit limit pauses or stops the member when reached. Subordinate managers use team_request_expansion instead.",
+		"Root only: create one named member and assign its responsibility in one operation. If a former member did similar work, team_roster list with query finds it and recall brings it back with that experience instead. Creates a member with normal budget and governance checks. Omit model to inherit the leader session's current model. Supply model to resolve and register an authenticated Pi model on the fly, or preferred_model_id for an existing catalog entry. Returns provisioned agent IDs; workers start asynchronously. There are no implicit member limits. Omit max_cost_usd and max_runtime_seconds unless the human explicitly asked for a spend or time limit: omitted limits inherit the leader's (unbounded if the leader is unbounded), and an explicit limit pauses or stops the member when reached. Subordinate managers use team_request_expansion instead.",
 		Type.Object({
 			name: Type.Optional(Type.String({ description: "Optional friendly member name; defaults to Alpha, Beta, etc." })), responsibility: Type.String({ description: "Concrete task, context and acceptance criteria for this member" }),
 			model: Type.Optional(Type.String()), preferred_model_id: Type.Optional(Type.String()),
@@ -433,11 +433,14 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 
 	reg(
 		"team_roster", "Team: roster",
-		"Everyone ever linked under you, with recall and rehire. list shows active, detached, dismissed and closed members and linked teams. recall brings a former one back with its context: a dismissed team resumes (if your dismissal stopped it) and links under you again with the same identity; a closed member of your team returns in the same position, continuing its transcript. rehire fills the position with a new agent and a fresh context. Use only when the user asks.",
-		Type.Object({ action: StringEnum(["list", "recall", "rehire"] as const), agent: Type.Optional(Type.String({ description: "recall/rehire: roster name or agent ID" })) }),
+		"Everyone ever linked under you, with recall and rehire. list shows current members and counts former ones; all lists everyone with what they worked on; query searches current and former members' roles, tasks and results. Before recruiting someone for a job, search for a former member who did similar work: recall brings it back with its context (a closed member returns in the same position, continuing its transcript; a dismissed team resumes and links under you again). rehire fills a position with a new agent and a fresh context. Recall and rehire only when the user asks or the work clearly matches.",
+		Type.Object({ action: StringEnum(["list", "recall", "rehire"] as const), agent: Type.Optional(Type.String({ description: "recall/rehire: roster name or agent ID" })), query: Type.Optional(Type.String({ description: "list: words that a member's role, tasks or results must mention" })), all: Type.Optional(Type.Boolean({ description: "list: include former members" })) }),
 		async (p, id) => {
 			const me = rt.identity!.agent_id;
-			if (p.action === "list") return json("Roster", await rt.client.get(`/agents/${encodeURIComponent(me)}/roster`));
+			if (p.action === "list") {
+				const r = await rt.client.get<{ entries: import("../shared/protocol.ts").RosterEntry[] }>(`/agents/${encodeURIComponent(me)}/roster${p.query ? `?q=${encodeURIComponent(p.query)}` : ""}`);
+				return text(formatRoster(r.entries, { all: p.all, query: p.query }), r);
+			}
 			if (!p.agent) throw new Error("agent is required for recall and rehire");
 			return json(p.action === "recall" ? "Recalled" : "Rehired", await rt.client.post(`/roster/${p.action}`, { agent: p.agent }, { idempotencyKey: key("team_roster", id) }));
 		},

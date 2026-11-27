@@ -250,7 +250,7 @@ export class TeamRuntime {
 				const name = ctx.mode === "tui" && ctx.ui.theme ? ctx.ui.theme.style(raw, { fg: "accent", bold: true }) : raw;
 				ctx.ui.setStatus(STATUS_KEY, `team ${name} ${id.agent_id} · run ${id.run_id}${id.managed ? " · managed" : ""}`);
 			}
-			else if (this.fenced) ctx.ui.setStatus(STATUS_KEY, "team: fenced (run /team resume)");
+			else if (this.fenced) ctx.ui.setStatus(STATUS_KEY, "team: taken over by another session (/team resume takes it back)");
 			else if (this.notice) ctx.ui.setStatus(STATUS_KEY, "team: not attached (/team resume)");
 			else ctx.ui.setStatus(STATUS_KEY, undefined);
 		} catch {
@@ -691,23 +691,33 @@ export class TeamRuntime {
 			this.fenced = true;
 			if (this.timer) clearInterval(this.timer);
 			this.timer = undefined;
-			this.say(
-				e.code === "STALE_SESSION" && (details?.reason === "superseded" || /superseded|generation fenced/i.test(e.message))
-					? `team: this session was FENCED — a newer session attempt now represents agent ${id.agent_id}. Tools are disabled here. Run /team resume ${id.run_id} ${id.agent_id} to take it back.`
-					: `team: session credential for ${id.agent_id} was rejected (${e.message}). Run /team resume ${id.run_id} ${id.agent_id}.`,
-				"error",
-			);
+			const superseded = e.code === "STALE_SESSION" && (details?.reason === "superseded" || /superseded|generation fenced/i.test(e.message));
+			this.notice = superseded
+				? `Another session took over ${id.role ?? "agent"} ${id.agent_id} of team ${id.run_id}, so this one no longer acts for it: its team tools are off here and messages go to the other session. To take it back here, run /team resume ${id.run_id} ${id.agent_id} (the other session then loses it). To find the other session, run /team inspect ${id.agent_id}.`
+				: `The team credential for ${id.agent_id} was rejected (${e.message}). Run /team resume ${id.run_id} ${id.agent_id} to attach again.`;
+			this.say(`team: ${this.notice}`, "error");
+			if (superseded) void this.describeTakeover(id.agent_id);
 			this.updateStatus();
 			return true;
 		}
 		return false;
 	}
 
+	/** After a takeover: say where the session that now holds the agent is (when it started, its Pi transcript). Best effort. */
+	private async describeTakeover(agentId: string): Promise<void> {
+		try {
+			const latest = (await this.client.inspect(agentId, { token: await this.operatorToken(0) })).sessions.at(-1);
+			if (!latest || this.identity) return;
+			const where = [latest.started_at ? `started ${latest.started_at.slice(0, 16).replace("T", " ")} UTC` : "", latest.pid ? `process ${latest.pid}` : "", latest.pi_session_path ? `Pi session ${latest.pi_session_path}` : ""].filter(Boolean).join(", ");
+			if (where) this.say(`team: the session now holding ${agentId}: ${where}.`, "info");
+		} catch { /* the controller may be unreachable; the notice already says how to look */ }
+	}
+
 	/** Wait (bounded) for startup identity resolution, then require an identity. */
 	async requireIdentity(waitMs = 10_000): Promise<Identity> {
 		await Promise.race([this.ready, new Promise((r) => setTimeout(r, waitMs).unref?.())]);
 		if (!this.identity) {
-			if (this.fenced) throw new Error(`session fenced: another session attempt represents this agent now. ${NOT_ENROLLED}`);
+			if (this.fenced) throw new Error(`not enrolled: ${this.notice ?? "another session took over this agent; /team resume takes it back"}`);
 			// The notice says why this session has no identity (a stopped team, a fork), which the model must relay.
 			throw new Error(this.notice ? `not enrolled: ${this.notice}` : NOT_ENROLLED);
 		}
@@ -725,7 +735,7 @@ export class TeamRuntime {
 			if (this.identity !== identity) throw e;
 			if (this.handleAgentError(e, identity)) {
 				if (!this.fenced) throw new Error(this.notice ?? NOT_ENROLLED);
-				throw new Error(`session fenced (${(e as TeamApiError).code}): this Pi session no longer represents the agent. Run /team resume.`);
+				throw new Error(this.notice ?? "Another session took over this agent; /team resume takes it back here.");
 			}
 			if (isUnavailable(e)) throw new Error(`team controller unreachable: ${(e as Error).message}`);
 			throw e;

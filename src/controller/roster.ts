@@ -1,7 +1,7 @@
 // A lead's roster: every agent ever linked under it (docs/design/unified-team-links.md).
 // Recall brings a former child back with its context; rehire fills its position with a fresh one.
 import type { Ctx, Principal, ReqScope } from "./context.ts";
-import { all, emit, run } from "./db.ts";
+import { parseJson, all, emit, run } from "./db.ts";
 import { fail } from "./errors.ts";
 import { obj, onlyKeys, str } from "./validate.ts";
 import { getAgent, getRun, isTerminal } from "./queries.ts";
@@ -10,22 +10,8 @@ import { changeReporting } from "./reporting.ts";
 import { resumeWithCascade, teamLifecycleState } from "./team-lifecycle.ts";
 import { createMember } from "./members.ts";
 
-export interface RosterEntry {
-	agent_id: string;
-	role: string;
-	/** Set when the agent leads another team that was linked under this lead. */
-	run_id?: string;
-	origin: "spawned" | "joined";
-	terminatable: boolean;
-	active: boolean;
-	status: string;
-	/** Lifecycle of a linked team (STOPPED after a terminating dismissal). */
-	team_state?: string;
-	responsibility?: string;
-	since: string;
-	ended_at: string | null;
-	close_reason: string | null;
-}
+export type { RosterEntry } from "../shared/protocol.ts";
+import type { RosterEntry } from "../shared/protocol.ts";
 
 function leadFor(p: Principal, body: Record<string, unknown>): string {
 	if (p.kind === "operator") return str(body, "lead_id");
@@ -39,23 +25,36 @@ function responsibilityOf(rows: { spec_json?: string }[]): string | undefined {
 	return undefined;
 }
 
-export function roster(ctx: Ctx, p: Principal, leadId: string): { lead_id: string; entries: RosterEntry[] } {
+/**
+ * Everyone ever linked under a lead. `q` keeps entries whose role, responsibility, task titles or
+ * task results mention every word: a closed member keeps its identity and transcript, so a past
+ * member who did similar work can be recalled with that experience instead of recruiting afresh.
+ */
+export function roster(ctx: Ctx, p: Principal, leadId: string, q?: string): { lead_id: string; entries: RosterEntry[] } {
 	const db = ctx.db;
 	if (p.kind === "agent" && p.actor_id !== leadId) fail("FORBIDDEN", "a roster is visible to its lead and the human operator");
 	getAgent(db, leadId);
 	const latest = all(db, `SELECT e.* FROM reporting_edges e WHERE e.parent_id = ? AND e.rowid = (
 		SELECT MAX(x.rowid) FROM reporting_edges x WHERE x.child_id = e.child_id AND x.parent_id = e.parent_id) ORDER BY e.valid_from, e.rowid`, leadId);
-	const entries = latest.map((e): RosterEntry => {
+	const entries = latest.map((e): RosterEntry | undefined => {
 		const a = getAgent(db, e.child_id);
 		const other = !!e.parent_run_id;
-		const tasks = all(db, "SELECT spec_json FROM tasks WHERE owner_id = ? ORDER BY created_at, rowid", e.child_id);
+		const tasks = all(db, "SELECT title, status, spec_json, result_json FROM tasks WHERE owner_id = ? ORDER BY created_at, rowid", e.child_id);
 		const responsibility = responsibilityOf(tasks);
+		// Cancelled tasks (e.g. the recruitment task of a closed member) say nothing about its work.
+		const recent = [...tasks].reverse().filter((t) => t.status !== "CANCELLED").slice(0, 5).map((t) => {
+			const r = parseJson<{ headline?: string; summary?: string }>(t.result_json, {});
+			const result = r.headline ?? r.summary;
+			return { title: String(t.title), status: String(t.status), ...(result ? { result: String(result).slice(0, 200) } : {}) };
+		});
+		const haystack = [a.role, responsibility ?? "", ...tasks.flatMap((t) => { const r = parseJson<{ headline?: string; summary?: string; briefing?: string }>(t.result_json, {}); return [t.title, r.headline ?? "", r.summary ?? "", r.briefing ?? ""]; })].join("\n").toLowerCase();
+		if (q && !q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => haystack.includes(w))) return undefined;
 		return {
 			agent_id: a.id, role: a.role, ...(other ? { run_id: a.run_id, team_state: teamLifecycleState(db, a.run_id)?.state ?? "RUNNING" } : {}),
 			origin: e.origin, terminatable: !!e.terminatable, active: e.valid_to === null && !isTerminal(a.status), status: a.status,
-			...(responsibility ? { responsibility } : {}), since: e.valid_from, ended_at: e.valid_to ?? null, close_reason: e.close_reason ?? null,
+			...(responsibility ? { responsibility } : {}), missions: { tasks: tasks.length, recent }, since: e.valid_from, ended_at: e.valid_to ?? null, close_reason: e.close_reason ?? null,
 		};
-	});
+	}).filter((x): x is RosterEntry => !!x);
 	return { lead_id: leadId, entries };
 }
 

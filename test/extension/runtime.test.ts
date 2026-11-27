@@ -216,9 +216,9 @@ describe("TeamRuntime identity", () => {
 			await rt.start(ctx);
 			await waitFor(() => rt.fenced, 3_000, "fencing");
 			assert.equal(rt.identity, undefined);
-			assert.ok(ctx.notes.some((n: any) => n.level === "error" && /FENCED/.test(n.text)));
-			await assert.rejects(rt.agentCall(async () => 1), /fenced/);
-			assert.match(ctx.status.get("team") ?? "", /fenced/);
+			assert.ok(ctx.notes.some((n: any) => n.level === "error" && /Another session took over agent ag-child of team run1, so this one no longer acts for it.*run \/team resume run1 ag-child \(the other session then loses it\)/.test(n.text)), JSON.stringify(ctx.notes));
+			await assert.rejects(rt.agentCall(async () => 1), /Another session took over/);
+			assert.match(ctx.status.get("team") ?? "", /taken over by another session/);
 		} finally {
 			rt.stop();
 			await m.close();

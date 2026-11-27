@@ -1,5 +1,5 @@
 // Pure text renderers for /team output and the bounded org-context prompt section.
-import type { BriefResponse, BudgetView, MemberThread, SummaryView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, RunSummary, TreeNode, TreeResponse } from "../shared/protocol.ts";
+import type { BriefResponse, BudgetView, MemberThread, RosterEntry, SummaryView, Envelope, EventView, InspectResponse, OrgContext, ProposalView, RunSummary, TreeNode, TreeResponse } from "../shared/protocol.ts";
 
 export const MAX_CONTEXT_CHARS = 2_000;
 const MAX_LIST = 8;
@@ -363,4 +363,27 @@ export function orphansLine(runs: RunSummary[]): string | undefined {
 	if (!o.length) return undefined;
 	const members = o.reduce((n, r) => n + (r.live_members ?? 0), 0);
 	return `${o.length} team${o.length > 1 ? "s" : ""} on this machine ${o.length > 1 ? "have" : "has"} ${members} live member(s) and no open leader session: ${o.slice(0, 3).map((r) => `${r.name ?? r.run_id} (${shortPath(r.cwd)})`).join(", ")}${o.length > 3 ? ", …" : ""}. Run \`pi-team orphans\` in a terminal to see and stop them.`;
+}
+
+/**
+ * The roster: current members by default, former ones counted; with `all` or a search, everyone,
+ * each with what it worked on, so the lead can find a past member suited to a new job.
+ */
+export function formatRoster(entries: RosterEntry[], o: { all?: boolean; query?: string } = {}): string {
+	if (!entries.length) return o.query ? `Nobody on your roster matches "${o.query}".` : "Roster: nobody has been linked under you yet.";
+	const everyone = o.all || !!o.query;
+	const shown = everyone ? entries : entries.filter((e) => e.active);
+	const former = entries.filter((e) => !e.active).length;
+	const line = (e: RosterEntry) => {
+		const state = e.run_id ? `team ${e.run_id} (${e.team_state})` : e.active ? e.status.toLowerCase() : `closed${e.close_reason ? `: ${clip(e.close_reason, 60)}` : ""}`;
+		const head = `  ${e.active ? "●" : "○"} ${e.role} [${e.agent_id}] · ${state} · ${e.missions.tasks} task(s)`;
+		const work = everyone ? e.missions.recent.slice(0, 3).map((t) => `      - ${clip(t.title, 70)} (${t.status})${t.result ? `: ${clip(t.result, 110)}` : ""}`) : [];
+		return [head, ...work].join("\n");
+	};
+	return [
+		o.query ? `Roster entries mentioning "${o.query}" (${shown.length}):` : everyone ? `Roster: everyone ever linked under you (${entries.length}):` : `Roster: ${shown.length} current member(s):`,
+		...shown.map(line),
+		...(!everyone && former ? [`${former} former member(s) not listed: /team roster all, or /team roster <words> to search what they worked on`] : []),
+		"A former member keeps its identity and transcript: /team recall <name> brings it back with that experience; /team rehire <name> fills its position with a fresh agent.",
+	].join("\n");
 }
