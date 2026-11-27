@@ -4,7 +4,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TeamRuntime } from "./runtime.ts";
 import { registerTools } from "./tools.ts";
-import { projectTeamsNotice, summarizerStartNotice, registerTeamCommand } from "./commands.ts";
+import { orphanNotice, projectTeamsNotice, summarizerStartNotice, registerTeamCommand } from "./commands.ts";
 import { formatOrgContext } from "./format.ts";
 import { agentDisplayName, installAgentLabel, installMemberHeader } from "./agent-label.ts";
 import { memberDecor } from "../terminal/decor.ts";
@@ -75,7 +75,7 @@ export default function piRecursiveTeam(pi: ExtensionAPI): void {
 		// Managed one-shot worker: enroll before the first turn (Pi awaits session_start handlers).
 		// Interactive sessions: do not block startup; tools and before_agent_start wait with a bound.
 		if (managedLaunch) return waitBounded(p, 15_000).then(() => undefined);
-		if (ctx.mode === "tui") void p.then(() => projectTeamsNotice(rt, ctx)).then(() => summarizerStartNotice(rt, ctx));
+		if (ctx.mode === "tui") void p.then(() => projectTeamsNotice(rt, ctx)).then(() => summarizerStartNotice(rt, ctx)).then(() => orphanNotice(rt, ctx));
 	});
 
 	pi.on("message_end", async (event) => {

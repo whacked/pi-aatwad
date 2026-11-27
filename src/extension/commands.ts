@@ -14,7 +14,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ReportingRequest, RunConfig, TerminalBackend, TerminalLocation } from "../shared/protocol.ts";
 import { ping, rawRequest, isUnavailable, TeamApiError, ControllerIncompatibleError } from "../shared/client.ts";
 import type { RunSummary } from "../shared/protocol.ts";
-import { formatAway, formatBrief, formatSummaries, formatThread, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
+import { GLOBAL_HINT, inScope, orphansLine, formatAway, formatBrief, formatSummaries, formatThread, formatBudget, formatEvents, formatInspect, formatProposal, formatTree, listTeams, openLeaderHints, projectFirst, shortPath, teamLabel, type AwaySummary } from "./format.ts";
 import { projectRoot } from "../shared/readable-id.ts";
 import { readSummarizer, setupSummarizer, SUMMARIZER_OFFER, summarizerLine, writeSummarizer } from "./summarizer.ts";
 import type { TeamRuntime } from "./runtime.ts";
@@ -150,10 +150,25 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		out(ctx, "Operation cancelled; no changes made.");
 		return false;
 	};
+	// A session acts on its own project's teams and the teams linked under its own; pi-team manages the rest.
+	const scope = (ctx?: { cwd?: string }) => ({ project: projectRoot(ctx?.cwd ?? rt.ctx?.cwd ?? process.cwd()), current: rt.identity?.run_id });
+	const scoped = (runs: RunSummary[], ctx?: { cwd?: string }) => runs.filter((r) => inScope(r, runs, scope(ctx)));
+	const requireInScope = (runs: RunSummary[], target: string, ctx: { cwd?: string }, verb?: "stop" | "resume" | "remove" | "tree") => {
+		const r = runs.find((x) => x.run_id === target);
+		if (!r || inScope(r, runs, scope(ctx))) return;
+		throw new Error(`team ${target} belongs to ${shortPath(r.cwd)}, outside this session's project and the teams linked under it. ` +
+			(verb === "resume" ? `To lead it, open a Pi session in ${shortPath(r.cwd)} and run /team resume ${target}; to resume it without a session, run \`pi-team resume ${target}\` in a terminal.`
+				: verb ? `To ${verb === "tree" ? "see" : verb} it, run \`pi-team ${verb} ${target}${verb === "remove" ? " --yes" : ""}\` in a terminal.` : GLOBAL_HINT));
+	};
 	const runId = async (ctx: ExtensionCommandContext, arg?: string, foreign = false): Promise<string> => {
-		if (arg) return arg; // Invalid explicit references must never select another target.
+		// Joining (foreign) only puts this team under another one, so any team may be chosen; everything else stays in scope.
+		if (arg) {
+			if (!foreign && arg !== rt.identity?.run_id) requireInScope((await rt.client.listRuns({ token: await rt.commandToken() })).runs, arg, ctx);
+			return arg; // Invalid explicit references must never select another target.
+		}
 		if (!foreign && rt.identity) return rt.identity.run_id;
-		const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs.filter((r) => resumable(r) && (!foreign || r.run_id !== rt.identity?.run_id));
+		const all = (await rt.client.listRuns({ token: await rt.commandToken() })).runs;
+		const runs = (foreign ? all : scoped(all, ctx)).filter((r) => resumable(r) && (!foreign || r.run_id !== rt.identity?.run_id));
 		return choose(ctx, "Choose a team", runs, (r) => r.run_id, runLabel);
 	};
 	const agent = async (ref: string | undefined, ctx: ExtensionCommandContext, selectedRun = rt.identity?.run_id): Promise<string> => {
@@ -441,12 +456,15 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 		list: async (a, ctx) => {
 			if (rt.managed) throw new Error("managed workers can inspect their own team with /team tree");
 			const all = a[0] === "all";
-			const runs = (await rt.client.listRuns({ token: await rt.commandToken() })).runs;
+			const everything = (await rt.client.listRuns({ token: await rt.commandToken() })).runs;
+			const runs = scoped(everything, ctx);
 			const project = projectRoot(ctx.cwd);
 			const { lines, hidden } = listTeams(runs, { project, all, current: rt.identity?.run_id });
-			const head = all ? "All teams:" : `Teams for ${project}:`;
-			const tail = hidden ? `${hidden} more (other projects, empty, closed or stopped over a week ago): /team list all` : "";
-			out(ctx, lines.length ? [head, ...lines, ...(tail ? [tail] : [])].join("\n") : `No teams for this project. /team init [--name <name>] creates one${tail ? `; ${tail}` : "."}`);
+			const head = all ? `Teams for ${project} and teams linked under yours, including empty and closed ones:` : `Teams for ${project}:`;
+			const tail = hidden ? `${hidden} more (empty, closed or stopped over a week ago): /team list all` : "";
+			const elsewhere = everything.length - runs.length;
+			const global = elsewhere ? `${elsewhere} team(s) in other projects are not shown. ${GLOBAL_HINT}` : "";
+			out(ctx, [lines.length ? [head, ...lines].join("\n") : "No teams for this project. /team init [--name <name>] creates one.", tail, global].filter(Boolean).join("\n"));
 		},
 
 		admin: async (a, ctx, yes) => {
@@ -492,8 +510,8 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			const runs = (await rt.client.listRuns({ token: op })).runs;
 			let target = a[0];
 			if (!target) {
-				const choices = projectFirst(runs.filter(resumable).sort((x, y) => (y.active_members ?? y.agents - 1) - (x.active_members ?? x.agents - 1) || y.created_at.localeCompare(x.created_at)), projectRoot(ctx.cwd));
-				if (!choices.length) { out(ctx, "No resumable teams. Use /team init to create a new team, then ask the leader to add members."); return; }
+				const choices = projectFirst(scoped(runs, ctx).filter(resumable).sort((x, y) => (y.active_members ?? y.agents - 1) - (x.active_members ?? x.agents - 1) || y.created_at.localeCompare(x.created_at)), projectRoot(ctx.cwd));
+				if (!choices.length) { out(ctx, `No resumable teams for this project. Use /team init to create a new team, then ask the leader to add members.${runs.some(resumable) ? ` ${GLOBAL_HINT}` : ""}`); return; }
 				if (choices.length === 1) target = choices[0].run_id;
 				else {
 					if (!ctx.hasUI) {
@@ -509,6 +527,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			}
 			const run = runs.find((r) => r.run_id === target);
 			if (!run) throw new Error(`team ${target} not found; /team resume lists resumable teams`);
+			requireInScope(runs, target, ctx, "resume");
 			if (!a[1] && !resumable(run)) throw new Error(`team ${target} cannot be resumed (${run.root_status ?? run.status}); /team resume lists active teams`);
 			const member = a[1] ? await rt.client.resolveAgent(a[1], target, { token: op }) : undefined;
 			// A healthy attached team needs no takeover; a team stopped elsewhere still resumes.
@@ -694,9 +713,10 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (a.length > 1) throw new Error("usage: /team stop [run_id] [--yes]");
 			const token = await rt.commandToken();
 			const runs = (await rt.client.listRuns({ token })).runs;
-			const target = a[0] ?? rt.identity?.run_id ?? await choose(ctx, "Stop a whole team", runs.filter((r) => resumable(r) && !r.stopped), (r) => r.run_id, runLabel);
+			const target = a[0] ?? rt.identity?.run_id ?? await choose(ctx, "Stop a whole team", scoped(runs, ctx).filter((r) => resumable(r) && !r.stopped), (r) => r.run_id, runLabel);
 			// Invalid explicit references must never reach a confirmation prompt.
 			if (!runs.some((r) => r.run_id === target)) throw new Error(`team ${target} not found; /team list shows active teams`);
+			requireInScope(runs, target, ctx, "stop");
 			if (!(await confirm(ctx, yes, `Stop whole team ${target}? Identities, tasks and transcripts are preserved for /team resume.`))) return;
 			const result = await rt.client.stopTeam(target, { token });
 			rt.suspendTeamIdentity(target);
@@ -708,8 +728,9 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (a.length > 1) throw new Error("usage: /team remove [run_id] [--yes]");
 			const token = await rt.commandToken();
 			const runs = (await rt.client.listRuns({ token })).runs;
-			const target = a[0] ?? await choose(ctx, "Permanently remove a whole team", runs, (r) => r.run_id, runLabel);
-			if (!runs.some((r) => r.run_id === target)) throw new Error(`team ${target} not found; /team list all shows every team`);
+			const target = a[0] ?? await choose(ctx, "Permanently remove a whole team", scoped(runs, ctx), (r) => r.run_id, runLabel);
+			if (!runs.some((r) => r.run_id === target)) throw new Error(`team ${target} not found; /team list all shows this project's teams`);
+			requireInScope(runs, target, ctx, "remove");
 			if (!(await confirm(ctx, yes, `Permanently remove whole team ${target}? This cannot be undone. Your root Pi session and worktrees will not be killed or deleted.`))) return;
 			const result = await rt.client.removeTeam(target, { confirm_run_id: target }, { token });
 			rt.removeTeamIdentity(target);
@@ -756,7 +777,9 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 			if (sub === "resume" && parts.length === 3) return await agentCompletions(sub, parts[2], `resume ${partial}`, partial);
 			if (sub === "join" || sub === "resume" || sub === "tree" || sub === "events" || (["stop", "remove"].includes(sub) && parts.length === 2)) {
 				if (parts.length > 2) return null;
-				const runs = projectFirst(await runCompletions(), projectRoot(rt.ctx?.cwd ?? process.cwd()));
+				const everything = await runCompletions();
+				// join only places this team under another, so it offers every team; the rest stay in scope.
+				const runs = projectFirst(sub === "join" ? everything : scoped(everything), projectRoot(rt.ctx?.cwd ?? process.cwd()));
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&
 					((sub !== "stop" && sub !== "resume") || resumable(r)) && (sub !== "stop" || !r.stopped)).map((r) => ({ value: `${typed} ${r.run_id}`, label: r.run_id, description: completionLabel(r) }));
 				return items.length ? items : null;
@@ -795,6 +818,17 @@ export async function summarizerNotice(rt: TeamRuntime, cwd: string, offer: bool
 		return summarizerLine(setting, project) ?? (offer ? SUMMARIZER_OFFER : undefined);
 	} catch {
 		return undefined;
+	}
+}
+
+/** On session start: one line when teams anywhere spend with no open leader session (they would go unnoticed otherwise). */
+export async function orphanNotice(rt: TeamRuntime, ctx: { hasUI: boolean; ui: { notify(text: string, level?: "info" | "warning" | "error"): void } }): Promise<void> {
+	try {
+		if (rt.managed || !ctx.hasUI || !existsSync(rt.paths.db)) return;
+		const line = orphansLine((await rt.client.listRuns({ token: await rt.commandToken() })).runs);
+		if (line) ctx.ui.notify(line, "warning");
+	} catch {
+		/* best effort */
 	}
 }
 

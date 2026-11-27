@@ -4,12 +4,15 @@
 // and be reparented or transferred like any Pi agent.
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { projectRoot } from "../shared/readable-id.ts";
 import { statePaths, type StatePaths } from "../shared/paths.ts";
 import { ensureController, readOperatorToken, TeamApiError, type TeamClient } from "../shared/client.ts";
 import { HEARTBEAT_INTERVAL_MS, type MessageType } from "../shared/protocol.ts";
 import { LOADED_VERSION } from "../shared/version.ts";
 import { formatAttention, handoffText } from "../shared/attention-format.ts";
-import { formatBrief, formatSummaries, formatThread, formatInbox, formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
+import { inScope, formatBrief, formatSummaries, formatThread, formatInbox, formatEnvelope, formatOrgContext, formatTree } from "../extension/format.ts";
 import { HARNESS, claudePid, clearIdentity, client, readIdentity, readPidState, writeIdentity, writeWake, type Identity } from "./session.ts";
 
 type Json = Record<string, unknown>;
@@ -22,6 +25,8 @@ export class ClaudeTeamServer {
 	paths: StatePaths;
 	cpid: number;
 	cwd: string;
+	/** What the human runs (with !) inside this Claude Code session to take over a team's leader or agent. */
+	readonly takeoverCommand = `node ${JSON.stringify(join(dirname(fileURLToPath(import.meta.url)), "cli.ts"))} takeover`;
 	identity: Identity | undefined;
 	api: TeamClient;
 	private timer: ReturnType<typeof setInterval> | undefined;
@@ -92,10 +97,14 @@ export class ClaudeTeamServer {
 		const t: Tool[] = [
 			{
 				name: "team_join",
-				description: "Put this Claude Code session into a pi-aatwad team (same controller as Pi teams). mode=new_team: found a new team with you as leader. mode=member (alias join): join under an existing team's leader, or under manager: you lead your own (initially empty) team linked under that agent, which can assign you work and dismiss you. mode=leader: take over an existing team's leader session (run_id). mode=agent: resume an existing agent identity (agent). Use team_list_teams to find run IDs. Only when the human asks.",
+				description: "Put this Claude Code session into a pi-aatwad team (same controller as Pi teams). mode=new_team: found a new team with you as leader. mode=member (alias join): join under an existing team's leader, or under manager: you lead your own (initially empty) team linked under that agent, which can assign you work and dismiss you. Taking over an existing team's leader or agent (modes leader, agent) supersedes the session holding it, so only the human does that; these modes tell you the command to give them. Use team_list_teams to find run IDs. Only when the human asks.",
 				inputSchema: obj({ mode: S("new_team | member | join | leader | agent", { enum: ["new_team", "member", "join", "leader", "agent"] }), run_id: S("Team run ID (member, leader, agent)"), manager: S("member: the agent to join under (name or agent ID); default the team's leader"), agent: S("agent: agent name or ID to resume"), name: S("member: your member name"), responsibility: S("member: what you will do"), model: S("Your model as provider/model, e.g. anthropic/claude-opus-5-5"), unlimited: { type: "boolean", description: "new_team: operator-authorized unlimited policy" } }, ["mode"]),
 				run: async (a) => {
 					if (this.identity) throw new Error(`already in team ${this.identity.run_id} as ${this.identity.agent_id}; team_leave first`);
+					if (a.mode === "leader" || a.mode === "agent") {
+						const target = `${String(a.run_id ?? "<run_id>")}${a.mode === "agent" ? ` ${JSON.stringify(String(a.agent ?? "<agent>"))}` : ""}`;
+						return `Taking over an existing team's ${a.mode === "leader" ? "leader" : "agent"} supersedes the session that holds it, so it is the human's decision. Ask the human to run this in this Claude Code session:\n! ${this.takeoverCommand} ${target}\nThis session picks the identity up within a few seconds. To work under that team without taking anything over, use mode=member instead.`;
+					}
 					const op = await this.operator();
 					const [provider, ...rest] = String(a.model ?? process.env.PI_TEAM_CLAUDE_MODEL ?? "anthropic/claude").split("/");
 					const model = rest.join("/") || provider;
@@ -141,12 +150,14 @@ export class ClaudeTeamServer {
 			},
 			{
 				name: "team_list_teams",
-				description: "List teams on this machine's controller (run IDs, leaders, members).",
-				inputSchema: obj({ all: { type: "boolean", description: "Include historical teams" } }),
+				description: "List the teams of this project, plus your own team and the teams linked under it (run IDs, folders, leaders, members). Teams of other projects are counted, not listed: the human manages those with pi-team.",
+				inputSchema: obj({ all: { type: "boolean", description: "Include closed and stopped teams" } }),
 				run: async (a) => {
-					const runs = (await this.api.listRuns({ token: await this.operator() })).runs;
-					const shown = a.all ? runs : runs.filter((r) => r.status === "RUNNING" && !r.stopped);
-					return shown.length ? JSON.stringify(shown, null, 2) : "No active teams.";
+					const everything = (await this.api.listRuns({ token: await this.operator() })).runs;
+					const mine = everything.filter((r) => inScope(r, everything, { project: projectRoot(this.cwd), current: this.identity?.run_id }));
+					const shown = a.all ? mine : mine.filter((r) => r.status === "RUNNING" && !r.stopped);
+					const others = everything.length - mine.length;
+					return `${shown.length ? JSON.stringify(shown, null, 2) : "No active teams for this project."}${others ? `\n${others} team(s) of other projects are not listed. The human sees and manages every team with \`pi-team teams\` in a terminal. You can still join any team (mode=member) if the human names it.` : ""}`;
 				},
 			},
 			{
@@ -357,7 +368,9 @@ export class ClaudeTeamServer {
 }
 
 export function serveStdio(server = new ClaudeTeamServer()): void {
-	if (server.loadIdentity()) server.start();
+	// Always beat: an identity can arrive from outside (the human's takeover command), and the heartbeat loads it.
+	server.loadIdentity();
+	server.start();
 	const rl = createInterface({ input: process.stdin });
 	rl.on("line", (line) => {
 		if (!line.trim()) return;

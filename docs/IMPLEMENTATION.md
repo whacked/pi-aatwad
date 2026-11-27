@@ -837,3 +837,21 @@ sub-team needed a human at its own terminal.
 - **Recursion**: a team's summary input includes the latest overview of each team linked directly
   under it (`linkedOverviews`), not their events. The brief suggests sub-leads beyond
   `MAX_DIRECT_REPORTS` (8).
+
+## Scoped authority and the pi-team command (v0.1.58)
+
+- **Scope** (`inScope` in `format.ts`): a session's `/team` commands act on runs whose leader works
+  in the session's project, its own run, and runs linked under it at any depth (`reports_to_run_id`
+  chain). `stop`, `remove`, `resume`, `tree`, `events` and `list` refuse or hide anything else, with
+  a hint naming the `pi-team` command (or, for resume, opening Pi in that project). Completions
+  follow the same rule. `join` still offers every team: it only places this team under another.
+- **Orphans** (`isOrphaned`): not closed, not stopped, no live leader session, live members.
+  Interactive session start shows one line about them (`orphanNotice`).
+- **`pi-team`** (`src/cli/main.ts`, package bin): the operator's global view outside any agent
+  session: `teams [--all]`, `orphans`, `tree`, `stop`, `resume`, `remove --yes`.
+- **Claude Code**: `team_list_teams` lists only in-scope teams and counts the rest; `team_join`
+  modes `leader` and `agent` no longer attach. They return the command the human runs with `!` in
+  that session: `cli.ts takeover <run> [agent]` (`src/claude/takeover.ts`), which finds the Claude
+  session through its parent process, attaches with operator authority and writes the session's
+  identity; the MCP server now always heartbeats and picks the identity up.
+- Not enforcement: the operator token is readable by the user's processes, agents included.

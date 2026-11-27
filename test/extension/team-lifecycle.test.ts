@@ -26,7 +26,7 @@ async function fixture() {
 	mock.method(rt, "ensure", async () => ({} as any));
 	mock.method(rt, "heartbeat", async () => {});
 	registerTeamCommand(pi as any, rt);
-	const runs = ["one", "two"].map((run_id) => ({ run_id, root_agent_id: `${run_id}-root`, root_status: "RUNNING", status: "RUNNING", agents: 1, created_at: "2026-01-01" }));
+	const runs = ["one", "two"].map((run_id) => ({ run_id, root_agent_id: `${run_id}-root`, root_status: "RUNNING", status: "RUNNING", agents: 1, created_at: "2026-01-01", cwd: "/w" }));
 	server.route("GET", "/runs", () => ({ body: { runs } }));
 	server.route("GET", "/me", () => ({ body: { role: "root", parent: null } }));
 	for (const run of runs) {
@@ -161,5 +161,36 @@ test("client lifecycle query handles null and operation receipts", async () => {
 		const receipt = { operation_id: "op", run_id: "one", kind: "stop", state: "STOPPED" };
 		f.server.route("GET", "/runs/one/lifecycle", () => ({ body: receipt }));
 		assert.deepEqual(await f.rt.client.teamLifecycle("one", { token: "operator" }), receipt);
+	} finally { await f.close(); }
+});
+
+test("a session acts only on its project's teams and those linked under its own; anything else points to pi-team", async () => {
+	const f = await fixture();
+	try {
+		f.runs.push(
+			{ run_id: "elsewhere", root_agent_id: "e-root", root_status: "RUNNING", status: "RUNNING", agents: 2, created_at: "2026-01-01", cwd: "/other/project" } as any,
+			{ run_id: "below", root_agent_id: "b-root", root_status: "RUNNING", status: "RUNNING", agents: 1, created_at: "2026-01-01", cwd: "/third", reports_to_run_id: "one" } as any,
+		);
+		f.server.route("POST", "/runs/below/stop", () => ({ body: { operation_id: "op", run_id: "below", kind: "stop", state: "CLEANING" } }));
+		f.adopt("one");
+		const last = () => f.notes.at(-1)!;
+		await f.command.handler("stop elsewhere --yes", f.ctx);
+		assert.match(last(), /team elsewhere belongs to \/other\/project, outside this session's project .*run `pi-team stop elsewhere` in a terminal/);
+		await f.command.handler("remove elsewhere --yes", f.ctx);
+		assert.match(last(), /`pi-team remove elsewhere --yes`/);
+		await f.command.handler("resume elsewhere --yes", f.ctx);
+		assert.match(last(), /open a Pi session in \/other\/project and run \/team resume elsewhere; .*`pi-team resume elsewhere`/);
+		await f.command.handler("tree elsewhere", f.ctx);
+		assert.match(last(), /To see or manage teams anywhere on this machine, run `pi-team teams`/);
+		assert.ok(!f.server.requests.some((r) => r.method === "POST" && r.path.startsWith("/runs/elsewhere/")), "nothing reached the other team");
+
+		await f.command.handler("stop below --yes", f.ctx);
+		assert.ok(f.server.requests.some((r) => r.path === "/runs/below/stop"), "a team linked under this one is in scope");
+
+		await f.command.handler("list all", f.ctx);
+		assert.match(last(), /1 team\(s\) in other projects are not shown\. To see or manage teams anywhere/);
+		const ids = async (line: string) => ((await f.command.getArgumentCompletions(line)) ?? []).map((c: any) => c.label);
+		assert.ok(!(await ids("stop ")).includes("elsewhere"));
+		assert.ok((await ids("join ")).includes("elsewhere"), "joining only places this team under another, so every team is offered");
 	} finally { await f.close(); }
 });

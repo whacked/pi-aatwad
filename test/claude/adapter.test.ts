@@ -4,6 +4,7 @@ import { statePaths } from "../../src/shared/paths.ts";
 import { ClaudeTeamServer } from "../../src/claude/mcp.ts";
 import { sessionStart, stop, userPromptSubmit, wait } from "../../src/claude/hooks.ts";
 import { readIdentity, readPidState, updatePidState } from "../../src/claude/session.ts";
+import { takeover } from "../../src/claude/takeover.ts";
 import { harness, newRun, sql } from "../controller/helpers.ts";
 
 const ok = (r: any) => { assert.equal(r.status, 200, JSON.stringify(r.body)); return r.body; };
@@ -71,9 +72,15 @@ test("Claude Code joins a Pi team as a member: hooks deliver messages, the waite
 		const notice = ok(await h.call("GET", "/inbox", { token: team.token })).messages.find((m: any) => m.payload?.kind === "member_left");
 		assert.equal(notice.payload.agent_id, id.agent_id);
 
-		// Rejoin the same identity later.
-		assert.match(await call(claude, "team_join", { mode: "agent", run_id: team.run_id, agent: id.agent_id }), /Attached/);
+		// Rejoining an existing identity supersedes whoever holds it, so the model only gets the human's command.
+		const told = await call(claude, "team_join", { mode: "agent", run_id: team.run_id, agent: id.agent_id });
+		assert.match(told, new RegExp(`the human's decision[\\s\\S]*! node ".*cli\\.ts" takeover ${team.run_id} "${id.agent_id}"`));
+		assert.equal(readIdentity("s2", paths), undefined, "the model did not take it over");
+		const r = await takeover([team.run_id, id.agent_id], { paths, cpid, cwd: h.dir }); // the human, with ! in this session
+		assert.equal(r.code, 0, r.text);
 		assert.equal(readIdentity("s2", paths)?.agent_id, id.agent_id);
+		assert.match(await call(claude, "team_status", {}), new RegExp(id.agent_id), "the session picks the identity up");
+		assert.match((await takeover([team.run_id], { paths, cpid })).text, /already .* team_leave first/);
 	} finally { claude.stop(); await h.cleanup(); }
 });
 

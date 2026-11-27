@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatBrief, formatEnvelope, formatInbox, MAX_MESSAGE_CHARS, openLeaderHints, projectFirst } from "../../src/extension/format.ts";
+import { orphansLine, formatBrief, formatEnvelope, formatInbox, MAX_MESSAGE_CHARS, openLeaderHints, projectFirst } from "../../src/extension/format.ts";
 import type { Envelope } from "../../src/shared/protocol.ts";
 
 const env = (payload: Record<string, unknown>): Envelope => ({ version: 1, message_id: "msg-1", run_id: "run1", type: "question", from: "ag-lead", to: "ag-sub", payload });
@@ -68,4 +68,10 @@ test("the brief suggests sub-leads beyond eight direct reports", () => {
 		members: Array.from({ length: n }, (_x, i) => ({ agent_id: `m${i}`, role: `M${i}`, state: "working", idle_ms: null, tasks: [] })) });
 	assert.doesNotMatch(formatBrief(b(8) as any), /sub-lead/);
 	assert.match(formatBrief(b(9) as any), /9 direct reports is more than one lead tracks well: consider grouping related members under a sub-lead/);
+});
+
+test("orphaned teams (live members, no open leader session) are announced so they never spend unnoticed", () => {
+	const r = (o: object) => ({ run_id: "r", root_agent_id: "x", status: "RUNNING", created_at: "", topology_version: 0, agents: 3, ...o }) as any;
+	assert.equal(orphansLine([r({ leader_live: true, live_members: 2 }), r({ leader_live: false, live_members: 0 }), r({ leader_live: false, live_members: 2, stopped: true })]), undefined);
+	assert.match(orphansLine([r({ name: "EasyCard", cwd: "/w/easycard", leader_live: false, live_members: 12 })])!, /^1 team on this machine has 12 live member\(s\) and no open leader session: EasyCard \(\/w\/easycard\)\. Run `pi-team orphans`/);
 });

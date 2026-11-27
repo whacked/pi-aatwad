@@ -4,7 +4,7 @@ A Pi package that lets ordinary [Pi](https://pi.dev) sessions run **recursive ag
 
 Implements the v1.2 brief in [`recursive-agent-org-v1.2/`](recursive-agent-org-v1.2/README.md). The concrete engineering decisions are recorded in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
-**Status: v0.1.57, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
+**Status: v0.1.58, early implementation.** It is tested against Pi 1.4.0 and Node 24. See [Limitations](#limitations).
 
 ## Install
 
@@ -708,6 +708,22 @@ real Pi processes during promotion. If there is insufficient space, enlarge the 
 rather than creating more windows. Managed members cannot manage the team terminal session.
 
 
+## Who can see and manage which teams
+
+- **Agents** (team tools, in Pi and Claude Code) act on their own team, the agents under them and
+  one step across team links.
+- **A session's `/team` commands** act on the teams of the session's project, its own team and the
+  teams linked under it. Teams elsewhere are counted, with a pointer to `pi-team`. `/team join` can
+  still target any team, because it only places this team under another one. Taking over another
+  session's team from Claude Code is a human command, not a tool.
+- **`pi-team`**, run in a terminal outside any agent session, sees and manages every team on the
+  machine: `pi-team teams [--all]`, `pi-team orphans` (live members, no open leader session),
+  `pi-team tree <run>`, `pi-team stop|resume <run>`, `pi-team remove <run> --yes`. Every session
+  start mentions orphaned teams, so a forgotten team does not keep spending unnoticed.
+
+This is a convention that keeps the safe path the default, not a security boundary: everything runs
+as your user, and an agent with a shell can read the operator token.
+
 ## Brief, summaries and history
 
 A lead does not have to ask its members what is going on, and team traffic does not have to pile
@@ -754,9 +770,9 @@ Then ask Claude to use the `team_*` tools.
 | Goal | Tool call |
 |---|---|
 | Found a team and lead it | `team_join` mode `new_team` |
-| Lead an existing team (take over its root) | `team_join` mode `leader`, `run_id` |
+| Lead an existing team (take over its root) | the human runs `! node …/src/claude/cli.ts takeover <run_id>` in that Claude session (a model only gets this command) |
 | Join under an existing team's leader or an agent (you lead your own team linked under it) | `team_join` mode `member` (or `join`), `run_id`, optional `manager` |
-| Resume an existing agent identity | `team_join` mode `agent`, `run_id`, `agent` |
+| Resume an existing agent identity | the human runs `! node …/src/claude/cli.ts takeover <run_id> <agent>` |
 | Link your existing team under another leader | `team_report_to` `run_id` (`none` detaches) |
 | Move a member under another manager | `team_reassign` |
 | Resume a stopped team linked under you | `team_resume_team` |

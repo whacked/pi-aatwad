@@ -1,7 +1,7 @@
 {
   "name": "pi-team",
   "description": "Join, lead or leave pi-aatwad agent teams from Claude Code: shared controller with Pi, dynamic reassignment, automatic team message delivery",
-  "version": "0.1.57",
+  "version": "0.1.58",
   "mcpServers": {
     "pi-team": {
       "command": "node",

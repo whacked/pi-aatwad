@@ -3,9 +3,11 @@
 //   cli.ts mcp                 MCP stdio server (team tools + liveness heartbeat)
 //   cli.ts hook <event>        SessionStart | UserPromptSubmit | Stop hook (reads hook JSON on stdin)
 //   cli.ts wait                background waiter: exits when the controller wakes this idle session
+//   cli.ts takeover <run> [agent]  the human, inside Claude Code (! prefix): this session takes over that team's leader or agent
 import { fileURLToPath } from "node:url";
 import { serveStdio } from "./mcp.ts";
 import { sessionStart, stop, userPromptSubmit, wait, type HookInput } from "./hooks.ts";
+import { takeover } from "./takeover.ts";
 
 const self = fileURLToPath(import.meta.url);
 const waiterCommand = `node ${JSON.stringify(self)} wait`;
@@ -25,6 +27,12 @@ async function main(argv: string[]): Promise<void> {
 		if (text) process.stdout.write(`${text}\n`);
 		return;
 	}
+	if (cmd === "takeover") {
+		const r = await takeover(argv.slice(1));
+		process.stdout.write(`${r.text}\n`);
+		process.exitCode = r.code;
+		return;
+	}
 	if (cmd === "hook") {
 		const input = await readStdin();
 		const handler = { SessionStart: sessionStart, UserPromptSubmit: userPromptSubmit, Stop: stop }[event ?? input.hook_event_name ?? ""];
@@ -33,7 +41,7 @@ async function main(argv: string[]): Promise<void> {
 		if (out) process.stdout.write(JSON.stringify(out));
 		return;
 	}
-	process.stderr.write("usage: cli.ts mcp | hook <SessionStart|UserPromptSubmit|Stop> | wait\n");
+	process.stderr.write("usage: cli.ts mcp | hook <SessionStart|UserPromptSubmit|Stop> | wait | takeover <run_id> [agent]\n");
 	process.exitCode = 2;
 }
 

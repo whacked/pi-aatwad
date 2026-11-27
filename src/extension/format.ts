@@ -328,3 +328,35 @@ export function formatInbox(messages: Envelope[], forAgent: string | undefined):
 	}
 	return parts.join("\n\n");
 }
+
+// ------------------------------------------------------------------ authority scope
+/**
+ * The teams a session acts on: this project's teams, its own team, and teams linked under it at any
+ * depth. Everything else is managed globally with the pi-team command, outside any agent session.
+ */
+export function inScope(r: RunSummary, runs: RunSummary[], o: { project: string; current?: string }): boolean {
+	if (sameProject(r.cwd, o.project) || (o.current && r.run_id === o.current)) return true;
+	if (!o.current) return false;
+	const byId = new Map(runs.map((x) => [x.run_id, x]));
+	const seen = new Set<string>();
+	for (let up = r.reports_to_run_id; up && !seen.has(up); up = byId.get(up)?.reports_to_run_id) {
+		if (up === o.current) return true;
+		seen.add(up);
+	}
+	return false;
+}
+
+/** A team still spending (members live) while no leader session is open. */
+export function isOrphaned(r: RunSummary): boolean {
+	return r.status !== "CANCELLED" && !r.stopped && !r.leader_live && (r.live_members ?? 0) > 0;
+}
+
+export const GLOBAL_HINT = "To see or manage teams anywhere on this machine, run `pi-team teams` in a terminal (`pi-team help` lists the commands).";
+
+/** One line for session start when teams anywhere are running with nobody leading them. */
+export function orphansLine(runs: RunSummary[]): string | undefined {
+	const o = runs.filter(isOrphaned);
+	if (!o.length) return undefined;
+	const members = o.reduce((n, r) => n + (r.live_members ?? 0), 0);
+	return `${o.length} team${o.length > 1 ? "s" : ""} on this machine ${o.length > 1 ? "have" : "has"} ${members} live member(s) and no open leader session: ${o.slice(0, 3).map((r) => `${r.name ?? r.run_id} (${shortPath(r.cwd)})`).join(", ")}${o.length > 3 ? ", …" : ""}. Run \`pi-team orphans\` in a terminal to see and stop them.`;
+}

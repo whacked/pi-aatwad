@@ -1,6 +1,6 @@
 {
   "name": "pi-recursive-team",
-  "version": "0.1.57",
+  "version": "0.1.58",
   "description": "Recursive agent organizations for Pi: /team commands, org tools, and an auto-started local controller",
   "type": "module",
   "keywords": [
@@ -16,6 +16,7 @@
     ]
   },
   "bin": {
+    "pi-team": "./src/cli/main.ts",
     "pi-team-controller": "./src/controller/main.ts",
     "pi-team-claude": "./src/claude/cli.ts",
     "pi-team-attach": "./src/terminal/native/attach.ts"
