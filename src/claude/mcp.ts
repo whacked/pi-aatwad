@@ -185,8 +185,8 @@ export class ClaudeTeamServer {
 			},
 			{
 				name: "team_send_message",
-				description: "Send a durable message to your manager, a peer, someone in your subtree, or a linked team leader. Returns immediately; replies arrive as team messages.",
-				inputSchema: obj({ to: S("Recipient name or agent ID"), type: S("Message type", { enum: ["question", "answer", "task.progress", "system.notice"] }), text: S("Message body"), causation_id: S("Message this replies to") }, ["to", "text"]),
+				description: "Send a durable message to your manager, a peer, someone in your subtree, or a linked team leader. Returns immediately; replies arrive as team messages. To hand out work, use team_delegate_task instead: it is tracked as a task with a result.",
+				inputSchema: obj({ to: S("Recipient name or agent ID"), type: S("Message type: task.progress is a status report to your lead; use question or system.notice for instructions", { enum: ["question", "answer", "task.progress", "system.notice"] }), text: S("Message body"), causation_id: S("Message this replies to") }, ["to", "text"]),
 				run: async (a) => {
 					this.requireIdentity();
 					const r = await this.api.sendMessage({ to: await this.agentRef(String(a.to)), type: (a.type ?? "question") as MessageType, payload: { text: a.text }, causation_id: a.causation_id as string | undefined });

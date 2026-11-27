@@ -896,3 +896,14 @@ operator ran `pi-team resume`.
   re-attaches, unless another Pi session has taken the agent over since. Deliberate stops still wait
   for `/team resume`.
 - Team lists in sessions say "no leader session" for running teams whose leader is not connected.
+
+## Instructions typed as progress still wake (v0.1.62)
+
+Reported from a Claude Code lead that handed a task to a Pi team linked under it with
+`team_send_message` typed `task.progress`: the idle Pi session did not start until the human prompted it.
+
+- Since v0.1.54, progress messages do not wake an idle agent. That rule now applies only to progress
+  from below (the recipient's members and teams linked under it). Anything from a lead or a peer
+  wakes the recipient whatever its type.
+- The `team_send_message` tool descriptions (Pi and Claude Code) say that `task.progress` is a status
+  report, and that work is handed out with `team_delegate_task`.

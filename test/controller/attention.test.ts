@@ -57,6 +57,30 @@ test("progress reports alone do not wake an idle lead; they ride along with the 
 	} finally { await h.cleanup(); }
 });
 
+test("a progress-typed message from a lead down to its member still wakes the member: only reports from below wait", async () => {
+	const h = await harness();
+	try {
+		const t = await team(h);
+		ok(await setRun(h, t.token, t.run_id, { batch_seconds: 0, stall_seconds: 0 }));
+		ok(await h.call("GET", "/inbox", { token: t.workerToken }));
+		ok(await h.call("POST", "/messages", { token: t.token, body: { to: t.worker, type: "task.progress", payload: { text: "Start on the README rewrite." } } }));
+		assert.deepEqual((await beat(h, t.workerToken)).wake, { reason: "message" }, "the lead's message is no status report; it wakes the member");
+	} finally { await h.cleanup(); }
+});
+
+test("across a team link: the lead's progress-typed instruction wakes the linked team; the linked team's progress report does not wake the lead", async () => {
+	const h = await harness();
+	try {
+		const lead = await newRun(h), sub = await newRun(h);
+		ok(await h.call("POST", `/runs/${sub.run_id}/reporting`, { token: sub.token, body: { action: "connect", parent_run_id: lead.run_id } }));
+		for (const t of [lead, sub]) { ok(await setRun(h, t.token, t.run_id, { batch_seconds: 0, stall_seconds: 0 })); ok(await h.call("GET", "/inbox", { token: t.token })); }
+		ok(await h.call("POST", "/messages", { token: lead.token, body: { to: sub.root, type: "task.progress", payload: { text: "Please refactor the parser." } } }));
+		assert.deepEqual((await beat(h, sub.token)).wake, { reason: "message" });
+		ok(await h.call("POST", "/messages", { token: sub.token, body: { to: lead.root, type: "task.progress", payload: { text: "Halfway done." } } }));
+		assert.equal((await beat(h, lead.token)).wake, undefined, "a report from below waits for the lead's next turn");
+	} finally { await h.cleanup(); }
+});
+
 test("delegation returns a handoff ack; a stalled team wakes its manager once per distinct state, within the hourly cap", async () => {
 	const h = await harness();
 	try {

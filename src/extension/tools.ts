@@ -145,7 +145,7 @@ export function registerTools(pi: ExtensionAPI, rt: TeamRuntime): void {
 			"Leaders joined by a reporting relationship can also exchange question, answer and task.progress messages across teams using exact agent IDs from team_reporting. For new agents use team_request_expansion instead.",
 		Type.Object({
 			to: Type.String({ description: "Recipient name or agent_id (or 'controller')" }),
-			type: StringEnum(MESSAGE_TYPES, { description: "Message type" }),
+			type: StringEnum(MESSAGE_TYPES, { description: "Message type: task.progress is a status report to your lead; use question or system.notice for instructions. To hand out work, use team_delegate_task." }),
 			text: Type.Optional(Type.String({ description: "Plain-text body (stored as payload.text)" })),
 			payload: Type.Optional(FreeObject("Structured payload; merged with text")),
 			correlation_id: Type.Optional(Type.String()),

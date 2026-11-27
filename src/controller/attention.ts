@@ -199,9 +199,14 @@ export function decideWake(db: DB, agentId: string, busy: boolean, now = Date.no
 	const fire = (w: Wake): Wake => { st.wakes.push(now); return w; };
 
 	if (policy.on_message === "wake") {
-		// Progress reports alone never wake an idle agent: they ride along with the next turn and are
-		// counted in the team brief. Questions, answers, completions and notices still wake it.
-		const oldest = get(db, `SELECT MIN(m.created_at) AS at FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient_id = ? AND d.status = 'PENDING' AND m.type <> 'task.progress'`, agentId)?.at as string | null | undefined;
+		// Progress reports from below (members, teams linked under this agent) never wake an idle agent:
+		// they ride along with the next turn and are counted in the team brief. Anything from a lead or a
+		// peer wakes it, whatever its type: a lead may send instructions typed as progress.
+		const pending = all(db, `SELECT m.created_at AS at, m.type, m.sender_id FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient_id = ? AND d.status = 'PENDING' ORDER BY m.created_at`, agentId);
+		let below: Set<string> | undefined;
+		const isReport = (r: Record<string, unknown>) => r.type === "task.progress"
+			&& (below ??= new Set([...getSubtree(db, agentId), ...getLinkChildren(db, agentId)])).has(String(r.sender_id));
+		const oldest = pending.find((r) => !isReport(r))?.at as string | undefined;
 		if (oldest && now - Date.parse(oldest) >= policy.batch_seconds * 1000) return fire({ reason: "message" });
 	}
 	const needsDigest = policy.stall_seconds > 0 || policy.tick_seconds > 0 || policy.checkin_seconds > 0;
