@@ -855,3 +855,14 @@ sub-team needed a human at its own terminal.
   session through its parent process, attaches with operator authority and writes the session's
   identity; the MCP server now always heartbeats and picks the identity up.
 - Not enforcement: the operator token is readable by the user's processes, agents included.
+
+## Large teams (v0.1.59)
+
+Found on a team with 41 members, 38 of them live with no open tasks (37 idle Pi processes, 4 GB).
+
+- **Member strip**: when the names do not fit, it shows `team: N members, L live · ` then live
+  members first, as many as fit, and `+K more · /team tree lists all`; it never overflows.
+- **Roster**: `/team roster` lists current members and counts former ones; `/team roster all` lists
+  everyone ever linked under you.
+- **Idle members**: the brief points out members idle over 30 minutes with no open task (each keeps a
+  Pi process running) and the commands that close (`/team prune`) and bring back (`/team recall`) them.

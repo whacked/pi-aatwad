@@ -246,6 +246,8 @@ export function formatAway(a: AwaySummary): string {
 	return lines.join("\n");
 }
 
+/** Idle this long with no open task, a member is worth closing (it keeps a whole Pi process running). */
+export const IDLE_NOTICE_MS = 30 * 60_000;
 /** Beyond this many direct reports, the brief suggests sub-leads. */
 export const MAX_DIRECT_REPORTS = 8;
 
@@ -268,6 +270,8 @@ export function formatBrief(b: BriefResponse): string {
 			const work = m.tasks.length ? m.tasks.map((t) => `"${clip(t.title, 60)}" ${t.status}${t.picked_up ? "" : " (not picked up yet)"}`).join("; ") : "no open tasks";
 			lines.push(`  • ${m.role}${m.linked_run_id ? ` (linked team ${m.linked_run_id})` : ""}: ${state} · ${work}`);
 		}
+		const idle = b.members.filter((m) => m.state === "idle" && !m.tasks.length && (m.idle_ms ?? 0) >= IDLE_NOTICE_MS);
+		if (idle.length) lines.push(`  (${idle.length} member(s) idle for over ${Math.round(IDLE_NOTICE_MS / 60_000)} minutes with no open tasks, each keeping a Pi process running: /team prune closes them; /team recall brings one back with its context.)`);
 		if (b.members.length > MAX_DIRECT_REPORTS) lines.push(`  (${b.members.length} direct reports is more than one lead tracks well: consider grouping related members under a sub-lead, who gets its own brief and summaries and reports one headline up.)`);
 	} else lines.push("Members: none.");
 	if (b.deeper_open_tasks) lines.push(`  + ${b.deeper_open_tasks} open task(s) further down`);

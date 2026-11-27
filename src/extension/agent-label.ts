@@ -130,7 +130,21 @@ export function renderMemberStrip(members: StripMember[], width: number): string
 	const own = members.some((m) => !m.linked), linked = members.some((m) => m.linked);
 	const hint = [own ? "/team watch focus <name> switches" : "", linked ? "⇢ = linked team" : ""].filter(Boolean).join(" · ");
 	const line = ` team: ${parts.join("  ")}  \x1b[2m· ${hint}\x1b[22m`;
-	return [visibleWidth(line) > width ? truncateToWidth(line, width) : line];
+	if (visibleWidth(line) <= width) return [line];
+	// Too many to show: a count first, live members next, as many names as fit, then how many more.
+	const live = members.filter((m) => m.live).length;
+	const head = ` team: ${members.length} members, ${live} live · `;
+	const order = members.map((m, i) => ({ m, part: parts[i] })).sort((a, b) => Number(b.m.live) - Number(a.m.live));
+	const tail = (more: number) => `  \x1b[2m+${more} more · /team tree lists all\x1b[22m`;
+	let shown = 0, body = "";
+	for (const { part } of order) {
+		const next = body ? `${body}  ${part}` : part;
+		if (visibleWidth(head + next + tail(order.length - shown - 1)) > width) break;
+		body = next;
+		shown++;
+	}
+	const out = `${head}${body}${shown < order.length ? tail(order.length - shown) : ""}`;
+	return [visibleWidth(out) > width ? truncateToWidth(out, width) : out];
 }
 
 export function installMemberStrip(ui: UI, members: () => StripMember[]): void {

@@ -25,7 +25,7 @@ export const SUBCOMMANDS: { name: string; args: string; help: string }[] = [
 	{ name: "join", args: "<run_id|agent_id|none> [--terminatable]", help: "link this team under another team's leader or agent: it can assign you work and dismiss you (only detaching, unless --terminatable); none detaches. In a member: leave its team (leading your own), then join" },
 	{ name: "report-to", args: "<run_id|agent_id|none>", help: "alias for join" },
 	{ name: "dismiss", args: "<name|agent_id> [--stop|--keep] [reason]", help: "end a team linked under you: it detaches, or stops (resumably) when its link is terminatable; --stop/--keep override" },
-	{ name: "roster", args: "", help: "everyone ever linked under you: active, detached, dismissed or closed" },
+	{ name: "roster", args: "[all]", help: "your current members; all: everyone ever linked under you, including detached, dismissed or closed" },
 	{ name: "recall", args: "<name|agent_id>", help: "bring a former member back with its context (a dismissed team resumes and links again)" },
 	{ name: "rehire", args: "<name|agent_id>", help: "fill a former member's position with a new agent and a fresh context" },
 	{ name: "link", args: "<name|agent_id> terminatable on|off", help: "human operator: whether dismissing this linked team or joined member may stop it" },
@@ -260,12 +260,22 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				: `Dismissed ${rest[0]}: detached; its team keeps running on its own.`);
 		},
 
-		roster: async (_a, ctx) => {
+		roster: async (a, ctx) => {
 			await rt.requireIdentity();
 			type Entry = { agent_id: string; role: string; run_id?: string; origin: string; terminatable: boolean; active: boolean; status: string; team_state?: string; close_reason: string | null };
 			const r = await rt.client.get<{ entries: Entry[] }>(`/agents/${encodeURIComponent(rt.identity!.agent_id)}/roster`, { token: rt.managed ? undefined : await rt.commandToken() });
 			if (!r.entries.length) { out(ctx, "Roster: nobody has been linked under you yet."); return; }
-			out(ctx, ["Roster:", ...r.entries.map((e) => `  ${e.active ? "●" : "○"} ${e.role} [${e.agent_id}] ${e.origin}${e.terminatable ? ", terminatable" : ""}${e.run_id ? `, team ${e.run_id} (${e.team_state})` : `, ${e.status}`}${e.active ? "" : ` — ${e.close_reason ?? "closed"}`}`), "Bring one back: /team recall <name>; fill a position fresh: /team rehire <name>."].join("\n"));
+			// The roster keeps everyone ever linked under you; by default only current members are listed.
+			const all = a[0] === "all";
+			const shown = all ? r.entries : r.entries.filter((e) => e.active);
+			const former = r.entries.length - r.entries.filter((e) => e.active).length;
+			const line = (e: Entry) => `  ${e.active ? "●" : "○"} ${e.role} [${e.agent_id}] ${e.origin}${e.terminatable ? ", terminatable" : ""}${e.run_id ? `, team ${e.run_id} (${e.team_state})` : `, ${e.status}`}${e.active ? "" : ` — ${e.close_reason ?? "closed"}`}`;
+			out(ctx, [
+				all ? `Roster: everyone ever linked under you (${r.entries.length}):` : `Roster: ${shown.length} current member(s):`,
+				...shown.map(line),
+				...(!all && former ? [`${former} former member(s) not listed: /team roster all`] : []),
+				"Bring one back: /team recall <name>; fill a position fresh: /team rehire <name>; close idle members without open tasks: /team prune.",
+			].join("\n"));
 		},
 
 		recall: async (a, ctx) => {

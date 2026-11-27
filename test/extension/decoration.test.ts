@@ -80,3 +80,13 @@ test("trees show teams linked under their leads", async () => {
 	assert.match(out, /├─ Alpha \[m-1\] RUNNING\/LIVE/);
 	assert.match(out, /└─ Contractor \[sub\] ⇢ team run-sub RUNNING\/LIVE/);
 });
+
+test("a strip with more members than fit says how many, shows live ones first, and never overflows", () => {
+	const members = Array.from({ length: 38 }, (_x, i) => ({ agent_id: `easycard-member-${i}`, role: `Member${i}`, live: i % 5 !== 0 }));
+	const [line] = renderMemberStrip(members, 100);
+	const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+	assert.ok(plain.length <= 100, `fits: ${plain.length}`);
+	assert.match(plain, /^ team: 38 members, 30 live · /);
+	assert.match(plain, /\+\d+ more · \/team tree lists all$/);
+	assert.doesNotMatch(plain, /Member0\b/, "live members come first");
+});

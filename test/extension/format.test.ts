@@ -75,3 +75,14 @@ test("orphaned teams (live members, no open leader session) are announced so the
 	assert.equal(orphansLine([r({ leader_live: true, live_members: 2 }), r({ leader_live: false, live_members: 0 }), r({ leader_live: false, live_members: 2, stopped: true })]), undefined);
 	assert.match(orphansLine([r({ name: "EasyCard", cwd: "/w/easycard", leader_live: false, live_members: 12 })])!, /^1 team on this machine has 12 live member\(s\) and no open leader session: EasyCard \(\/w\/easycard\)\. Run `pi-team orphans`/);
 });
+
+test("the brief points at members idling without open tasks, since each holds a Pi process", () => {
+	const b = { agent_id: "lead", as_of_seq: 1, since_seq: 0, deeper_open_tasks: 0, changes: [], changes_omitted: 0, progress_reports: 0,
+		needs_you: { messages: [], other_unread: 0, proposals_to_review: 0, stopped_linked_teams: [] },
+		members: [
+			{ agent_id: "a", role: "A", state: "idle", idle_ms: 3 * 3600_000, tasks: [] },
+			{ agent_id: "b", role: "B", state: "idle", idle_ms: 60_000, tasks: [] },
+			{ agent_id: "c", role: "C", state: "idle", idle_ms: 3 * 3600_000, tasks: [{ task_id: "t", title: "x", status: "ASSIGNED", picked_up: true }] },
+		] };
+	assert.match(formatBrief(b as any), /\(1 member\(s\) idle for over 30 minutes with no open tasks, each keeping a Pi process running: \/team prune closes them/);
+});

@@ -714,6 +714,24 @@ test("team completions show the real state and folder, not the raw run status", 
 	} finally { s.rt.stop(); await hs.cleanup(); }
 });
 
+test("/team roster lists current members; former ones are counted, and all lists them", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "roster", "");
+	try {
+		await s.rt.start(s.ctx); await s.command.handler("init", s.ctx);
+		const token = (s.rt.identity as any).token;
+		const [keep, gone] = [await hs.call("POST", "/members", { token, body: { name: "Keeper", responsibility: "Keep" } }), await hs.call("POST", "/members", { token, body: { name: "Leaver", responsibility: "Leave" } })].map((r) => r.body.spawned_agent_ids[0]);
+		await waitFor(() => hs.ex.tokens.has(keep) && hs.ex.tokens.has(gone));
+		await hs.call("POST", `/agents/${gone}/lifecycle`, { token, body: { action: "cancel", reason: "done", children_policy: "cascade" } });
+		await s.command.handler("roster", s.ctx);
+		assert.match(s.notes.at(-1)!, /^Roster: 1 current member\(s\):\n  ● Keeper .*\n1 former member\(s\) not listed: \/team roster all/);
+		assert.doesNotMatch(s.notes.at(-1)!, /Leaver/);
+		await s.command.handler("roster all", s.ctx);
+		assert.match(s.notes.at(-1)!, /everyone ever linked under you \(2\)[\s\S]*○ Leaver/);
+	} finally { s.rt.stop(); await hs.cleanup(); }
+});
+
 test("/team prune closes only idle members with no open tasks, after confirmation", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();
