@@ -17,7 +17,7 @@ function save(db: DB, runId: string, cfg: RunConfig): void {
 	run(db, "UPDATE runs SET config_json = ? WHERE id = ?", JSON.stringify(cfg), runId);
 }
 function receipt(runId: string, s: TeamLifecycleState): TeamLifecycleResponse {
-	return { operation_id: s.operation_id, run_id: runId, kind: s.kind, state: s.state, ...(s.error ? { error: s.error } : {}) };
+	return { operation_id: s.operation_id, run_id: runId, kind: s.kind, state: s.state, ...(s.error ? { error: s.error } : {}), ...(s.cause ? { cause: s.cause } : {}) };
 }
 
 export function teamLifecycleState(db: DB, runId: string): TeamLifecycleState | undefined {
@@ -54,9 +54,12 @@ function cleanup(ctx: Ctx, scope: ReqScope, runId: string, operationId: string, 
 	});
 }
 
-export function stopTeam(ctx: Ctx, p: Principal, scope: ReqScope, runId: string): TeamLifecycleResponse {
+export function stopTeam(ctx: Ctx, p: Principal, scope: ReqScope, runId: string, body?: unknown): TeamLifecycleResponse {
 	operator(p);
-	const receiptOut = suspendTeam(ctx, scope, runId, p.actor_id);
+	const b = obj(body ?? {});
+	onlyKeys(b, ["cause"]);
+	if (b.cause !== undefined && b.cause !== "leader_exit") fail("INVALID", "cause may only be leader_exit");
+	const receiptOut = suspendTeam(ctx, scope, runId, p.actor_id, undefined, b.cause as "leader_exit" | undefined);
 	// Teams linked under this one stop with it only when their links are terminatable.
 	cascadeStop(ctx, scope, runId, p.actor_id, new Set([runId]));
 	return receiptOut;
@@ -78,7 +81,7 @@ export function cascadeStop(ctx: Ctx, scope: ReqScope, runId: string, actor: str
 }
 
 /** Resumable whole-team suspension. stoppedBy records the lead team whose stop caused it. */
-export function suspendTeam(ctx: Ctx, scope: ReqScope, runId: string, actor: string, stoppedBy?: string): TeamLifecycleResponse {
+export function suspendTeam(ctx: Ctx, scope: ReqScope, runId: string, actor: string, stoppedBy?: string, cause?: TeamLifecycleState["cause"]): TeamLifecycleResponse {
 	const db = ctx.db, r = getRun(db, runId), cfg = liveConfig(db, runId), prev = cfg.team_lifecycle;
 	if (prev && (prev.state === "STOPPED" || prev.state === "CLEANING")) {
 		// Retry is how an interrupted or failed cleanup finishes.
@@ -97,7 +100,7 @@ export function suspendTeam(ctx: Ctx, scope: ReqScope, runId: string, actor: str
 		// The root is the operator's own Pi: never a controller-owned process.
 		if (a.id !== r.root_agent_id && a.pid != null) procs.push({ pid: a.pid, process_started_at: a.process_started_at ?? "" });
 	}
-	const state: TeamLifecycleState = { operation_id: newId("teamop"), kind: "stop", state: procs.length ? "CLEANING" : "STOPPED", at: ts, suspended, ...(procs.length ? { pending: procs } : {}), ...(stoppedBy ? { stopped_by_run_id: stoppedBy } : {}) };
+	const state: TeamLifecycleState = { operation_id: newId("teamop"), kind: "stop", state: procs.length ? "CLEANING" : "STOPPED", at: ts, suspended, ...(procs.length ? { pending: procs } : {}), ...(stoppedBy ? { stopped_by_run_id: stoppedBy } : {}), ...(cause ? { cause } : {}) };
 	cfg.team_lifecycle = state;
 	save(db, runId, cfg);
 	emit(db, { run_id: runId, actor_id: actor, type: "run.stopped", entity_id: runId, payload: { operation_id: state.operation_id, suspended, ...(stoppedBy ? { stopped_by_run_id: stoppedBy } : {}) } });

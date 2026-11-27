@@ -301,7 +301,7 @@ export class TeamRuntime {
 			return;
 		}
 		try {
-			await this.client.post(`/runs/${encodeURIComponent(led.runId)}/stop`, {}, { token: await this.operatorToken(1_000), timeoutMs: 4_000 });
+			await this.client.post(`/runs/${encodeURIComponent(led.runId)}/stop`, { cause: "leader_exit" }, { token: await this.operatorToken(1_000), timeoutMs: 4_000 });
 			write(`Team ${led.runId} stopped (resumable): ${act.members.length} member(s) paused${working ? `, ${working} mid-task` : ""}. ${resume} continues it.\n`);
 		} catch (e) {
 			write(`Could not stop team ${led.runId} (${(e as Error).message}); it may still be running. /team stop ${led.runId} stops it.\n`);
@@ -387,6 +387,30 @@ export class TeamRuntime {
 		this.resumeWatch.unref?.();
 	}
 
+	/**
+	 * A team stopped only because its leader was gone (its exit policy ran, or it was paused while the
+	 * leader was away) resumes when that same leader session comes back, unless another session has
+	 * taken the agent over since. A stop someone decided on waits for an explicit /team resume.
+	 */
+	private async resumeIfOnlyAbsent(runId: string, agentId: string): Promise<boolean> {
+		if (this.managed) return false;
+		try {
+			const op = await this.operatorToken(0);
+			const lc = await this.client.teamLifecycle(runId, { token: op });
+			if (lc?.state !== "STOPPED" || !lc.cause) return false;
+			const latest = (await this.client.inspect(agentId, { token: op })).sessions.at(-1);
+			if (latest?.pi_session_id && latest.pi_session_id !== this.piSession().id) return false;
+			if (this.identity) return false;
+			await this.attach(runId, agentId, { quiet: true, resume: true });
+			this.notice = undefined;
+			this.say(`Team ${runId} had ${lc.cause === "leader_exit" ? "stopped when this session ended" : "paused while this session was away"}; it is resumed and this session leads it again.`);
+			this.updateStatus();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	private unwatchResume(): void {
 		if (this.resumeWatch) clearInterval(this.resumeWatch);
 		this.resumeWatch = undefined;
@@ -443,6 +467,7 @@ export class TeamRuntime {
 			} catch (e) {
 				const reason = e instanceof TeamApiError ? (e.details as { reason?: string } | undefined)?.reason : undefined;
 				if (reason !== "team_stopped") throw e;
+				if (await this.resumeIfOnlyAbsent(entry.run_id, entry.agent_id)) return;
 				this.notice = `Team ${entry.run_id} was stopped while this session was away; run /team resume ${entry.run_id} ${entry.agent_id} to continue it.`;
 				this.say(this.notice, "warning");
 				this.watchForResume(entry.run_id, entry.agent_id);
@@ -636,7 +661,10 @@ export class TeamRuntime {
 		this.timer = undefined;
 		this.notice = `Team ${runId} is stopped, not removed. Run /team resume ${runId} ${id.agent_id} to continue; if its lead resumes it, this session attaches again by itself.`;
 		this.pi.appendEntry(IDENTITY_ENTRY, { version: 1, run_id: runId, agent_id: id.agent_id, pi_session_id: id.pi_session_id, managed: id.managed, role: id.role, suspended: true } satisfies IdentityEntry);
-		if (!id.managed) this.watchForResume(runId, id.agent_id);
+		if (!id.managed) {
+			// Paused because this very session looked gone (e.g. the machine slept): it is back, so resume.
+			void this.resumeIfOnlyAbsent(runId, id.agent_id).then((resumed) => { if (!resumed) this.watchForResume(runId, id.agent_id); });
+		}
 		this.updateStatus();
 	}
 

@@ -882,3 +882,17 @@ Found on a team with 41 members, 38 of them live with no open tasks (37 idle Pi 
   it back; `/team inspect <agent>` finds the other one. Where the controller can tell, a second line
   says when that session started, its process and its Pi transcript. The status line reads "taken
   over by another session".
+
+## The leader comes back (v0.1.61)
+
+Reported by a bb leader whose respawned Pi found its team stopped and stayed out of it until the
+operator ran `pi-team resume`.
+
+- A stop now records its `cause` when only the leader's absence caused it: `leader_exit` (the exit
+  policy ran as the leader's Pi ended; `POST /runs/:id/stop {cause}`) or `leader_absent` (the
+  leaderless-team sweep). Stops anyone decided on carry no cause.
+- When the same leader session returns (`resumeIfOnlyAbsent`: on restore, or when its credential is
+  revoked while it is alive), a team stopped for one of those causes resumes and the session
+  re-attaches, unless another Pi session has taken the agent over since. Deliberate stops still wait
+  for `/team resume`.
+- Team lists in sessions say "no leader session" for running teams whose leader is not connected.

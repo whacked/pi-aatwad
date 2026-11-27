@@ -165,6 +165,8 @@ test("a team whose leader left is paused once every member is idle; busy members
 		const state = (t: Team) => JSON.parse(sql(h, "SELECT config_json FROM runs WHERE id = ?", t.run_id)[0].config_json).team_lifecycle?.state ?? "RUNNING";
 		await waitFor(() => ["STOPPED", "CLEANING"].includes(state(gone)), "idle leaderless team paused", 5000);
 		assert.equal(sql(h, "SELECT COUNT(*) AS n FROM events WHERE run_id = ? AND type = 'run.auto_paused'", gone.run_id)[0].n, 1);
+		assert.equal(JSON.parse(sql(h, "SELECT config_json FROM runs WHERE id = ?", gone.run_id)[0].config_json).team_lifecycle.cause, "leader_absent", "the returning leader may resume it");
+		assert.equal((await h.call("POST", `/runs/${kept.run_id}/stop`, { token: h.op, body: { cause: "leader_absent" } })).status, 400, "only the controller records an absence pause");
 		await new Promise((r) => setTimeout(r, 600));
 		assert.equal(state(working), "RUNNING", "a working member is never interrupted");
 		assert.equal(state(kept), "RUNNING", "exit policy keep opts out");

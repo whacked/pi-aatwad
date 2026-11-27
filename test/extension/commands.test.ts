@@ -644,6 +644,29 @@ test("a session that comes back to a team stopped while it was away says how to 
 	} finally { again?.stop(); await hs.cleanup(); }
 });
 
+test("a team stopped only because its leader left resumes when that leader session comes back; a deliberate stop waits", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "returning-leader", "");
+	let back: TeamRuntime | undefined;
+	try {
+		await s.rt.start(s.ctx); await s.command.handler("init", s.ctx);
+		const { run_id, agent_id } = s.rt.identity!;
+		const member = (await hs.call("POST", "/members", { token: (s.rt.identity as any).token, body: { name: "Worker", responsibility: "Work" } })).body.spawned_agent_ids[0];
+		await waitFor(() => hs.ex.tokens.has(member));
+		await s.rt.onQuit(() => {}); // the exit policy (stop) runs as the leader's Pi ends
+		s.rt.stop();
+		assert.equal(JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id = ?", run_id)[0].config_json).team_lifecycle.cause, "leader_exit");
+		__resetProcessStateForTests();
+		const notes: string[] = [];
+		back = new TeamRuntime({ appendEntry: () => {}, sendMessage: () => {} } as any, { paths: statePaths(hs.dir), env: {}, heartbeatMs: 60000 });
+		await back.start({ ...s.ctx, ui: { ...s.ctx.ui, notify: (t: string) => notes.push(t) } });
+		assert.equal(back.identity?.agent_id, agent_id, "the same leader is back in its team");
+		assert.ok(notes.some((n) => /had stopped when this session ended; it is resumed and this session leads it again/.test(n)), notes.join("\n"));
+		assert.equal(JSON.parse(sql(hs, "SELECT config_json FROM runs WHERE id = ?", run_id)[0].config_json).team_lifecycle.state, "RESUMED");
+	} finally { back?.stop(); s.rt.stop(); await hs.cleanup(); }
+});
+
 test("a stopped team's leader session attaches again by itself when the team is resumed, unless another session took over", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();

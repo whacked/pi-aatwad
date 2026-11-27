@@ -174,7 +174,7 @@ export class Reconciler {
 			if (members.some((m) => now - quietSince(m.id, m.observed_state === "LIVE") < quiet)) continue;
 			try {
 				this.wtx(() => {
-					suspendTeam(this.ctx, { after: (fn) => { setImmediate(() => void fn()); }, idemKey: null }, r.id, "controller");
+					suspendTeam(this.ctx, { after: (fn) => { setImmediate(() => void fn()); }, idemKey: null }, r.id, "controller", undefined, "leader_absent");
 					emit(db, { run_id: r.id, actor_id: "controller", type: "run.auto_paused", entity_id: r.id, payload: { reason: "leader gone and all members idle", idle_ms: quiet } });
 				});
 				this.ctx.log("info", "paused a team whose leader left while every member was idle", { run_id: r.id });

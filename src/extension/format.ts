@@ -165,6 +165,7 @@ export function teamLabel(r: RunSummary, now = Date.now(), o: { folder?: boolean
 	const members = `${r.live_members ?? 0}/${r.active_members ?? Math.max(0, r.agents - 1)} live`;
 	const bits = [`${r.name ?? r.run_id} [${state}]`, ...(o.folder && r.cwd ? [shortPath(r.cwd)] : []), members, `${r.open_tasks ?? 0} open tasks`, `active ${ago(r.last_activity_at ?? r.created_at, now)}`];
 	if (r.reporting_teams) bits.push(`${r.reporting_teams} linked teams`);
+	if (r.leader_live === false && !r.stopped && r.status !== "CANCELLED") bits.push("no leader session");
 	if (r.reports_to_run_id) bits.push(`linked under ${r.reports_to_run_id}`);
 	if (r.model) bits.push(r.model);
 	return bits.join(" · ");

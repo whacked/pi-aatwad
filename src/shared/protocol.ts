@@ -332,6 +332,13 @@ export interface TeamLifecycleState {
 	pending?: { pid: number; process_started_at: string }[];
 	/** Set when this team stopped because the team it is linked under stopped or dismissed it. */
 	stopped_by_run_id?: string;
+	/**
+	 * Why it stopped, when only the leader's absence caused it: its exit policy ran as its session
+	 * ended (leader_exit), or it was paused while the leader was gone and every member idle
+	 * (leader_absent). The same leader session coming back resumes such a team by itself; a stop
+	 * anyone decided on (no cause) waits for an explicit resume.
+	 */
+	cause?: "leader_exit" | "leader_absent";
 }
 
 /** POST /agents/:id/dismiss */
@@ -783,6 +790,8 @@ export interface TeamLifecycleResponse {
 	kind: "stop" | "remove";
 	state: "CLEANING" | "STOPPED" | "REMOVED" | "RESUMED";
 	error?: string;
+	/** See TeamLifecycleState.cause. */
+	cause?: "leader_exit" | "leader_absent";
 }
 export interface RemoveTeamRequest {
 	confirm_run_id: string;

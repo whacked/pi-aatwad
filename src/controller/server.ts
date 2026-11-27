@@ -60,7 +60,7 @@ function routes(ctx: Ctx, deps: ServerDeps): Route[] {
 		R("POST", "/runs/:id/join", "operator", ({ p, params, body }) => joinTeam(ctx, p, params[0], body)),
 		R("POST", "/sessions/leave", "agent", ({ p, body }) => leaveSession(ctx, p, body)),
 		R("POST", "/runs/:id/attach", "operator", ({ p, params, body }) => attach(ctx, p, params[0], body)),
-		R("POST", "/runs/:id/stop", "operator", ({ p, scope, params }) => stopTeam(ctx, p, scope, params[0])),
+		R("POST", "/runs/:id/stop", "operator", ({ p, scope, params, body }) => stopTeam(ctx, p, scope, params[0], body)),
 		R("POST", "/runs/:id/resume", "operator", ({ p, scope, params }) => resumeTeam(ctx, p, scope, params[0])),
 		R("POST", "/runs/:id/remove", "operator", ({ p, scope, params, body }) => removeTeam(ctx, p, scope, params[0], body)),
 		R("GET", "/runs/:id/lifecycle", "operator", ({ p, params }) => teamLifecycle(ctx, p, params[0])),
