@@ -160,10 +160,10 @@ export function shortPath(path: string | null | undefined, home = process.env.HO
 }
 
 /** One-line description of a team for lists and pickers. */
-export function teamLabel(r: RunSummary, now = Date.now()): string {
+export function teamLabel(r: RunSummary, now = Date.now(), o: { folder?: boolean } = {}): string {
 	const state = r.status === "CANCELLED" ? "closed" : r.stopped ? "stopped" : (r.live_members ?? 0) > 0 ? "running" : "idle";
 	const members = `${r.live_members ?? 0}/${r.active_members ?? Math.max(0, r.agents - 1)} live`;
-	const bits = [`${r.name ?? r.run_id} [${state}]`, members, `${r.open_tasks ?? 0} open tasks`, `active ${ago(r.last_activity_at ?? r.created_at, now)}`];
+	const bits = [`${r.name ?? r.run_id} [${state}]`, ...(o.folder && r.cwd ? [shortPath(r.cwd)] : []), members, `${r.open_tasks ?? 0} open tasks`, `active ${ago(r.last_activity_at ?? r.created_at, now)}`];
 	if (r.reporting_teams) bits.push(`${r.reporting_teams} linked teams`);
 	if (r.reports_to_run_id) bits.push(`linked under ${r.reports_to_run_id}`);
 	if (r.model) bits.push(r.model);

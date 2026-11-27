@@ -98,6 +98,15 @@ const TERMINAL_STATUSES = new Set(["CANCELLED", "COMPLETED", "FAILED", "RETIRED"
 function resumable(run: RunSummary): boolean {
 	return !TERMINAL_STATUSES.has(run.status) && !TERMINAL_STATUSES.has(run.root_status ?? "");
 }
+/**
+ * One line per team in a completion menu, which cuts long lines: name, state and folder first. The
+ * raw run status is left out: it only changes when a team is closed for good (closed teams are not
+ * offered here), so it said RUNNING even for stopped teams.
+ */
+function completionLabel(r: RunSummary): string {
+	return teamLabel(r, Date.now(), { folder: true });
+}
+
 function runLabel(run: RunSummary): string {
 	return `${teamLabel(run)} · ${run.run_id}${run.cwd ? ` · ${shortPath(run.cwd)}` : ""}`;
 }
@@ -749,7 +758,7 @@ export function registerTeamCommand(pi: ExtensionAPI, rt: TeamRuntime): void {
 				if (parts.length > 2) return null;
 				const runs = projectFirst(await runCompletions(), projectRoot(rt.ctx?.cwd ?? process.cwd()));
 				const items = runs.filter((r) => r.run_id.startsWith(partial) &&
-					((sub !== "stop" && sub !== "resume") || resumable(r)) && (sub !== "stop" || !r.stopped)).map((r) => ({ value: `${typed} ${r.run_id}`, label: r.run_id, description: `${r.status} · ${runLabel(r)}` }));
+					((sub !== "stop" && sub !== "resume") || resumable(r)) && (sub !== "stop" || !r.stopped)).map((r) => ({ value: `${typed} ${r.run_id}`, label: r.run_id, description: completionLabel(r) }));
 				return items.length ? items : null;
 			}
 			return null;

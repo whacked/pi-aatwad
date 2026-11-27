@@ -700,6 +700,20 @@ test("/team brief shows the human what changed since they last looked, separatel
 	} finally { s.rt.stop(); await hs.cleanup(); }
 });
 
+test("team completions show the real state and folder, not the raw run status", async () => {
+	__resetProcessStateForTests();
+	const hs = await harness();
+	const s = commandSession(hs, "completions", "");
+	try {
+		await s.rt.start(s.ctx); await s.command.handler('init --name "Plugin · Continuum"', s.ctx);
+		const run = s.rt.identity!.run_id;
+		await hs.call("POST", `/runs/${run}/stop`, { token: hs.op, body: {} });
+		const item = (await s.command.getArgumentCompletions("remove ")).find((c: any) => c.label === run);
+		assert.match(item.description, /^Plugin · Continuum \[stopped\] · .+ · 0\/0 live/);
+		assert.doesNotMatch(item.description, /RUNNING/);
+	} finally { s.rt.stop(); await hs.cleanup(); }
+});
+
 test("/team prune closes only idle members with no open tasks, after confirmation", async () => {
 	__resetProcessStateForTests();
 	const hs = await harness();
